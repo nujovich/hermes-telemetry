@@ -1,6 +1,17 @@
 # hermes-telemetry
 
-Observability + budget guardrails for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Captures tokens, estimated cost, latency, and tool usage per session and cron job. Persists to local SQLite. Exposes `/stats` and `/budget` slash commands.
+> *Observability + budget guardrails for [Hermes Agent](https://github.com/NousResearch/hermes-agent)*
+
+A comprehensive telemetry plugin that captures real usage data, enforces budget limits, and provides detailed cost analysis for AI agent operations. Built for the [Hermes Agent Challenge](https://dev.to/devteam/join-the-hermes-agent-challenge-1000-in-prizes-13cd) by Nadia Ujovich.
+
+![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/img/hero-banner.png)
+
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Tests: 94 passing](https://img.shields.io/badge/Tests-94%20passing-green.svg)
+![Provider Support](https://img.shields.io/badge/Providers-OpenRouter%20%7C%20OpenAI%20%7C%20Anthropic-orange.svg)
+![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)
+
+---
 
 **Design principle:** observability is invisible to the model. Everything goes through hooks. The only user-facing surface is `/stats` and `/budget`.
 
@@ -8,6 +19,7 @@ Observability + budget guardrails for [Hermes Agent](https://github.com/NousRese
 
 ## Table of Contents
 
+- [Screenshots](#screenshots)
 - [What It Measures](#what-it-measures)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -37,6 +49,23 @@ Observability + budget guardrails for [Hermes Agent](https://github.com/NousRese
 - [Known Limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
+- [Hermes Agent Challenge](#hermes-agent-challenge)
+
+---
+
+## Screenshots
+
+### `/stats` — Session analytics
+![Stats output](docs/screenshots/stats-output.png)
+
+### `/budget` — Current spending vs limits  
+![Budget output](docs/screenshots/budget-output.png)
+
+### `/stats cron week` — Cron job cost breakdown
+![Cron output](docs/screenshots/cron-output.png)
+
+### `/stats providers` — Real vs estimated usage
+![Providers output](docs/screenshots/providers-output.png)
 
 ---
 
@@ -611,3 +640,19 @@ Check `telemetry.log` for errors. Common causes:
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+## Hermes Agent Challenge
+
+This plugin was built for the [**Hermes Agent Challenge**](https://dev.to/devteam/join-the-hermes-agent-challenge-1000-in-prizes-13cd) — a $1,000 competition to build the most useful Hermes Agent plugins and extensions.
+
+**🔗 Challenge Entry:** [hermes-telemetry on dev.to](https://dev.to/devteam/join-the-hermes-agent-challenge-1000-in-prizes-13cd)
+
+**🛠️ Built by:** [Nadia Ujovich](https://github.com/nujovich) — Founder of [Mermelada Tech](https://mermelada.tech), building AI agent systems and SaaS platforms.
+
+**💡 Why this plugin:** Every AI system needs observability and cost control. This plugin gives Hermes Agent users the visibility to optimize their workflows and the guardrails to prevent bill shock — essential for production deployments and automated cron jobs.
+
+---
+
+*Made with ☕ for the Hermes Agent ecosystem*
