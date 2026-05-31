@@ -1,5 +1,68 @@
 # hermes-telemetry — API Research Notes
 
+---
+
+## Estado actual del proyecto (para continuar iterando)
+
+### Repo
+`nujovich/hermes-telemetry` — rama `main`, commit `f109db0`.
+Hermes source inspeccionado en `/home/user/scratch/hermes-agent-src`.
+
+### Qué está construido (Fases 1–3)
+
+| Módulo | Qué hace |
+|--------|----------|
+| `db.py` | SQLite WAL, per-thread connections, schema v3. Tablas: `runs`, `llm_calls`, `tool_calls`, `budget_alerts`. Columnas v2: cache/reasoning tokens + `estimated` en `llm_calls`, `parent_session_id`/`estimated_llm_calls` en `runs`. Columna v3: `runs.sender_id`. |
+| `pricing.py` | `estimate_cost(usage: dict, model: str) → float`. Split por componente (input / output / cache_read / cache_write / reasoning). Fallback por multiplicadores (0.10× / 1.25×). YAML override `~/.hermes/telemetry/pricing.yaml` (formato `models:` + `defaults:`). |
+| `__init__.py` | Hooks: `on_session_start`, `pre_api_request` (stash de approx tokens), `post_api_request` (tokens reales; fallback estimado cuando `usage=None`, marcado `estimated=1`), `post_tool_call`, `post_llm_call`, `on_session_end`, `on_session_finalize`, `subagent_stop`, `pre_llm_call` (soft alert + `sender_id`), `pre_tool_call` (hard gate). Regex anclada para cron job_id. |
+| `stats.py` | `/stats [today\|week\|month\|cron\|raw [N]]`. Muestra `~$cost` si hay filas estimadas + porcentaje de estimación. |
+| `budget.py` | Motor de presupuesto. Scopes: `global` / `cron_job` / `sender`. Ventanas: `daily` / `monthly` (timezone local). Verdicts: `ok` / `soft` / `hard`. Hard degrada a soft si `estimated` + `on_estimated.mode: warn_only`. Anti-spam via `budget_alerts`. Pausa cron por `cron.jobs.pause_job`. `/budget [cron \| set <scope> <window> <usd>]`. |
+
+### Archivos de config de usuario
+```
+~/.hermes/telemetry/
+├── telemetry.db        ← SQLite (WAL, schema v3)
+├── telemetry.log
+├── pricing.yaml        ← overrides de precios (ver config.example.yaml)
+└── budget.yaml         ← guardarraíles (ver budget.example.yaml)
+```
+
+### Tests: 76 pasan (estable, concurrente verificado 10×)
+```
+tests/test_db.py       — schema v1→v3, writes, aggregations, concurrent WAL
+tests/test_pricing.py  — cache/reasoning split, no doble-conteo, YAML, prefixes
+tests/test_init.py     — regex cron, _is_tool_ok
+tests/test_budget.py   — motor ok/soft/hard, degradación estimada, anti-spam,
+                          cron pause, per-scope routing, /budget set
+```
+
+### Limitaciones conocidas y documentadas
+- **Subagente → job no atribuible:** `delegate_task` no retorna el `session_id` del child en ningún hook. El total **global** es correcto (child agents registran sus propios runs). El scope `per_cron_job` subcuenta gasto delegado.
+- **Hard-stop no existe:** `pre_llm_call`/`pre_api_request` no pueden abortar una llamada al modelo. El enforcement real es: soft alert (context injection) + tool-gate (`pre_tool_call` block) + `pause_job`. La respuesta en vuelo igual se cobra.
+- **Nous Portal `usage=None` sin confirmar en vivo:** si Portal no honra `stream_options.include_usage`, los tokens se estiman y marcan `estimated=1`. El dashboard lo indica con `~$`.
+
+### Posibles siguientes pasos (no comprometidos)
+
+**Observabilidad:**
+- `pre_llm_call` recibe `sender_id` (confirmado en source): ya lo capturamos. Habilitar el scope `per_sender` requiere que el usuario configure `per_sender.default.daily_usd` en `budget.yaml`.
+- Exportar métricas a Prometheus/InfluxDB (nuevo módulo `export.py`, hook `post_llm_call`).
+- Dashboard web local (sqlite3 → HTML con Chart.js, sin deps de servidor).
+
+**Budget:**
+- Suportar ventanas personalizadas (e.g. `weekly_usd`).
+- Notificación por canal (Telegram/Discord) cuando se dispara soft/hard.
+- Modo `dry_run: true` para probar límites sin bloquear.
+
+**Pricing:**
+- Scrapear precios desde la API de Anthropic / página pública (módulo `pricing_sync.py`).
+- Alertar cuando un modelo nuevo aparece con `estimated=1` para que el usuario lo agregue a `pricing.yaml`.
+
+**Robustez:**
+- `on_session_reset` hook (ya existe en VALID_HOOKS): limpiar estado de sesión sin reiniciar.
+- Vacuum periódico / retención configurable (purgar runs > N días).
+
+---
+
 Source: `git clone --depth=1 https://github.com/NousResearch/hermes-agent`
 Inspected files: `hermes_cli/plugins.py`, `agent/conversation_loop.py`,
 `model_tools.py`, `cron/scheduler.py`, `tools/delegate_tool.py`, `agent/usage_pricing.py`
