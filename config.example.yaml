@@ -1,0 +1,24 @@
+# ~/.hermes/telemetry/pricing.yaml
+#
+# Override or extend the default pricing table.
+# Format: model_name_lowercase: {input: USD_per_million, output: USD_per_million}
+#
+# Model names are matched case-insensitively. Prefix matching is used as
+# fallback (e.g. "claude-opus" matches "claude-opus-4-8-20251201").
+#
+# Examples:
+
+# A custom/private deployment:
+my-private-llama:
+  input: 0.10
+  output: 0.30
+
+# Override the default Claude Sonnet price:
+claude-sonnet-4-6:
+  input: 3.00
+  output: 15.00
+
+# OpenRouter-hosted model (use the full slug):
+meta-llama/llama-3.3-70b-instruct:
+  input: 0.59
+  output: 0.79

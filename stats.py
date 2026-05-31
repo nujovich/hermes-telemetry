@@ -1,0 +1,167 @@
+"""Handler for the /stats slash command.
+
+Subcommands:
+  /stats              → summary for last 24h
+  /stats today        → last 24h (alias)
+  /stats week         → last 168h
+  /stats month        → last 720h
+  /stats cron         → cost/failure breakdown by cron_job_id
+  /stats raw [N]      → last N runs (default 20)
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from . import db
+
+
+def _fmt_cost(v: Any) -> str:
+    if v is None:
+        return "$0.000000"
+    return f"${float(v):.6f}"
+
+
+def _fmt_ms(v: Any) -> str:
+    if v is None:
+        return "—"
+    ms = float(v)
+    if ms >= 60_000:
+        return f"{ms / 60_000:.1f}m"
+    if ms >= 1_000:
+        return f"{ms / 1000:.1f}s"
+    return f"{int(ms)}ms"
+
+
+def _fmt_int(v: Any) -> str:
+    if v is None:
+        return "0"
+    return f"{int(v):,}"
+
+
+def _window_label(hours: int) -> str:
+    if hours <= 24:
+        return "last 24 h"
+    if hours <= 168:
+        return "last 7 days"
+    return f"last {hours // 24} days"
+
+
+def _summary_block(window_hours: int) -> str:
+    s = db.stats_summary(window_hours)
+    total = s.get("total_runs") or 0
+    ok = s.get("ok_runs") or 0
+    failed = s.get("failed_runs") or 0
+    success_rate = f"{ok / total * 100:.1f}%" if total else "—"
+
+    lines = [
+        f"hermes-telemetry — {_window_label(window_hours)}",
+        "=" * 44,
+        f"  Sessions      : {_fmt_int(total)}",
+        f"  Success rate  : {success_rate}  (ok={_fmt_int(ok)}, failed={_fmt_int(failed)})",
+        f"  API calls     : {_fmt_int(s.get('api_calls'))}",
+        f"  Tool calls    : {_fmt_int(s.get('tool_calls'))}",
+        f"  Tokens in     : {_fmt_int(s.get('tokens_in'))}",
+        f"  Tokens out    : {_fmt_int(s.get('tokens_out'))}",
+        f"  Cost (est.)   : {_fmt_cost(s.get('cost_usd'))}",
+        f"  Avg latency   : {_fmt_ms(s.get('avg_latency_ms'))}",
+        f"  Avg duration  : {_fmt_ms(s.get('avg_duration_ms'))}",
+    ]
+
+    top = s.get("top_tools") or []
+    if top:
+        lines.append("")
+        lines.append("  Top tools:")
+        lines.append(f"  {'Tool':<30} {'Calls':>6} {'Failures':>8} {'Avg ms':>8}")
+        lines.append("  " + "-" * 56)
+        for t in top:
+            name = (t.get("tool_name") or "")[:30]
+            calls = _fmt_int(t.get("calls"))
+            fails = _fmt_int(t.get("failures"))
+            avg_ms = _fmt_ms(t.get("avg_ms"))
+            lines.append(f"  {name:<30} {calls:>6} {fails:>8} {avg_ms:>8}")
+
+    return "\n".join(lines)
+
+
+def _cron_block(window_hours: int = 168) -> str:
+    rows = db.cost_by_job(window_hours)
+    if not rows:
+        return f"No cron runs in the last {window_hours // 24} days."
+
+    lines = [
+        f"hermes-telemetry — cron jobs ({_window_label(window_hours)})",
+        "=" * 72,
+        f"  {'Job ID':<20} {'Runs':>5} {'OK':>5} {'Fail':>5} {'Tok-in':>9} {'Tok-out':>9} {'Cost':>12} {'Avg dur':>9}",
+        "  " + "-" * 70,
+    ]
+    for r in rows:
+        job_id = (r.get("cron_job_id") or "?")[:20]
+        runs = _fmt_int(r.get("runs"))
+        ok = _fmt_int(r.get("ok_runs"))
+        fail = _fmt_int(r.get("failed_runs"))
+        tin = _fmt_int(r.get("tokens_in"))
+        tout = _fmt_int(r.get("tokens_out"))
+        cost = _fmt_cost(r.get("cost_usd"))
+        dur = _fmt_ms(r.get("avg_duration_ms"))
+        lines.append(f"  {job_id:<20} {runs:>5} {ok:>5} {fail:>5} {tin:>9} {tout:>9} {cost:>12} {dur:>9}")
+    return "\n".join(lines)
+
+
+def _raw_block(limit: int = 20) -> str:
+    rows = db.recent_runs(limit)
+    if not rows:
+        return "No runs recorded yet."
+
+    lines = [
+        f"hermes-telemetry — last {limit} runs",
+        "=" * 80,
+    ]
+    for r in rows:
+        sid = (r.get("session_id") or "")[:32]
+        plat = (r.get("platform") or "")[:8]
+        model = (r.get("model") or "")[:24]
+        status = r.get("status") or "?"
+        cost = _fmt_cost(r.get("cost_usd"))
+        dur = _fmt_ms(r.get("duration_ms"))
+        started = (r.get("started_at") or "")[:16]
+        cron = r.get("cron_job_id") or ""
+        tag = f" [{cron}]" if cron else ""
+        lines.append(
+            f"  {started}  {plat:<8}  {model:<24}  {status:<10}  {cost}  {dur}{tag}"
+        )
+    return "\n".join(lines)
+
+
+def handle(raw_args: str) -> str:
+    """Entry point for /stats command handler."""
+    args = (raw_args or "").strip().lower()
+
+    if not args or args in ("today",):
+        return _summary_block(24)
+    if args == "week":
+        return _summary_block(168)
+    if args == "month":
+        return _summary_block(720)
+    if args in ("cron", "cron week"):
+        return _cron_block(168)
+    if args == "cron month":
+        return _cron_block(720)
+    if args == "cron today":
+        return _cron_block(24)
+    if args.startswith("raw"):
+        parts = args.split()
+        try:
+            limit = int(parts[1]) if len(parts) > 1 else 20
+        except ValueError:
+            limit = 20
+        return _raw_block(min(limit, 200))
+
+    return (
+        "Usage: /stats [today|week|month|cron|cron week|cron month|raw [N]]\n"
+        "  /stats          — last 24h summary\n"
+        "  /stats week     — last 7 days summary\n"
+        "  /stats month    — last 30 days summary\n"
+        "  /stats cron     — breakdown by cron job (last 7 days)\n"
+        "  /stats raw [N]  — last N raw run records (default 20)"
+    )
