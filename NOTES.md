@@ -5,17 +5,17 @@
 ## Estado actual del proyecto (para continuar iterando)
 
 ### Repo
-`nujovich/hermes-telemetry` — rama `main`, commit `f109db0`.
+`nujovich/hermes-telemetry` — rama `main`, último commit de Fase 3.1.
 Hermes source inspeccionado en `/home/user/scratch/hermes-agent-src`.
 
-### Qué está construido (Fases 1–3)
+### Qué está construido (Fases 1–3.1)
 
 | Módulo | Qué hace |
 |--------|----------|
-| `db.py` | SQLite WAL, per-thread connections, schema v3. Tablas: `runs`, `llm_calls`, `tool_calls`, `budget_alerts`. Columnas v2: cache/reasoning tokens + `estimated` en `llm_calls`, `parent_session_id`/`estimated_llm_calls` en `runs`. Columna v3: `runs.sender_id`. |
+| `db.py` | SQLite WAL, per-thread connections, schema v3. Tablas: `runs`, `llm_calls`, `tool_calls`, `budget_alerts`. Columnas v2: cache/reasoning tokens + `estimated` en `llm_calls`, `parent_session_id`/`estimated_llm_calls` en `runs`. Columna v3: `runs.sender_id`. Nueva función: `stats_by_provider(window_hours)`. |
 | `pricing.py` | `estimate_cost(usage: dict, model: str) → float`. Split por componente (input / output / cache_read / cache_write / reasoning). Fallback por multiplicadores (0.10× / 1.25×). YAML override `~/.hermes/telemetry/pricing.yaml` (formato `models:` + `defaults:`). |
-| `__init__.py` | Hooks: `on_session_start`, `pre_api_request` (stash de approx tokens), `post_api_request` (tokens reales; fallback estimado cuando `usage=None`, marcado `estimated=1`), `post_tool_call`, `post_llm_call`, `on_session_end`, `on_session_finalize`, `subagent_stop`, `pre_llm_call` (soft alert + `sender_id`), `pre_tool_call` (hard gate). Regex anclada para cron job_id. |
-| `stats.py` | `/stats [today\|week\|month\|cron\|raw [N]]`. Muestra `~$cost` si hay filas estimadas + porcentaje de estimación. |
+| `__init__.py` | Hooks: `on_session_start`, `pre_api_request` (stash de approx tokens), `post_api_request` (tokens reales; fallback estimado cuando `usage=None`, marcado `estimated=1`; **WARNING one-time si provider contiene "nous" y `usage=None`**), `post_tool_call`, `post_llm_call`, `on_session_end`, `on_session_finalize`, `subagent_stop`, `pre_llm_call` (soft alert + `sender_id`), `pre_tool_call` (hard gate). Regex anclada para cron job_id. `_nous_estimated_warned` set module-level para deduplicar el warning. |
+| `stats.py` | `/stats [today\|week\|month\|cron\|raw [N]]`. **Nuevo: `/stats providers`** — tabla por provider con columnas total/real/estimado/est%/costo. Muestra `~$cost` si hay filas estimadas + porcentaje de estimación. |
 | `budget.py` | Motor de presupuesto. Scopes: `global` / `cron_job` / `sender`. Ventanas: `daily` / `monthly` (timezone local). Verdicts: `ok` / `soft` / `hard`. Hard degrada a soft si `estimated` + `on_estimated.mode: warn_only`. Anti-spam via `budget_alerts`. Pausa cron por `cron.jobs.pause_job`. `/budget [cron \| set <scope> <window> <usd>]`. |
 
 ### Archivos de config de usuario
@@ -27,19 +27,38 @@ Hermes source inspeccionado en `/home/user/scratch/hermes-agent-src`.
 └── budget.yaml         ← guardarraíles (ver budget.example.yaml)
 ```
 
-### Tests: 76 pasan (estable, concurrente verificado 10×)
+### Tests: 94 pasan
 ```
-tests/test_db.py       — schema v1→v3, writes, aggregations, concurrent WAL
-tests/test_pricing.py  — cache/reasoning split, no doble-conteo, YAML, prefixes
-tests/test_init.py     — regex cron, _is_tool_ok
-tests/test_budget.py   — motor ok/soft/hard, degradación estimada, anti-spam,
-                          cron pause, per-scope routing, /budget set
+tests/test_db.py                      — schema v1→v3, writes, aggregations, concurrent WAL
+tests/test_pricing.py                 — cache/reasoning split, no doble-conteo, YAML, prefixes
+tests/test_init.py                    — regex cron, _is_tool_ok
+tests/test_budget.py                  — motor ok/soft/hard, degradación estimada, anti-spam,
+                                        cron pause, per-scope routing, /budget set
+tests/test_subagent_reconciliation.py — A1: secuencia hook completa parent+child, assert tokens
+                                        db_child == result_child (conteo exacto), no proxy rows
+tests/test_stats_providers.py         — A2: stats_by_provider real/estimado, /stats providers
+                                        output format, Nous warning one-time deduplicated
 ```
+
+### Verificaciones A1 / A2 (Fase 3.1)
+
+**A1 — Reconciliación subagentes:**
+- **Verificado vía test de integración (simulado, no live).**
+- La secuencia completa de hooks (parent start → parent API call → child start → child API calls → child end → post_tool_call(delegate_task) → subagent_stop → parent end) fue simulada en `test_subagent_reconciliation.py`.
+- **Resultado: `db_child_tokens == result_child_tokens` ✅** Con plugin cargado en el child, los tokens se capturan una sola vez. El parent NO acumula tokens del child.
+- **`post_tool_call(delegate_task)` no genera filas en `llm_calls` ✅** — cero proxy rows.
+- **El total global es correcto siempre que el child tenga el plugin cargado.** Si el child corre SIN el plugin, `db_child_tokens ≈ 0` — undercount silencioso. La forma de verificarlo en vivo: después de una sesión con `delegate_task`, `/stats raw 5` debe mostrar DOS runs (parent + child). Si solo aparece uno, el child no tiene el plugin.
+
+**A2 — Sonda de Nous Portal:**
+- **Instrumento construido y testeado contra datos sintéticos ✅**
+- `/stats providers` muestra la columna `Est%` por provider — si Nous Portal retorna `usage=None`, sale `100%` en esa columna.
+- `telemetry.log` recibe un WARNING la primera vez que entra una fila de Nous Portal con `usage=None` (no se repite).
+- **Live run pendiente** (requiere sesión real contra Nous Portal). Procedimiento en README sección "Provider probe". Si `Est% == 0` → Portal retorna usage real ✅. Si `Est% > 0` → los budgets operan sobre estimaciones y el hard degrada a soft bajo `mode: warn_only`.
 
 ### Limitaciones conocidas y documentadas
 - **Subagente → job no atribuible:** `delegate_task` no retorna el `session_id` del child en ningún hook. El total **global** es correcto (child agents registran sus propios runs). El scope `per_cron_job` subcuenta gasto delegado.
 - **Hard-stop no existe:** `pre_llm_call`/`pre_api_request` no pueden abortar una llamada al modelo. El enforcement real es: soft alert (context injection) + tool-gate (`pre_tool_call` block) + `pause_job`. La respuesta en vuelo igual se cobra.
-- **Nous Portal `usage=None` sin confirmar en vivo:** si Portal no honra `stream_options.include_usage`, los tokens se estiman y marcan `estimated=1`. El dashboard lo indica con `~$`.
+- **Nous Portal `usage=None` sin confirmar en vivo:** si Portal no honra `stream_options.include_usage`, los tokens se estiman y marcan `estimated=1`. El dashboard lo indica con `~$`. Ver sección "Provider probe" en README.
 
 ### Posibles siguientes pasos (no comprometidos)
 

@@ -7,6 +7,7 @@ Subcommands:
   /stats month        → last 720h
   /stats cron         → cost/failure breakdown by cron_job_id
   /stats raw [N]      → last N runs (default 20)
+  /stats providers    → per-provider real vs estimated breakdown (last 24h)
 """
 
 from __future__ import annotations
@@ -130,6 +131,40 @@ def _cron_block(window_hours: int = 168) -> str:
     return "\n".join(lines)
 
 
+def _providers_block(window_hours: int = 24) -> str:
+    rows = db.stats_by_provider(window_hours)
+    if not rows:
+        return f"No API calls recorded in the {_window_label(window_hours)}."
+
+    lines = [
+        f"hermes-telemetry — providers ({_window_label(window_hours)})",
+        "=" * 72,
+        f"  {'Provider':<28} {'Calls':>6} {'Real':>6} {'Est':>5} {'Est%':>6} {'Cost':>12}",
+        "  " + "-" * 67,
+    ]
+    for r in rows:
+        prov    = (r.get("provider") or "(unknown)")[:28]
+        total   = _fmt_int(r.get("total_calls"))
+        real    = _fmt_int(r.get("real_calls"))
+        est     = _fmt_int(r.get("estimated_calls"))
+        est_pct = f"{r.get('estimated_pct', 0.0) * 100:.0f}%"
+        cost    = _fmt_cost(r.get("cost_usd"))
+        lines.append(
+            f"  {prov:<28} {total:>6} {real:>6} {est:>5} {est_pct:>6} {cost:>12}"
+        )
+
+    lines.append("")
+    lines.append(
+        "  Est% = share of calls where the provider returned no usage data "
+        "(tokens estimated locally)."
+    )
+    lines.append(
+        "  If Est% > 0 for your main provider, budget hard-verdicts may be "
+        "degraded to soft under on_estimated.mode: warn_only."
+    )
+    return "\n".join(lines)
+
+
 def _raw_block(limit: int = 20) -> str:
     rows = db.recent_runs(limit)
     if not rows:
@@ -179,11 +214,22 @@ def handle(raw_args: str) -> str:
             limit = 20
         return _raw_block(min(limit, 200))
 
+    if args.startswith("providers"):
+        sub = args[len("providers"):].strip()
+        if sub in ("", "today"):
+            return _providers_block(24)
+        if sub == "week":
+            return _providers_block(168)
+        if sub == "month":
+            return _providers_block(720)
+
     return (
-        "Usage: /stats [today|week|month|cron|cron week|cron month|raw [N]]\n"
-        "  /stats          — last 24h summary\n"
-        "  /stats week     — last 7 days summary\n"
-        "  /stats month    — last 30 days summary\n"
-        "  /stats cron     — breakdown by cron job (last 7 days)\n"
-        "  /stats raw [N]  — last N raw run records (default 20)"
+        "Usage: /stats [today|week|month|cron|cron week|cron month|providers|raw [N]]\n"
+        "  /stats               — last 24h summary\n"
+        "  /stats week          — last 7 days summary\n"
+        "  /stats month         — last 30 days summary\n"
+        "  /stats cron          — breakdown by cron job (last 7 days)\n"
+        "  /stats providers     — per-provider real vs estimated breakdown (24h)\n"
+        "  /stats providers week — provider breakdown, last 7 days\n"
+        "  /stats raw [N]       — last N raw run records (default 20)"
     )

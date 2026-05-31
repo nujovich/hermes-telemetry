@@ -60,6 +60,8 @@ Restart Hermes (or your gateway) after enabling.
 /stats cron         → breakdown by cron_job_id (last 7 days)
 /stats cron week    → cron breakdown, last 7 days
 /stats cron month   → cron breakdown, last 30 days
+/stats providers    → per-provider: real vs estimated calls + cost (last 24h)
+/stats providers week → provider breakdown, last 7 days
 /stats raw [N]      → last N raw run records (default 20)
 ```
 
@@ -128,7 +130,7 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-Tests cover: schema creation, idempotent migrations (v1→v3), write/read, aggregation queries, concurrent WAL writes (10 threads × 5 writes), pricing calculation with cache/reasoning split, prefix matching, unknown models, custom YAML overrides, cron session parsing, and the full budget engine (soft/hard/degraded verdicts, anti-spam, cron pause). No live Hermes is required.
+Tests cover: schema creation, idempotent migrations (v1→v3), write/read, aggregation queries, concurrent WAL writes (10 threads × 5 writes), pricing calculation with cache/reasoning split, prefix matching, unknown models, custom YAML overrides, cron session parsing, the full budget engine (soft/hard/degraded verdicts, anti-spam, cron pause), subagent token reconciliation (parent+child hook sequence), and the `/stats providers` real-vs-estimated breakdown. No live Hermes is required.
 
 ---
 
@@ -176,7 +178,54 @@ Hermes does **not** expose a way to abort an in-flight model call from a plugin 
 
 ### Attribution honesty
 
-Per-cron-job budgets **exclude subagent (`delegate_task`) cost**: child agents run as their own sessions and Hermes exposes no parent→child link in any hook, so their spend can't be attributed to the parent job without double-counting. Subagent cost **is** included in the **global** total. For a tope that captures delegated spend, use the `global` budget. (`/budget cron` prints this caveat.)
+Per-cron-job budgets **exclude subagent (`delegate_task`) cost**: child agents run as their own sessions and Hermes exposes no parent→child link in any hook, so their spend can't be attributed to the parent job without double-counting. Subagent cost **is** included in the **global** total. For a cap that captures delegated spend, use the `global` budget. (`/budget cron` prints this caveat.)
+
+---
+
+## Provider probe: verifying your provider returns real usage
+
+Run this **once** after enabling the plugin against your primary provider (e.g. Nous Portal):
+
+1. Run one short session: any minimal task works.
+2. `/stats providers` — look at the `Est%` column for your provider.
+   - `0%` → provider returns real usage data. Budget verdicts are based on real numbers. ✅
+   - `100%` → provider omits usage in responses. All spend is estimated. Budget hard-verdicts will be degraded to soft under `on_estimated.mode: warn_only`. The `telemetry.log` will also have a **one-time WARNING** the first time this happens. ⚠️
+
+If your provider consistently returns `usage=None`, the plugin still records tokens (estimated from request size + response length) and flags those rows. `/stats` shows them with a `~` prefix. To treat estimated spend as real for enforcement purposes, set:
+
+```yaml
+on_estimated:
+  mode: enforce
+```
+
+---
+
+## Roadmap / Known gaps
+
+Ordered by priority. Items are not built yet — each lists its trigger condition.
+
+### P2 — Enforcement gaps (high priority if budgets are critical)
+
+**Runaway text-only sessions not blockable.** The hard budget gate is `pre_tool_call` + `pause_job`. A session that generates text without calling any tools never hits the gate. **Mitigation:** add a pre-flight check in `on_session_start` for cron: abort before the first LLM call if the job is already over budget. *Trigger: if the budget guardrail becomes operationally important.*
+
+**Pricing staleness corrupts budget figures.** `pricing.yaml` is manually maintained. A new model that isn't in the table falls through to `$0.00` and the budget enforces on a wrong number. **Mitigation:** `pricing_sync.py` + a warning "new model seen with `estimated_calls > 0`, add it to pricing.yaml". *Trigger: when switching models or adding new ones.*
+
+### P3 — Correctness / hygiene (medium-term)
+
+**Child runs inflate per-session stats.** Child sessions appear as regular runs (no marker) and inflate "number of sessions" and "average cost per session" in `/stats`. **Mitigation:** detect child session_id format (`YYYYMMDD_HHMMSS_uuid6` vs cron/cli pattern), tag `is_subagent=1`, filter in `/stats`. *Trigger: when per-session stats start mattering.*
+
+**DB retention / growth.** `telemetry.db` grows without bound. High-frequency cron jobs produce large `llm_calls` tables; budget window queries slow down. **Mitigation:** configurable purge (delete runs older than N days) + confirm composite index on `started_at` + scope columns. *Trigger: when the DB exceeds ~100k rows.*
+
+**Estimated-pct threshold for budget degradation.** Today, a single estimated row in the window degrades a hard verdict to soft, which may be too conservative. **Mitigation:** degrade only when `estimated_pct` exceeds a configurable threshold (e.g. 20%). *Trigger: after the provider probe confirms your provider returns real usage (then the threshold matters).*
+
+### Possible future additions (no trigger yet)
+
+- Prometheus / InfluxDB export endpoint
+- Local HTML dashboard (`/stats html`)
+- Weekly budget windows
+- Channel notifications (Telegram / Discord) on soft/hard breach
+- Budget `dry_run` mode (log what would be enforced without actually blocking)
+- Pricing auto-sync from provider API
 
 ---
 

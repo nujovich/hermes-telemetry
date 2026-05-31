@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 _approx_store: dict[tuple, int] = {}
 _approx_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# One-time warning set: tracks providers already warned about estimated usage.
+# Used in post_api_request to avoid repeating the Nous Portal probe warning.
+# ---------------------------------------------------------------------------
+_nous_estimated_warned: set = set()
+
 # Characters per token estimate (used when usage=None)
 _CHARS_PER_TOKEN = 4
 
@@ -179,6 +185,20 @@ def register(ctx) -> None:  # noqa: ANN001
                 cache_write_tok  = 0
                 reasoning_tok    = 0
                 estimated        = True
+                # One-time warning: fires the first time a Nous Portal call returns
+                # usage=None so you don't have to grep logs to know your provider
+                # isn't returning real usage data.
+                prov_lower = (provider or "").lower()
+                if "nous" in prov_lower and provider not in _nous_estimated_warned:
+                    _nous_estimated_warned.add(provider)
+                    tele_log.warning(
+                        "hermes-telemetry: provider=%r returned usage=None — cost for "
+                        "this session is ESTIMATED (not real). Run /stats providers to "
+                        "see the real vs estimated breakdown. If this persists, budget "
+                        "hard-verdicts will be degraded to soft (on_estimated.mode: "
+                        "warn_only). To silence this warning, set mode: enforce.",
+                        provider,
+                    )
 
             full_usage = {
                 "input_tokens":        tokens_in,
