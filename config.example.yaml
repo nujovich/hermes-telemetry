@@ -1,24 +1,37 @@
 # ~/.hermes/telemetry/pricing.yaml
 #
 # Override or extend the default pricing table.
-# Format: model_name_lowercase: {input: USD_per_million, output: USD_per_million}
+# Prices are USD per 1 million tokens.
+#
+# Format:
+#   models:
+#     "model-name":
+#       input: USD_per_million        # non-cached input tokens
+#       output: USD_per_million       # output tokens
+#       cache_read: USD_per_million   # optional; derived from input * defaults.cache_read_multiplier if absent
+#       cache_write: USD_per_million  # optional; derived from input * defaults.cache_write_multiplier if absent
+#       reasoning: USD_per_million    # optional; defaults to output price
+#   defaults:
+#     cache_read_multiplier: 0.10     # fallback for models without explicit cache_read
+#     cache_write_multiplier: 1.25    # fallback for models without explicit cache_write
 #
 # Model names are matched case-insensitively. Prefix matching is used as
 # fallback (e.g. "claude-opus" matches "claude-opus-4-8-20251201").
-#
-# Examples:
 
-# A custom/private deployment:
-my-private-llama:
-  input: 0.10
-  output: 0.30
+models:
+  # A custom/private deployment:
+  "my-private-llama":
+    input: 0.10
+    output: 0.30
 
-# Override the default Claude Sonnet price:
-claude-sonnet-4-6:
-  input: 3.00
-  output: 15.00
+  # Override the default Claude Sonnet price with full cache pricing:
+  "claude-sonnet-4-6":
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write: 3.75
+    reasoning: 15.00
 
-# OpenRouter-hosted model (use the full slug):
-meta-llama/llama-3.3-70b-instruct:
-  input: 0.59
-  output: 0.79
+defaults:
+  cache_read_multiplier: 0.10
+  cache_write_multiplier: 1.25

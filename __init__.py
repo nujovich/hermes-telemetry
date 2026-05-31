@@ -12,11 +12,28 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Approximate token store for pre_api_request → post_api_request correlation
+# ---------------------------------------------------------------------------
+_approx_store: dict[tuple, int] = {}
+_approx_lock = threading.Lock()
+
+# Characters per token estimate (used when usage=None)
+_CHARS_PER_TOKEN = 4
+
+# ---------------------------------------------------------------------------
+# Cron session ID regex
+# ---------------------------------------------------------------------------
+CRON_SESSION_RE = re.compile(r"^cron_(?P<job_id>.+)_\d{8}_\d{6}$")
+# If this test breaks, Hermes changed the cron session_id format — check cron/scheduler.py
 
 
 def _setup_log_file() -> None:
@@ -43,12 +60,20 @@ def _extract_cron_job_id(session_id: str, platform: str) -> Optional[str]:
 
     Cron session IDs have the format: cron_{job_id}_{YYYYMMDD_HHMMSS}
     (see cron/scheduler.py:1392 in hermes-agent source).
+    Uses CRON_SESSION_RE for robust parsing — logs a warning if the format
+    doesn't match so that format changes are immediately visible.
     """
     if platform != "cron":
         return None
-    parts = session_id.split("_", 2)
-    if len(parts) >= 2 and parts[0] == "cron":
-        return parts[1]
+    m = CRON_SESSION_RE.match(session_id)
+    if m:
+        return m.group("job_id")
+    logger.warning(
+        "hermes-telemetry: platform='cron' but session_id %r doesn't match expected "
+        "format cron_{job_id}_{YYYYMMDD_HHMMSS} — cron_job_id will be NULL. "
+        "If this recurs, check cron/scheduler.py in hermes-agent.",
+        session_id,
+    )
     return None
 
 
@@ -91,10 +116,29 @@ def register(ctx) -> None:  # noqa: ANN001
     ctx.register_hook("on_session_start", on_session_start)
 
     # ------------------------------------------------------------------
+    # pre_api_request
+    # Fired before each individual API call.
+    # We stash approx_input_tokens so post_api_request can use it as a
+    # fallback estimate when usage=None.
+    # kwargs: session_id, api_call_count, approx_input_tokens, ...
+    # ------------------------------------------------------------------
+    def pre_api_request(
+        session_id: str = "",
+        api_call_count: int = 0,
+        approx_input_tokens: int = 0,
+        **_kw,
+    ) -> None:
+        with _approx_lock:
+            _approx_store[(session_id, api_call_count)] = approx_input_tokens
+
+    ctx.register_hook("pre_api_request", pre_api_request)
+
+    # ------------------------------------------------------------------
     # post_api_request  ← PRIMARY source for tokens/cost/latency
     # Fired after each individual API call within a turn.
     # kwargs: session_id, model, provider, api_duration (seconds),
-    #         usage (dict with input_tokens/output_tokens or None)
+    #         usage (dict with input_tokens/output_tokens or None),
+    #         api_call_count, assistant_content_chars
     # ------------------------------------------------------------------
     def post_api_request(
         session_id: str = "",
@@ -103,19 +147,46 @@ def register(ctx) -> None:  # noqa: ANN001
         api_duration: float = 0.0,
         usage: Optional[dict] = None,
         response_model: Optional[str] = None,
+        api_call_count: int = 0,
+        assistant_content_chars: int = 0,
         **_kw,
     ) -> None:
         try:
             effective_model = response_model or model or ""
-            tokens_in = 0
-            tokens_out = 0
-            if isinstance(usage, dict):
-                tokens_in = int(usage.get("input_tokens") or 0)
-                tokens_out = int(usage.get("output_tokens") or 0)
-            else:
-                tele_log.debug("post_api_request: usage=None for session=%s (provider may not report usage)", session_id)
 
-            cost = pricing.estimate_cost(effective_model, tokens_in, tokens_out)
+            # Always clean up the approx store for this call
+            with _approx_lock:
+                approx_in = _approx_store.pop((session_id, api_call_count), 0)
+
+            if isinstance(usage, dict):
+                tokens_in        = int(usage.get("input_tokens")     or 0)
+                tokens_out       = int(usage.get("output_tokens")    or 0)
+                cache_read_tok   = int(usage.get("cache_read_tokens")  or 0)
+                cache_write_tok  = int(usage.get("cache_write_tokens") or 0)
+                reasoning_tok    = int(usage.get("reasoning_tokens")   or 0)
+                estimated        = False
+            else:
+                # usage=None: estimate from pre_api_request stash + response chars
+                tele_log.debug(
+                    "post_api_request: usage=None for session=%s — estimating from "
+                    "approx_input_tokens=%d + assistant_content_chars=%d",
+                    session_id, approx_in, assistant_content_chars,
+                )
+                tokens_in        = approx_in
+                tokens_out       = int(assistant_content_chars / _CHARS_PER_TOKEN)
+                cache_read_tok   = 0
+                cache_write_tok  = 0
+                reasoning_tok    = 0
+                estimated        = True
+
+            full_usage = {
+                "input_tokens":        tokens_in,
+                "output_tokens":       tokens_out,
+                "cache_read_tokens":   cache_read_tok,
+                "cache_write_tokens":  cache_write_tok,
+                "reasoning_tokens":    reasoning_tok,
+            }
+            cost = pricing.estimate_cost(full_usage, effective_model)
             latency_ms = int(api_duration * 1000)
 
             db.record_llm_call(
@@ -127,6 +198,10 @@ def register(ctx) -> None:  # noqa: ANN001
                 tokens_out=tokens_out,
                 cost_usd=cost,
                 latency_ms=latency_ms,
+                cache_read_tokens=cache_read_tok,
+                cache_write_tokens=cache_write_tok,
+                reasoning_tokens=reasoning_tok,
+                estimated=estimated,
             )
         except Exception as exc:
             tele_log.error("post_api_request hook failed: %s", exc)

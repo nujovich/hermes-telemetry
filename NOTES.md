@@ -247,3 +247,16 @@ better.
 **Cost** is always an *estimate* computed from a locally-maintained pricing table.
 We do not call any provider pricing API. Users can override pricing via
 `~/.hermes/telemetry/pricing.yaml`.
+
+---
+
+## Update: Refinements applied
+
+**R2 — Nous Portal usage availability:**
+Hermes sends `stream_options: {"include_usage": True}` (in `agent/chat_completion_helpers.py:1707`) for ALL OpenAI-compatible streaming providers. Nous Portal uses `chat_completions` mode against `nousresearch.com`. Whether Nous Portal honors `include_usage` in streaming responses is **unconfirmed without live testing** — it depends on the Portal API implementation. If it does, usage will be real. If it doesn't, usage will be None and the fallback estimation kicks in (marked `estimated=1`). The `estimated` column makes this distinguishable in the dashboard.
+
+**R3 — Subagent session architecture (confirmed):**
+- Child `AIAgent` instances are created WITHOUT an explicit `session_id` → they auto-generate one (`{YYYYMMDD_HHMMSS}_{uuid6}` format, from `agent/agent_init.py:972-974`)
+- Child agents call `run_conversation()` which fires full hook lifecycle including `on_session_start`, `post_api_request`, `on_session_end`
+- **Conclusion**: child tokens ARE captured independently. `/stats` totals already include subagent costs (as separate runs)
+- **Limitation**: `subagent_stop` receives `parent_session_id` but NOT `child_session_id` (see `tools/delegate_tool.py:2269-2277`). `on_session_start` receives `session_id` but NOT `parent_session_id`. Therefore parent-child attribution CANNOT be established from hooks alone. `runs.parent_session_id` column added for future use but never populated in v0.1.

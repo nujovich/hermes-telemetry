@@ -4,10 +4,12 @@ Per-thread connections (threading.local) + WAL mode for safe concurrent writes
 from parallel cron jobs. See NOTES.md for the concurrency rationale.
 
 Public API used by __init__.py (hooks) and stats.py (/stats command):
-  start_run(session_id, model, platform, cron_job_id=None)
+  start_run(session_id, model, platform, cron_job_id=None, parent_session_id=None)
   end_run(session_id, status, ended_at=None)
   record_llm_call(session_id, ts, model, provider, tokens_in, tokens_out,
-                  cost_usd, latency_ms)
+                  cost_usd, latency_ms,
+                  cache_read_tokens=0, cache_write_tokens=0, reasoning_tokens=0,
+                  estimated=False)
   record_tool_call(session_id, ts, tool_name, ok, latency_ms)
   stats_summary(window_hours)  -> dict
   cost_by_job(window_hours)    -> list[dict]
@@ -27,7 +29,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _local = threading.local()
 
 
@@ -106,13 +108,50 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_tool_name       ON tool_calls(tool_name);
     """)
 
-    cur = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1")
-    row = cur.fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
-            (_SCHEMA_VERSION, _utcnow()),
-        )
+    # Insert v1 marker if not already present
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (1, ?)",
+        (_utcnow(),),
+    )
+
+    # Apply v2 migration
+    _migrate_v2(conn)
+
+
+def _migrate_v2(conn: sqlite3.Connection) -> None:
+    """Add v2 columns: cache tokens + estimated flag on llm_calls;
+    parent_session_id + estimated_llm_calls on runs."""
+    # Check if migration already applied
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 2")
+    if cur.fetchone() is not None:
+        return
+
+    new_cols_llm = [
+        ("cache_read_tokens",  "INTEGER DEFAULT 0"),
+        ("cache_write_tokens", "INTEGER DEFAULT 0"),
+        ("reasoning_tokens",   "INTEGER DEFAULT 0"),
+        ("estimated",          "INTEGER DEFAULT 0"),
+    ]
+    for col, typedef in new_cols_llm:
+        try:
+            conn.execute(f"ALTER TABLE llm_calls ADD COLUMN {col} {typedef}")
+        except sqlite3.OperationalError:
+            pass  # already exists
+
+    new_cols_runs = [
+        ("parent_session_id",   "TEXT"),
+        ("estimated_llm_calls", "INTEGER DEFAULT 0"),
+    ]
+    for col, typedef in new_cols_runs:
+        try:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {typedef}")
+        except sqlite3.OperationalError:
+            pass  # already exists
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (2, ?)",
+        (_utcnow(),),
+    )
 
 
 def _utcnow() -> str:
@@ -132,15 +171,16 @@ def start_run(
     model: str,
     platform: str,
     cron_job_id: Optional[str] = None,
+    parent_session_id: Optional[str] = None,
 ) -> None:
     conn = _get_conn()
     conn.execute(
         """
         INSERT OR IGNORE INTO runs
-            (session_id, model, platform, cron_job_id, started_at, status)
-        VALUES (?, ?, ?, ?, ?, 'running')
+            (session_id, model, platform, cron_job_id, parent_session_id, started_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'running')
         """,
-        (session_id, model, platform, cron_job_id, _utcnow()),
+        (session_id, model, platform, cron_job_id, parent_session_id, _utcnow()),
     )
 
 
@@ -170,15 +210,21 @@ def record_llm_call(
     tokens_out: int,
     cost_usd: float,
     latency_ms: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    reasoning_tokens: int = 0,
+    estimated: bool = False,
 ) -> None:
     conn = _get_conn()
     conn.execute(
         """
         INSERT INTO llm_calls
-            (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms,
+             cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms),
+        (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms,
+         cache_read_tokens, cache_write_tokens, reasoning_tokens, 1 if estimated else 0),
     )
     conn.execute(
         """
@@ -193,6 +239,11 @@ def record_llm_call(
         """,
         (tokens_in, tokens_out, cost_usd, model, provider, session_id),
     )
+    if estimated:
+        conn.execute(
+            "UPDATE runs SET estimated_llm_calls = estimated_llm_calls + 1 WHERE session_id = ?",
+            (session_id,),
+        )
 
 
 def record_tool_call(
@@ -235,7 +286,8 @@ def stats_summary(window_hours: int = 24) -> dict[str, Any]:
             SUM(tokens_out)                                   AS tokens_out,
             ROUND(SUM(cost_usd), 6)                           AS cost_usd,
             AVG(duration_ms)                                  AS avg_duration_ms,
-            SUM(tool_calls)                                   AS tool_calls
+            SUM(tool_calls)                                   AS tool_calls,
+            SUM(estimated_llm_calls)                          AS estimated_llm_calls
         FROM runs
         WHERE started_at >= {since}
         """
@@ -244,7 +296,7 @@ def stats_summary(window_hours: int = 24) -> dict[str, Any]:
     llm_row = conn.execute(
         f"""
         SELECT
-            COUNT(*)       AS api_calls,
+            COUNT(*)        AS api_calls,
             AVG(latency_ms) AS avg_latency_ms
         FROM llm_calls
         WHERE ts >= {since}
@@ -270,6 +322,8 @@ def stats_summary(window_hours: int = 24) -> dict[str, Any]:
     result.update(dict(llm_row))
     result["top_tools"] = [dict(t) for t in top_tools]
     result["window_hours"] = window_hours
+    # Parent-child attribution is not yet populated (see NOTES.md R3)
+    result["parent_links_available"] = False
     return result
 
 
@@ -305,7 +359,8 @@ def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
         SELECT session_id, platform, cron_job_id, model, provider,
                started_at, ended_at, status,
                tokens_in, tokens_out, cost_usd, duration_ms,
-               api_calls, tool_calls
+               api_calls, tool_calls,
+               parent_session_id, estimated_llm_calls
         FROM runs
         ORDER BY started_at DESC
         LIMIT ?

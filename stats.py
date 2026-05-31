@@ -54,19 +54,41 @@ def _summary_block(window_hours: int) -> str:
     failed = s.get("failed_runs") or 0
     success_rate = f"{ok / total * 100:.1f}%" if total else "—"
 
+    api_calls = int(s.get("api_calls") or 0)
+    estimated_calls = int(s.get("estimated_llm_calls") or 0)
+    has_estimated = estimated_calls > 0
+
+    # Use ~ prefix on cost if any calls were estimated
+    cost_label = "Cost (est.)   "
+    cost_val = s.get("cost_usd")
+    if has_estimated:
+        cost_str = f"~{_fmt_cost(cost_val)}"
+    else:
+        cost_str = _fmt_cost(cost_val)
+
     lines = [
         f"hermes-telemetry — {_window_label(window_hours)}",
         "=" * 44,
         f"  Sessions      : {_fmt_int(total)}",
         f"  Success rate  : {success_rate}  (ok={_fmt_int(ok)}, failed={_fmt_int(failed)})",
-        f"  API calls     : {_fmt_int(s.get('api_calls'))}",
+        f"  API calls     : {_fmt_int(api_calls)}",
         f"  Tool calls    : {_fmt_int(s.get('tool_calls'))}",
         f"  Tokens in     : {_fmt_int(s.get('tokens_in'))}",
         f"  Tokens out    : {_fmt_int(s.get('tokens_out'))}",
-        f"  Cost (est.)   : {_fmt_cost(s.get('cost_usd'))}",
+        f"  {cost_label}: {cost_str}",
         f"  Avg latency   : {_fmt_ms(s.get('avg_latency_ms'))}",
         f"  Avg duration  : {_fmt_ms(s.get('avg_duration_ms'))}",
     ]
+
+    if has_estimated:
+        est_pct = f"{estimated_calls / api_calls * 100:.1f}%" if api_calls else "100%"
+        lines.append(f"  Estimated data: {est_pct} of API calls")
+
+    if not s.get("parent_links_available", True):
+        lines.append(
+            "  Note: Subagent tokens included in total "
+            "(individual sessions, no parent-child attribution)"
+        )
 
     top = s.get("top_tools") or []
     if top:

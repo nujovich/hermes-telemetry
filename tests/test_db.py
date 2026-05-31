@@ -29,6 +29,7 @@ def isolated_db(tmp_path, monkeypatch):
 
 
 import hermes_telemetry.db as db
+from hermes_telemetry.db import _SCHEMA_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -47,12 +48,18 @@ def test_schema_creates_tables():
 
 
 def test_schema_idempotent():
-    """Calling _ensure_schema twice must not raise or duplicate version rows."""
+    """Calling _ensure_schema twice must not raise or duplicate version rows.
+
+    With schema v2 applied, there are exactly 2 rows (v1 and v2).
+    Repeated calls must not add more rows.
+    """
     conn = db._get_conn()
+    # Called once already by _get_conn(); call twice more
     db._ensure_schema(conn)
     db._ensure_schema(conn)
     count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
-    assert count == 1
+    # One row per schema version: v1 + v2 = 2
+    assert count == _SCHEMA_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +207,85 @@ def test_recent_runs_ordered():
     # Most recent first
     for i in range(len(runs) - 1):
         assert runs[i]["started_at"] >= runs[i + 1]["started_at"]
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: N threads writing simultaneously must not corrupt/lose rows
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Schema v2 columns (Refinement 2)
+# ---------------------------------------------------------------------------
+
+def test_schema_v2_columns():
+    conn = db._get_conn()
+    # Check llm_calls columns
+    llm_cols = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)").fetchall()}
+    assert "cache_read_tokens" in llm_cols
+    assert "cache_write_tokens" in llm_cols
+    assert "reasoning_tokens" in llm_cols
+    assert "estimated" in llm_cols
+    # Check runs columns
+    runs_cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    assert "parent_session_id" in runs_cols
+    assert "estimated_llm_calls" in runs_cols
+
+
+def test_record_llm_call_with_cache_tokens():
+    db.start_run("sess-cache", model="claude-sonnet-4-6", platform="cli")
+    db.record_llm_call(
+        "sess-cache", "2026-01-01T00:00:00+00:00",
+        "claude-sonnet-4-6", "anthropic",
+        tokens_in=1000, tokens_out=200, cost_usd=0.004, latency_ms=300,
+        cache_read_tokens=1000, cache_write_tokens=500,
+    )
+    conn = db._get_conn()
+    row = conn.execute("SELECT * FROM llm_calls WHERE session_id='sess-cache'").fetchone()
+    assert row["cache_read_tokens"] == 1000
+    assert row["cache_write_tokens"] == 500
+    assert row["reasoning_tokens"] == 0
+    assert row["estimated"] == 0
+
+
+def test_record_llm_call_estimated():
+    """estimated=True increments estimated_llm_calls on the runs row."""
+    db.start_run("sess-est", model="gpt-4o", platform="cli")
+    db.record_llm_call(
+        "sess-est", "2026-01-01T00:00:00+00:00",
+        "gpt-4o", "openai",
+        tokens_in=100, tokens_out=50, cost_usd=0.001, latency_ms=100,
+        estimated=True,
+    )
+    conn = db._get_conn()
+    row = conn.execute("SELECT estimated_llm_calls FROM runs WHERE session_id='sess-est'").fetchone()
+    assert row["estimated_llm_calls"] == 1
+
+    # A second non-estimated call should not increment
+    db.record_llm_call(
+        "sess-est", "2026-01-01T00:01:00+00:00",
+        "gpt-4o", "openai",
+        tokens_in=100, tokens_out=50, cost_usd=0.001, latency_ms=100,
+        estimated=False,
+    )
+    row = conn.execute("SELECT estimated_llm_calls FROM runs WHERE session_id='sess-est'").fetchone()
+    assert row["estimated_llm_calls"] == 1
+
+
+def test_stats_summary_estimated_percentage():
+    """Seed 2 real + 1 estimated calls; stats_summary should report correct estimated_llm_calls."""
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.start_run("sess-mix", model="gpt-4o", platform="cli")
+    # Two real calls
+    db.record_llm_call("sess-mix", now, "gpt-4o", "openai", 100, 50, 0.001, 100, estimated=False)
+    db.record_llm_call("sess-mix", now, "gpt-4o", "openai", 100, 50, 0.001, 100, estimated=False)
+    # One estimated call
+    db.record_llm_call("sess-mix", now, "gpt-4o", "openai", 50, 20, 0.0005, 80, estimated=True)
+    db.end_run("sess-mix", "ok")
+
+    s = db.stats_summary(window_hours=24)
+    assert s["api_calls"] == 3
+    assert s["estimated_llm_calls"] == 1
 
 
 # ---------------------------------------------------------------------------

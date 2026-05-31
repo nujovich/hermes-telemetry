@@ -4,6 +4,18 @@ Prices are USD per 1 million tokens, loaded from:
   1. ~/.hermes/telemetry/pricing.yaml  (user override, optional)
   2. _DEFAULT_PRICING (embedded fallback)
 
+YAML override format:
+  models:
+    "model-name":
+      input: 3.00
+      output: 15.00
+      cache_read: 0.30      # optional
+      cache_write: 3.75     # optional
+      reasoning: 15.00      # optional
+  defaults:
+    cache_read_multiplier: 0.10
+    cache_write_multiplier: 1.25
+
 Unknown models: cost = 0.0, warning logged once per model name.
 """
 
@@ -16,124 +28,226 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# USD per 1M tokens: (input_per_million, output_per_million)
+# USD per 1M tokens: dict with keys input, output, cache_read, cache_write
+# (reasoning defaults to output price if not specified)
 # Sources: official provider pricing pages, May 2026
-_DEFAULT_PRICING: dict[str, tuple[float, float]] = {
+_DEFAULT_PRICING: dict[str, dict] = {
     # ── Anthropic / Nous Portal ──────────────────────────────────────────────
-    "claude-opus-4-8":          (5.00,  25.00),
-    "claude-opus-4-7":          (5.00,  25.00),
-    "claude-sonnet-4-6":        (3.00,  15.00),
-    "claude-sonnet-4-5":        (3.00,  15.00),
-    "claude-haiku-4-5":         (0.80,   4.00),
-    "claude-opus-4":            (15.00, 75.00),
-    "claude-sonnet-4":          (3.00,  15.00),
-    "claude-3-5-sonnet-20241022": (3.00, 15.00),
-    "claude-3-5-haiku-20241022":  (0.80,  4.00),
-    "claude-3-opus-20240229":   (15.00, 75.00),
-    "claude-3-haiku-20240307":  (0.25,  1.25),
+    "claude-opus-4-8":    dict(input=5.00,  output=25.00, cache_read=0.50,  cache_write=6.25),
+    "claude-opus-4-7":    dict(input=5.00,  output=25.00, cache_read=0.50,  cache_write=6.25),
+    "claude-sonnet-4-6":  dict(input=3.00,  output=15.00, cache_read=0.30,  cache_write=3.75),
+    "claude-sonnet-4-5":  dict(input=3.00,  output=15.00, cache_read=0.30,  cache_write=3.75),
+    "claude-haiku-4-5":   dict(input=0.80,  output=4.00,  cache_read=0.08,  cache_write=1.00),
+    "claude-opus-4":      dict(input=15.00, output=75.00, cache_read=1.50,  cache_write=18.75),
+    "claude-sonnet-4":    dict(input=3.00,  output=15.00, cache_read=0.30,  cache_write=3.75),
+    "claude-3-5-sonnet-20241022": dict(input=3.00, output=15.00, cache_read=0.30, cache_write=3.75),
+    "claude-3-5-haiku-20241022":  dict(input=0.80, output=4.00,  cache_read=0.08, cache_write=1.00),
+    "claude-3-opus-20240229":     dict(input=15.00, output=75.00, cache_read=1.50, cache_write=18.75),
+    "claude-3-haiku-20240307":    dict(input=0.25, output=1.25,  cache_read=0.03, cache_write=0.30),
     # ── OpenAI ──────────────────────────────────────────────────────────────
-    "gpt-4o":                   (2.50,  10.00),
-    "gpt-4o-mini":              (0.15,   0.60),
-    "gpt-4-turbo":              (10.00, 30.00),
-    "gpt-4":                    (30.00, 60.00),
-    "gpt-3.5-turbo":            (0.50,  1.50),
-    "o1":                       (15.00, 60.00),
-    "o1-mini":                  (3.00,  12.00),
-    "o3":                       (10.00, 40.00),
-    "o3-mini":                  (1.10,   4.40),
-    "o4-mini":                  (1.10,   4.40),
+    "gpt-4o":        dict(input=2.50,  output=10.00),
+    "gpt-4o-mini":   dict(input=0.15,  output=0.60),
+    "gpt-4-turbo":   dict(input=10.00, output=30.00),
+    "gpt-4":         dict(input=30.00, output=60.00),
+    "gpt-3.5-turbo": dict(input=0.50,  output=1.50),
+    "o1":            dict(input=15.00, output=60.00),
+    "o1-mini":       dict(input=3.00,  output=12.00),
+    "o3":            dict(input=10.00, output=40.00),
+    "o3-mini":       dict(input=1.10,  output=4.40),
+    "o4-mini":       dict(input=1.10,  output=4.40),
     # ── DeepSeek ────────────────────────────────────────────────────────────
-    "deepseek-chat":            (0.27,  1.10),
-    "deepseek-v3":              (0.27,  1.10),
-    "deepseek-r1":              (0.55,  2.19),
+    "deepseek-chat": dict(input=0.27, output=1.10),
+    "deepseek-v3":   dict(input=0.27, output=1.10),
+    "deepseek-r1":   dict(input=0.55, output=2.19),
     # ── Nous Research (Portal) ───────────────────────────────────────────────
-    "hermes-3-llama-3.1-405b":  (3.00,  15.00),
-    "hermes-3-llama-3.1-70b":   (0.70,   0.90),
+    "hermes-3-llama-3.1-405b": dict(input=3.00,  output=15.00),
+    "hermes-3-llama-3.1-70b":  dict(input=0.70,  output=0.90),
     # ── Meta (via OpenRouter / providers) ───────────────────────────────────
-    "meta-llama/llama-3.1-405b-instruct": (2.70, 2.70),
-    "meta-llama/llama-3.1-70b-instruct":  (0.52, 0.75),
-    "meta-llama/llama-3.3-70b-instruct":  (0.59, 0.79),
+    "meta-llama/llama-3.1-405b-instruct": dict(input=2.70, output=2.70),
+    "meta-llama/llama-3.1-70b-instruct":  dict(input=0.52, output=0.75),
+    "meta-llama/llama-3.3-70b-instruct":  dict(input=0.59, output=0.79),
     # ── Google ──────────────────────────────────────────────────────────────
-    "gemini-1.5-pro":           (3.50,  10.50),
-    "gemini-1.5-flash":         (0.075,  0.30),
-    "gemini-2.0-flash":         (0.10,   0.40),
-    "gemini-2.5-pro":           (1.25,  10.00),
+    "gemini-1.5-pro":   dict(input=3.50,  output=10.50),
+    "gemini-1.5-flash": dict(input=0.075, output=0.30),
+    "gemini-2.0-flash": dict(input=0.10,  output=0.40),
+    "gemini-2.5-pro":   dict(input=1.25,  output=10.00),
 }
 
 # Prefix-based fallback for model families (matched in order, longest first)
-_PREFIX_PRICING: list[tuple[str, tuple[float, float]]] = [
-    ("claude-opus",    (5.00,  25.00)),
-    ("claude-sonnet",  (3.00,  15.00)),
-    ("claude-haiku",   (0.80,   4.00)),
-    ("gpt-4o-mini",    (0.15,   0.60)),
-    ("gpt-4o",         (2.50,  10.00)),
-    ("gpt-4",          (10.00, 30.00)),
-    ("gpt-3.5",        (0.50,   1.50)),
-    ("o1-mini",        (3.00,  12.00)),
-    ("o1",             (15.00, 60.00)),
-    ("o3-mini",        (1.10,   4.40)),
-    ("o3",             (10.00, 40.00)),
-    ("o4-mini",        (1.10,   4.40)),
-    ("deepseek-r1",    (0.55,   2.19)),
-    ("deepseek",       (0.27,   1.10)),
-    ("gemini-2.5",     (1.25,  10.00)),
-    ("gemini-2",       (0.10,   0.40)),
-    ("gemini-1.5-pro", (3.50,  10.50)),
-    ("gemini",         (0.075,  0.30)),
-    ("llama-3.1-405",  (2.70,   2.70)),
-    ("llama-3.1-70",   (0.52,   0.75)),
-    ("llama-3.3-70",   (0.59,   0.79)),
+_PREFIX_PRICING: list[tuple[str, dict]] = [
+    ("claude-opus",    dict(input=5.00,  output=25.00, cache_read=0.50,  cache_write=6.25)),
+    ("claude-sonnet",  dict(input=3.00,  output=15.00, cache_read=0.30,  cache_write=3.75)),
+    ("claude-haiku",   dict(input=0.80,  output=4.00,  cache_read=0.08,  cache_write=1.00)),
+    ("gpt-4o-mini",    dict(input=0.15,  output=0.60)),
+    ("gpt-4o",         dict(input=2.50,  output=10.00)),
+    ("gpt-4",          dict(input=10.00, output=30.00)),
+    ("gpt-3.5",        dict(input=0.50,  output=1.50)),
+    ("o1-mini",        dict(input=3.00,  output=12.00)),
+    ("o1",             dict(input=15.00, output=60.00)),
+    ("o3-mini",        dict(input=1.10,  output=4.40)),
+    ("o3",             dict(input=10.00, output=40.00)),
+    ("o4-mini",        dict(input=1.10,  output=4.40)),
+    ("deepseek-r1",    dict(input=0.55,  output=2.19)),
+    ("deepseek",       dict(input=0.27,  output=1.10)),
+    ("gemini-2.5",     dict(input=1.25,  output=10.00)),
+    ("gemini-2",       dict(input=0.10,  output=0.40)),
+    ("gemini-1.5-pro", dict(input=3.50,  output=10.50)),
+    ("gemini",         dict(input=0.075, output=0.30)),
+    ("llama-3.1-405",  dict(input=2.70,  output=2.70)),
+    ("llama-3.1-70",   dict(input=0.52,  output=0.75)),
+    ("llama-3.3-70",   dict(input=0.59,  output=0.79)),
 ]
 
+_DEFAULT_CACHE_READ_MULTIPLIER = 0.10
+_DEFAULT_CACHE_WRITE_MULTIPLIER = 1.25
+
 _warned_unknown: set[str] = set()
-_custom_pricing: Optional[dict[str, tuple[float, float]]] = None
+_custom_pricing: Optional[dict] = None  # parsed YAML data (models + defaults)
 
 
-def _load_custom_pricing() -> dict[str, tuple[float, float]]:
+def _load_custom_pricing() -> dict:
+    """Load custom pricing YAML. Returns dict with 'models' and 'defaults' keys."""
     global _custom_pricing
     if _custom_pricing is not None:
         return _custom_pricing
     hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
     pricing_file = hermes_home / "telemetry" / "pricing.yaml"
     if not pricing_file.exists():
-        _custom_pricing = {}
+        _custom_pricing = {"models": {}, "defaults": {}}
         return _custom_pricing
     try:
         import yaml
         with open(pricing_file) as f:
             data = yaml.safe_load(f) or {}
-        result: dict[str, tuple[float, float]] = {}
-        for model, entry in data.items():
-            if isinstance(entry, dict):
-                inp = float(entry.get("input", 0.0))
-                out = float(entry.get("output", 0.0))
-                result[str(model)] = (inp, out)
-        _custom_pricing = result
+
+        models: dict[str, dict] = {}
+        defaults: dict[str, float] = {}
+
+        # New format: top-level "models:" and "defaults:" sections
+        if "models" in data or "defaults" in data:
+            raw_models = data.get("models") or {}
+            raw_defaults = data.get("defaults") or {}
+            for model, entry in raw_models.items():
+                if isinstance(entry, dict):
+                    models[str(model).lower()] = {
+                        k: float(v) for k, v in entry.items() if v is not None
+                    }
+            for k, v in raw_defaults.items():
+                try:
+                    defaults[str(k)] = float(v)
+                except (TypeError, ValueError):
+                    pass
+        else:
+            # Legacy flat format: model_name: {input: ..., output: ...}
+            for model, entry in data.items():
+                if isinstance(entry, dict):
+                    models[str(model).lower()] = {
+                        k: float(v) for k, v in entry.items() if v is not None
+                    }
+
+        _custom_pricing = {"models": models, "defaults": defaults}
     except Exception as exc:
         logger.warning("Failed to load custom pricing from %s: %s", pricing_file, exc)
-        _custom_pricing = {}
+        _custom_pricing = {"models": {}, "defaults": {}}
     return _custom_pricing
 
 
-def _lookup(model: str) -> Optional[tuple[float, float]]:
+def _lookup_base(model: str) -> Optional[dict]:
+    """Return the raw pricing dict for a model (no cache derivation yet)."""
     model_lc = model.lower()
     custom = _load_custom_pricing()
-    if model_lc in custom:
-        return custom[model_lc]
+    custom_models = custom.get("models", {})
+    if model_lc in custom_models:
+        return custom_models[model_lc]
     if model_lc in _DEFAULT_PRICING:
         return _DEFAULT_PRICING[model_lc]
-    # Prefix match
+    # Prefix match (longest prefix first)
     for prefix, prices in sorted(_PREFIX_PRICING, key=lambda x: -len(x[0])):
         if model_lc.startswith(prefix):
             return prices
     return None
 
 
-def estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
-    """Return estimated cost in USD. Returns 0.0 for unknown models."""
-    if not model or (tokens_in == 0 and tokens_out == 0):
+def _resolve_pricing(model: str) -> Optional[dict]:
+    """Return a fully-resolved pricing dict with all 5 keys.
+
+    Derives cache prices from multipliers if not explicitly set.
+    Returns None if model is completely unknown.
+    """
+    base = _lookup_base(model)
+    if base is None:
+        return None
+
+    custom = _load_custom_pricing()
+    defaults = custom.get("defaults", {})
+    cache_read_mult = float(defaults.get("cache_read_multiplier", _DEFAULT_CACHE_READ_MULTIPLIER))
+    cache_write_mult = float(defaults.get("cache_write_multiplier", _DEFAULT_CACHE_WRITE_MULTIPLIER))
+
+    input_price = float(base.get("input", 0.0))
+    output_price = float(base.get("output", 0.0))
+
+    if "cache_read" in base:
+        cache_read = float(base["cache_read"])
+    else:
+        cache_read = input_price * cache_read_mult
+        logger.debug(
+            "hermes-telemetry: model %r has no explicit cache_read price — "
+            "deriving from input * %.2f = %.4f",
+            model, cache_read_mult, cache_read,
+        )
+
+    if "cache_write" in base:
+        cache_write = float(base["cache_write"])
+    else:
+        cache_write = input_price * cache_write_mult
+        logger.debug(
+            "hermes-telemetry: model %r has no explicit cache_write price — "
+            "deriving from input * %.2f = %.4f",
+            model, cache_write_mult, cache_write,
+        )
+
+    # reasoning defaults to output price unless overridden
+    reasoning = float(base.get("reasoning", output_price))
+
+    return dict(
+        input=input_price,
+        output=output_price,
+        cache_read=cache_read,
+        cache_write=cache_write,
+        reasoning=reasoning,
+    )
+
+
+def estimate_cost(usage: dict, model: str) -> float:
+    """Return estimated cost in USD for a usage dict.
+
+    usage dict keys (all optional/nullable):
+      input_tokens        — non-cached input tokens
+      output_tokens       — output tokens
+      cache_read_tokens   — tokens served from cache (cheaper)
+      cache_write_tokens  — tokens written to cache (more expensive)
+      reasoning_tokens    — reasoning/thinking tokens (billed as output by default)
+
+    prompt_tokens is intentionally ignored to avoid double-counting
+    (prompt_tokens = input + cache_read + cache_write in Hermes canonical usage).
+
+    Returns 0.0 for unknown models (with a one-time warning) or empty usage.
+    """
+    if not model:
         return 0.0
-    prices = _lookup(model)
+    if not isinstance(usage, dict):
+        return 0.0
+
+    input_tokens     = int(usage.get("input_tokens")     or 0)
+    output_tokens    = int(usage.get("output_tokens")    or 0)
+    cache_read_tok   = int(usage.get("cache_read_tokens")  or 0)
+    cache_write_tok  = int(usage.get("cache_write_tokens") or 0)
+    reasoning_tok    = int(usage.get("reasoning_tokens")   or 0)
+
+    if input_tokens == 0 and output_tokens == 0 and cache_read_tok == 0 and cache_write_tok == 0 and reasoning_tok == 0:
+        return 0.0
+
+    prices = _resolve_pricing(model)
     if prices is None:
         if model not in _warned_unknown:
             _warned_unknown.add(model)
@@ -143,8 +257,16 @@ def estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
                 model,
             )
         return 0.0
-    inp_per_m, out_per_m = prices
-    return (tokens_in * inp_per_m + tokens_out * out_per_m) / 1_000_000
+
+    cost = (
+        input_tokens    * prices["input"]      +
+        output_tokens   * prices["output"]     +
+        cache_read_tok  * prices["cache_read"] +
+        cache_write_tok * prices["cache_write"]+
+        reasoning_tok   * prices["reasoning"]
+    ) / 1_000_000
+
+    return cost
 
 
 def reload_custom_pricing() -> None:
