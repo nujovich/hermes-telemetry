@@ -1,0 +1,51 @@
+# ~/.hermes/telemetry/budget.yaml
+#
+# Optional spend guardrails for hermes-telemetry. If this file is absent,
+# budgets are disabled and nothing is enforced. All amounts are USD.
+#
+# Scopes:
+#   global        — all spend, every platform
+#   per_cron_job  — keyed by cron job id (the {job_id} in cron_{job_id}_{ts})
+#   per_sender    — keyed by sender_id (gateway multi-user setups)
+#
+# Windows: daily_usd and monthly_usd, evaluated in your LOCAL timezone.
+#
+# Enforcement (see README "Budgets"):
+#   soft (>= soft_pct)  → one-time-per-window notice injected into the chat
+#   hard (>= hard_pct)  → tool-gate: further tool calls are blocked (the loop
+#                         ends at the next tool boundary); cron jobs are paused
+#   Hermes cannot abort an in-flight model call from a plugin, so the response
+#   already streaming still completes and is billed. There is no true mid-call
+#   hard-stop — only prevention of further tool-driven work.
+
+budgets:
+  global:
+    daily_usd:   5.00
+    monthly_usd: 100.00
+
+  per_cron_job:
+    default:
+      daily_usd: 1.00
+    overrides:
+      # Give one heavy nightly job a larger daily allowance:
+      "my_nightly_report": { daily_usd: 3.00 }
+    # NOTE: per-cron-job spend EXCLUDES subagent (delegate_task) cost — child
+    # agents run as their own sessions with no parent link in Hermes hooks.
+    # Use the global budget for a cap that captures delegated spend.
+
+  per_sender:
+    default:
+      daily_usd: 2.00
+    # overrides:
+    #   "telegram:123456": { daily_usd: 10.00 }
+
+thresholds:
+  soft_pct: 0.80          # warn at 80% of a limit
+  hard_pct: 1.00          # enforce at 100%
+
+on_estimated:
+  # When spend rests on rows where the provider returned no usage data
+  # (estimated=1), a hard breach is DEGRADED to a soft warning under
+  # "warn_only" — a budget built on estimates shouldn't hard-cut.
+  # Set to "enforce" to treat estimated spend like real spend.
+  mode: warn_only

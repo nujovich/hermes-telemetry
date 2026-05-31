@@ -1,12 +1,14 @@
 name: hermes-telemetry
-version: "0.1.0"
+version: "0.2.0"
 description: >-
-  Observability for Hermes Agent — tokens, cost, latency, tool calls per session
-  and cron job. Persists to local SQLite. Exposes /stats slash command.
+  Observability + budget guardrails for Hermes Agent — tokens, cost, latency,
+  tool calls per session and cron job. Persists to local SQLite. Exposes /stats
+  and /budget slash commands.
 author: nujovich
 kind: standalone
 hooks:
   - on_session_start
+  - pre_api_request
   - post_api_request
   - post_tool_call
   - post_llm_call
@@ -14,3 +16,4 @@ hooks:
   - on_session_finalize
   - subagent_stop
   - pre_llm_call
+  - pre_tool_call

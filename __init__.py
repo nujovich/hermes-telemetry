@@ -99,6 +99,7 @@ def register(ctx) -> None:  # noqa: ANN001
     from . import db
     from . import pricing
     from . import stats
+    from . import budget
 
     # ------------------------------------------------------------------
     # on_session_start
@@ -317,20 +318,58 @@ def register(ctx) -> None:  # noqa: ANN001
     ctx.register_hook("on_session_finalize", on_session_finalize)
 
     # ------------------------------------------------------------------
-    # pre_llm_call  — stub, no-op
-    # TODO(fase-2): budget enforcement
-    #   1. Query db.stats_summary(window_hours=current_period) for cost_usd
-    #   2. Load budget limit from ~/.hermes/telemetry/config.yaml
-    #   3. If cost_usd >= limit, return {"context": "[BUDGET_EXCEEDED]"} or
-    #      block via pre_tool_call to prevent further tool execution.
-    #   API: returning a dict with "context" key injects text into the
-    #   user message (see conversation_loop.py:_pre_results processing).
-    # kwargs: session_id, user_message, model, platform, is_first_turn
+    # pre_llm_call  — budget SOFT alerting + sender capture
+    # This hook CANNOT abort a call (Hermes uses its return only for context
+    # injection — see budget.py / NOTES.md). We use it to (a) attach sender_id
+    # to the run for per-sender budgets, and (b) inject a one-time-per-window
+    # budget notice into the conversation. The hard tool-gate lives in
+    # pre_tool_call below.
+    # kwargs: session_id, sender_id, model, platform, user_message, is_first_turn
     # ------------------------------------------------------------------
-    def pre_llm_call(**_kw) -> None:
-        pass  # TODO(fase-2): budget enforcement
+    def pre_llm_call(session_id: str = "", sender_id: str = "", **_kw):
+        try:
+            if sender_id:
+                db.set_sender(session_id, sender_id)
+            run = db.get_run(session_id)
+            if not run:
+                return None
+            verdicts = budget.evaluate_run(run)
+            budget.enforce_cron_pause(verdicts)
+            ctx_text = budget.alert_context(verdicts)
+            if ctx_text:
+                tele_log.info("budget alert injected for session=%s", session_id)
+                return {"context": ctx_text}
+        except Exception as exc:
+            tele_log.error("pre_llm_call (budget) hook failed: %s", exc)
+        return None
 
     ctx.register_hook("pre_llm_call", pre_llm_call)
+
+    # ------------------------------------------------------------------
+    # pre_tool_call  — budget HARD enforcement (the real gate)
+    # Returning {"action":"block","message":...} aborts the tool call and
+    # returns an error to the model instead (see plugins.py:1666). Blocking
+    # every subsequent tool ends the agentic loop at the next boundary —
+    # bounding spend without a true mid-call abort (which Hermes doesn't
+    # expose). Cron jobs are additionally paused for future runs.
+    # kwargs: tool_name, args, task_id, session_id, tool_call_id
+    # ------------------------------------------------------------------
+    def pre_tool_call(session_id: str = "", **_kw):
+        try:
+            run = db.get_run(session_id)
+            if not run:
+                return None
+            verdicts = budget.evaluate_run(run)
+            budget.enforce_cron_pause(verdicts)
+            msg = budget.block_message_for(verdicts)
+            if msg:
+                tele_log.warning("budget hard-block for session=%s: %s", session_id, msg)
+                return {"action": "block", "message": msg}
+        except Exception as exc:
+            tele_log.error("pre_tool_call (budget) hook failed: %s", exc)
+        return None
+
+    ctx.register_hook("pre_tool_call", pre_tool_call)
 
     # ------------------------------------------------------------------
     # /stats slash command
@@ -340,6 +379,16 @@ def register(ctx) -> None:  # noqa: ANN001
         stats.handle,
         description="Show telemetry: tokens, cost, latency, tool usage per session/cron job",
         args_hint="[today|week|month|cron|raw]",
+    )
+
+    # ------------------------------------------------------------------
+    # /budget slash command
+    # ------------------------------------------------------------------
+    ctx.register_command(
+        "budget",
+        budget.handle,
+        description="Show/set spend budgets (global, per cron job, per sender)",
+        args_hint="[cron | set <scope> <window> <usd>]",
     )
 
     tele_log.info("hermes-telemetry loaded — SQLite at %s", _db_path_info())

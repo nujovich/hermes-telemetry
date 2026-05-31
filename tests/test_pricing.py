@@ -198,6 +198,38 @@ def test_cache_pricing_cheaper_than_fresh_input():
     assert cost_with_cache < cost_all_fresh
 
 
+def test_cache_read_and_write_split_exact():
+    """cache_read and cache_write are billed at their own rates, separately
+    from fresh input — and the total is the exact per-component sum (no
+    double-counting via prompt_tokens)."""
+    usage = {
+        "input_tokens": 100_000,
+        "cache_read_tokens": 500_000,
+        "cache_write_tokens": 200_000,
+        "output_tokens": 50_000,
+        # prompt_tokens would be input+cache_read+cache_write = 800_000; must be ignored
+        "prompt_tokens": 800_000,
+    }
+    cost = pricing.estimate_cost(usage, "claude-sonnet-4-6")
+    # claude-sonnet-4-6: input 3.00, output 15.00, cache_read 0.30, cache_write 3.75
+    expected = (
+        100_000 * 3.00 +
+        500_000 * 0.30 +
+        200_000 * 3.75 +
+        50_000 * 15.00
+    ) / 1_000_000
+    assert abs(cost - expected) < 1e-9
+
+    # cache_read is cheaper than fresh input; cache_write is more expensive.
+    all_fresh = pricing.estimate_cost(
+        {"input_tokens": 800_000, "output_tokens": 50_000}, "claude-sonnet-4-6"
+    )
+    # Our split has 500k at the cheap cache_read rate, so total input-side
+    # cost must be LOWER than treating all 800k as fresh input despite the
+    # 200k cache_write premium.
+    assert cost < all_fresh
+
+
 def test_no_double_count_prompt_tokens():
     """prompt_tokens must NOT be used — only input + cache_read are counted."""
     # If prompt_tokens were counted, cost would be higher

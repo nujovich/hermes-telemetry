@@ -11,9 +11,17 @@ Public API used by __init__.py (hooks) and stats.py (/stats command):
                   cache_read_tokens=0, cache_write_tokens=0, reasoning_tokens=0,
                   estimated=False)
   record_tool_call(session_id, ts, tool_name, ok, latency_ms)
+  set_sender(session_id, sender_id)
+  get_run(session_id)          -> dict | None
   stats_summary(window_hours)  -> dict
   cost_by_job(window_hours)    -> list[dict]
   recent_runs(limit)           -> list[dict]
+
+Budget support (used by budget.py):
+  spend_by_scope(scope, scope_id, since_iso) -> dict
+  try_budget_alert(scope, scope_id, window, period_key, level, spent, limit) -> bool
+  list_cron_job_ids(since_iso) -> list[str]
+  list_sender_ids(since_iso)   -> list[str]
 """
 
 from __future__ import annotations
@@ -29,8 +37,15 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _local = threading.local()
+
+# Serializes first-time schema setup across threads. Each thread opens its own
+# connection (per-thread design), but DDL (CREATE/ALTER) run concurrently can
+# raise SQLITE_LOCKED — which busy_timeout does NOT retry. Holding this lock
+# while migrating is cheap (only the first connect per thread) and removes the
+# race when many cron jobs start at once.
+_schema_lock = threading.Lock()
 
 
 def _get_db_path() -> Path:
@@ -46,11 +61,15 @@ def _get_conn() -> sqlite3.Connection:
         db_path = _get_db_path()
         conn = sqlite3.connect(str(db_path), isolation_level=None, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        # busy_timeout MUST be set before journal_mode=WAL: switching a fresh,
+        # contended DB to WAL needs a brief lock, and with the default timeout
+        # of 0 a concurrent switch fails immediately with "database is locked".
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         _local.conn = conn
-        _ensure_schema(conn)
+        with _schema_lock:
+            _ensure_schema(conn)
     return _local.conn
 
 
@@ -114,8 +133,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         (_utcnow(),),
     )
 
-    # Apply v2 migration
+    # Apply migrations in order
     _migrate_v2(conn)
+    _migrate_v3(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -150,6 +170,41 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (2, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    """Add v3 schema: sender_id on runs (for per-sender budgets) and the
+    budget_alerts table (anti-spam ledger for budget notifications)."""
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 3")
+    if cur.fetchone() is not None:
+        return
+
+    try:
+        conn.execute("ALTER TABLE runs ADD COLUMN sender_id TEXT")
+    except sqlite3.OperationalError:
+        pass  # already exists
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS budget_alerts (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope       TEXT NOT NULL,
+            scope_id    TEXT NOT NULL DEFAULT '',
+            window      TEXT NOT NULL,
+            period_key  TEXT NOT NULL,
+            level       TEXT NOT NULL,
+            fired_at    TEXT NOT NULL,
+            spent_usd   REAL,
+            limit_usd   REAL,
+            UNIQUE(scope, scope_id, window, period_key, level)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_runs_sender ON runs(sender_id);
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (3, ?)",
         (_utcnow(),),
     )
 
@@ -244,6 +299,28 @@ def record_llm_call(
             "UPDATE runs SET estimated_llm_calls = estimated_llm_calls + 1 WHERE session_id = ?",
             (session_id,),
         )
+
+
+def set_sender(session_id: str, sender_id: str) -> None:
+    """Attach a sender_id to a run (first non-null wins). Used for per-sender
+    budgets — sender_id is only exposed to the pre_llm_call hook, not at
+    session start."""
+    if not sender_id:
+        return
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE runs SET sender_id = COALESCE(sender_id, ?) WHERE session_id = ?",
+        (sender_id, session_id),
+    )
+
+
+def get_run(session_id: str) -> Optional[dict[str, Any]]:
+    """Return the run row for a session, or None if not recorded."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM runs WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def record_tool_call(
@@ -356,7 +433,7 @@ def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
     conn = _get_conn()
     rows = conn.execute(
         """
-        SELECT session_id, platform, cron_job_id, model, provider,
+        SELECT session_id, platform, cron_job_id, sender_id, model, provider,
                started_at, ended_at, status,
                tokens_in, tokens_out, cost_usd, duration_ms,
                api_calls, tool_calls,
@@ -368,6 +445,94 @@ def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Budget support (used by budget.py)
+# ---------------------------------------------------------------------------
+
+def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:
+    """Aggregate spend for a budget scope since an ISO-8601 UTC timestamp.
+
+    scope ∈ {"global", "cron_job", "sender"}. For "global", scope_id is
+    ignored. Returns spent_usd plus an estimated_pct so callers can tell when
+    a verdict rests on estimated (usage=None) rows.
+    """
+    conn = _get_conn()
+    where = ["started_at >= ?"]
+    params: list[Any] = [since_iso]
+    if scope == "cron_job":
+        where.append("cron_job_id = ?")
+        params.append(scope_id)
+    elif scope == "sender":
+        where.append("sender_id = ?")
+        params.append(scope_id)
+    # "global": no extra filter
+
+    row = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(cost_usd), 0.0)            AS spent_usd,
+               COALESCE(SUM(estimated_llm_calls), 0)   AS estimated_calls,
+               COALESCE(SUM(api_calls), 0)             AS total_calls
+        FROM runs
+        WHERE {' AND '.join(where)}
+        """,
+        params,
+    ).fetchone()
+
+    spent = float(row["spent_usd"] or 0.0)
+    est = int(row["estimated_calls"] or 0)
+    tot = int(row["total_calls"] or 0)
+    return {
+        "spent_usd": spent,
+        "estimated_calls": est,
+        "total_calls": tot,
+        "estimated_pct": (est / tot) if tot else 0.0,
+    }
+
+
+def try_budget_alert(
+    scope: str,
+    scope_id: str,
+    window: str,
+    period_key: str,
+    level: str,
+    spent_usd: float,
+    limit_usd: float,
+) -> bool:
+    """Record a budget alert idempotently. Returns True only the FIRST time a
+    given (scope, scope_id, window, period_key, level) tuple is seen — this is
+    the anti-spam guarantee so soft/hard/pause notices fire once per window."""
+    conn = _get_conn()
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO budget_alerts
+            (scope, scope_id, window, period_key, level, fired_at, spent_usd, limit_usd)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (scope, scope_id or "", window, period_key, level, _utcnow(), spent_usd, limit_usd),
+    )
+    return cur.rowcount > 0
+
+
+def list_cron_job_ids(since_iso: str) -> list[str]:
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT DISTINCT cron_job_id FROM runs "
+        "WHERE cron_job_id IS NOT NULL AND started_at >= ?",
+        (since_iso,),
+    ).fetchall()
+    return [r["cron_job_id"] for r in rows]
+
+
+def list_sender_ids(since_iso: str) -> list[str]:
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT DISTINCT sender_id FROM runs "
+        "WHERE sender_id IS NOT NULL AND sender_id != '' AND started_at >= ?",
+        (since_iso,),
+    ).fetchall()
+    return [r["sender_id"] for r in rows]
 
 
 def close_thread_conn() -> None:

@@ -338,3 +338,64 @@ def test_concurrent_writes(tmp_path, monkeypatch):
     assert llm_count == expected, f"Expected {expected} llm_calls, got {llm_count}"
     assert tool_count == expected, f"Expected {expected} tool_calls, got {tool_count}"
     db_mod.close_thread_conn()
+
+
+# ---------------------------------------------------------------------------
+# Schema v3: sender_id + budget_alerts + budget queries
+# ---------------------------------------------------------------------------
+
+def test_schema_v3_columns_and_table():
+    conn = db._get_conn()
+    run_cols = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
+    assert "sender_id" in run_cols
+    tables = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "budget_alerts" in tables
+
+
+def test_set_sender_first_wins():
+    db.start_run("s1", model="m", platform="telegram")
+    db.set_sender("s1", "alice")
+    db.set_sender("s1", "bob")  # ignored — first non-null wins
+    assert db.get_run("s1")["sender_id"] == "alice"
+
+
+def test_set_sender_ignores_empty():
+    db.start_run("s1", model="m", platform="cli")
+    db.set_sender("s1", "")
+    assert db.get_run("s1")["sender_id"] is None
+
+
+def test_spend_by_scope_global_and_cron():
+    now = db._utcnow()
+    db.start_run("s1", model="m", platform="cron", cron_job_id="job1")
+    db.record_llm_call("s1", now, "m", "p", 0, 0, 1.50, 0)
+    db.start_run("s2", model="m", platform="cli")
+    db.record_llm_call("s2", now, "m", "p", 0, 0, 0.50, 0)
+
+    past = "2000-01-01T00:00:00+00:00"
+    g = db.spend_by_scope("global", "", past)
+    assert abs(g["spent_usd"] - 2.00) < 1e-9
+    j = db.spend_by_scope("cron_job", "job1", past)
+    assert abs(j["spent_usd"] - 1.50) < 1e-9
+
+
+def test_spend_by_scope_estimated_pct():
+    now = db._utcnow()
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call("s1", now, "m", "p", 0, 0, 1.0, 0, estimated=True)
+    db.record_llm_call("s1", now, "m", "p", 0, 0, 1.0, 0, estimated=False)
+    past = "2000-01-01T00:00:00+00:00"
+    s = db.spend_by_scope("global", "", past)
+    assert s["total_calls"] == 2
+    assert s["estimated_calls"] == 1
+    assert abs(s["estimated_pct"] - 0.5) < 1e-9
+
+
+def test_try_budget_alert_is_idempotent():
+    first = db.try_budget_alert("global", "", "daily", "2026-05-31", "soft", 4.0, 5.0)
+    second = db.try_budget_alert("global", "", "daily", "2026-05-31", "soft", 4.0, 5.0)
+    assert first is True
+    assert second is False
+    # A different level is a distinct alert
+    assert db.try_budget_alert("global", "", "daily", "2026-05-31", "hard", 5.0, 5.0) is True

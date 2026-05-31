@@ -190,14 +190,19 @@ There is **no `cron_job_id` kwarg** passed to any hook.
 Extraction strategy: when `platform == "cron"`, the `session_id` follows the format
 `cron_{job_id}_{YYYYMMDD_HHMMSS}` (confirmed in `cron/scheduler.py:1392`).
 
+Implemented with an anchored regex (R4) rather than `split("_")`, because job_ids
+can themselves contain underscores (`cron_my_job_2_20260101_120000` → `my_job_2`):
+
 ```python
+CRON_SESSION_RE = re.compile(r"^cron_(?P<job_id>.+)_\d{8}_\d{6}$")
+
 def _extract_cron_job_id(session_id: str, platform: str) -> str | None:
     if platform != "cron":
         return None
-    # "cron_abc123_20260101_120000" → "abc123"
-    parts = session_id.split("_", 2)  # ["cron", job_id, timestamp_part]
-    if len(parts) >= 2:
-        return parts[1]
+    m = CRON_SESSION_RE.match(session_id)
+    if m:
+        return m.group("job_id")
+    logger.warning(...)   # format changed → cron_job_id NULL, surfaced loudly
     return None
 ```
 
@@ -239,10 +244,11 @@ better.
 | Session duration | ✅ Real (wall time) | `started_at` → `ended_at` (last turn) |
 | Tool success/failure | ✅ Real | Parse `result` JSON for `"error"` key |
 | Subagent count | ✅ Real (proxy) | `subagent_stop` hook count |
-| Cost (USD) | ⚠️ Estimated | Local pricing table × token counts |
-| Tokens when `usage=None` | ❌ Not available | Provider didn't return usage; recorded as 0 |
+| Cost (USD) | ⚠️ Estimated | Local pricing table × token counts (cache/reasoning split, R1) |
+| Tokens when `usage=None` | ⚠️ Estimated, flagged | Fallback estimate (`approx_input_tokens` + `assistant_content_chars/4`), row marked `estimated=1` (R2) — **never silently 0** |
 | Per-turn token breakdown | ⚠️ Aggregated | Turn-level aggregation of `post_api_request` calls |
-| Subagent token cost | ❌ Not available | No token data in `subagent_stop`; logged as proxy row |
+| Subagent token cost (global total) | ✅ Real | Child agents fire their own `post_api_request` → recorded as independent runs; `/stats` and the global budget already include them |
+| Subagent cost attributed to parent cron job | ❌ Not available | `delegate_task` result carries no child `session_id` (verified, Phase 3 A3) → per-cron-job spend undercounts delegated work |
 
 **Cost** is always an *estimate* computed from a locally-maintained pricing table.
 We do not call any provider pricing API. Users can override pricing via
@@ -260,3 +266,53 @@ Hermes sends `stream_options: {"include_usage": True}` (in `agent/chat_completio
 - Child agents call `run_conversation()` which fires full hook lifecycle including `on_session_start`, `post_api_request`, `on_session_end`
 - **Conclusion**: child tokens ARE captured independently. `/stats` totals already include subagent costs (as separate runs)
 - **Limitation**: `subagent_stop` receives `parent_session_id` but NOT `child_session_id` (see `tools/delegate_tool.py:2269-2277`). `on_session_start` receives `session_id` but NOT `parent_session_id`. Therefore parent-child attribution CANNOT be established from hooks alone. `runs.parent_session_id` column added for future use but never populated in v0.1.
+
+---
+
+## Phase 3: Budget guardrails — source audit (A1–A4)
+
+Before building the budget engine, four things were verified against the real
+source. Findings drove the design.
+
+**A1 — cache/reasoning cost test (R1):** Implementation was already correct
+(per-token split, `prompt_tokens` ignored to avoid double-counting). The test
+suite covered `cache_read`, reasoning-as-output, no-double-count and the
+multiplier fallback, but lacked a case exercising `cache_write_tokens != 0`.
+Added `test_cache_read_and_write_split_exact` (exact per-component sum + cheaper
+than all-fresh-input despite the cache_write premium).
+
+**A2 — cron regex canary (R4):** Already solid — anchored regex, underscore
+job_ids, WARNING + NULL on mismatch, canary comment. No change.
+
+**A3 — subagent → parent link:** NOT recoverable. `delegate_task`
+(`tools/delegate_tool.py:2303-2309`) returns `{results:[{tokens, model,
+api_calls, status, ...}], total_duration_seconds}` — **no child `session_id`**;
+`post_tool_call` gets that JSON verbatim (`model_tools.py:999`); `subagent_stop`
+passes no child id either. The result *does* carry per-child `tokens`+`model`,
+but attributing it would double-count against the child's own independent runs,
+so we don't. **Decision:** budget enforces reliably at **global/session** scope
+(total is correct); `per_cron_job` scope explicitly warns that it excludes
+subagent spend.
+
+**A4 — what can actually stop spend:**
+| Primitive | Can abort/deny? | Mechanism |
+|-----------|-----------------|-----------|
+| `pre_llm_call` return | ❌ No | Used only for context injection (`conversation_loop.py:687-722`) |
+| `pre_api_request` return | ❌ No | Return value discarded (`conversation_loop.py:1235-1255`) |
+| `pre_approval_request` / `post_approval_response` | ❌ No | Documented "observers only" (`plugins.py:160-167`) |
+| `pre_tool_call` return | ✅ **Yes** | `{"action":"block","message":...}` aborts the tool (`plugins.py:1666-1707`) |
+| `cron.jobs.pause_job(job_id, reason)` | ✅ Yes | Pauses future runs of a cron job |
+| `agent.interrupt()` | ✅ Yes, but | Needs the agent object, not exposed via hook kwargs |
+
+**Enforcement level achieved:** there is **no true mid-call hard-stop** of the
+model API call. The realistic maximum is:
+- **soft** (≥ `soft_pct`): one-time-per-window notice injected via `pre_llm_call`
+  context (anti-spam ledger = `budget_alerts` table);
+- **hard** (≥ `hard_pct`): a **tool-gate** via `pre_tool_call` — blocking every
+  subsequent tool ends the agentic loop at the next boundary (the in-flight model
+  response still completes and is billed), plus **`pause_job`** for cron futures.
+- Budgets resting on `estimated=1` rows degrade hard→soft when
+  `on_estimated.mode == "warn_only"` (a budget built on estimates shouldn't hard-cut).
+
+The verdict cache (5 s TTL) keeps the per-tool-call gate from re-querying SQLite
+within a turn; spend only changes when a new `post_api_request` is recorded.
