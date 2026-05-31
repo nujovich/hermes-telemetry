@@ -11,7 +11,7 @@ AI agent deployments often suffer from two critical blind spots:
 
 **hermes-telemetry** solves both by giving you real-time observability and automatic budget enforcement for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/img/hero-banner.png)
+![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
 ## 🎯 Why This Plugin Matters
 
