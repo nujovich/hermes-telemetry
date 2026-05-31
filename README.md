@@ -10,7 +10,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 ![Tests: 94 passing](https://img.shields.io/badge/Tests-94%20passing-green.svg)
 ![Provider Support](https://img.shields.io/badge/Providers-OpenRouter%20%7C%20OpenAI%20%7C%20Anthropic-orange.svg)
 ![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)
-![By Nadia Ujovich](https://nadiaujovich.dev)
+![By Nadia Ujovich]([https://nadiaujovich.dev](https://img.shields.io/badge/By%20Nadia%20Ujovich.svg))
 
 ---
 
