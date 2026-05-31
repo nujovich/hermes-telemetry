@@ -4,7 +4,7 @@
 
 A comprehensive telemetry plugin that captures real usage data, enforces budget limits, and provides detailed cost analysis for AI agent operations. Built for the [Hermes Agent Challenge](https://dev.to/devteam/join-the-hermes-agent-challenge-1000-in-prizes-13cd) by Nadia Ujovich.
 
-![Hermes Agent]("https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png")
+![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Tests: 94 passing](https://img.shields.io/badge/Tests-94%20passing-green.svg)
