@@ -10,6 +10,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 ![Tests: 94 passing](https://img.shields.io/badge/Tests-94%20passing-green.svg)
 ![Provider Support](https://img.shields.io/badge/Providers-OpenRouter%20%7C%20OpenAI%20%7C%20Anthropic-orange.svg)
 ![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)
+![By Nadia Ujovich](https://nadiaujovich.dev)
 
 ---
 
@@ -649,7 +650,7 @@ This plugin was built for the [**Hermes Agent Challenge**](https://dev.to/devtea
 
 **🔗 Challenge Entry:** [hermes-telemetry on dev.to](https://dev.to/devteam/join-the-hermes-agent-challenge-1000-in-prizes-13cd)
 
-**🛠️ Built by:** [Nadia Ujovich](https://github.com/nujovich) — Founder of [Mermelada Tech](https://mermelada.tech), building AI agent systems and SaaS platforms.
+**🛠️ Built by:** [Nadia Ujovich](https://github.com/nujovich)
 
 **💡 Why this plugin:** Every AI system needs observability and cost control. This plugin gives Hermes Agent users the visibility to optimize their workflows and the guardrails to prevent bill shock — essential for production deployments and automated cron jobs.
 
