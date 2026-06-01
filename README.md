@@ -718,25 +718,53 @@ The DB grows over time. For high-frequency cron jobs, consider periodic cleanup 
 
 **Enforcement gaps:**
 
-- **No true mid-call abort.** `pre_llm_call` / `pre_api_request` cannot cancel an in-flight model call. The response that's already generating will complete and be billed. The tool-gate (`pre_tool_call`) stops *subsequent* work at the next tool boundary.
-- **Runaway text-only sessions.** A session that generates text without calling any tools never hits the tool-gate. If this becomes a problem, a pre-flight check in `on_session_start` for cron jobs could abort before the first LLM call.
+- **No true mid-call abort.** `pre_llm_call` / `pre_api_request` cannot cancel an
+  in-flight model call. The response already generating will complete and be billed.
+  The tool-gate (`pre_tool_call`) stops *subsequent* work at the next tool boundary.
+- **Runaway text-only sessions.** A session that generates text without calling any
+  tools never hits the tool-gate. Budget hard limits won't trigger until the next
+  tool call — which may never come.
+- **Estimated-price models bypass hard limits.** Models with no fixed pricing on
+  OpenRouter (e.g. `auto` routing, experimental models) are flagged
+  `_estimated_price: true` and recorded as `$0.00`. If >0% of calls use these
+  models, hard budget verdicts degrade to soft under `on_estimated.mode: warn_only`
+  (the default). Set `mode: enforce` to override this if you accept the risk.
 
 **Subagent attribution:**
 
-- Child agents (`delegate_task`) run as their own sessions. Their tokens are captured independently and included in **global** totals. But there is no parent→child link in any hook — so `per_cron_job` budgets **exclude** subagent cost. Use the `global` budget for a cap that captures delegated work.
+- Child agents (`delegate_task`) run as their own sessions. Their tokens are captured
+  independently and included in **global** totals — but only if the child agent also
+  has the plugin loaded. If the child runs without it, those tokens are silently
+  undercounted.
+- There is no parent→child link in any hook, so `per_cron_job` budgets **exclude**
+  subagent cost. Use the `global` budget scope to cap total spend including
+  delegated work.
 
-**Pricing refresh only for Openroute models:**
+**Pricing coverage:**
 
-- `pricing.yaml` is updated with Openrouter models via Openrouter API, preserving those entered manually by the user.
+- Automatic price refresh via the OpenRouter API covers OpenRouter-routed models
+  only. Models accessed directly through Anthropic, OpenAI, or other providers
+  must still be added manually to `pricing.yaml`. Unknown models fall back to
+  `$0.00` with a one-time warning in `telemetry.log`.
+
+**Dashboard:**
+
+- The web dashboard (`serve.py`) is read-only — it visualizes data but cannot
+  modify budgets or trigger pricing refreshes. Use `/budget set` or the CLI for
+  those operations.
+- `serve.py` has no authentication. Do not expose it on a public or shared network
+  interface without adding your own auth layer.
 
 **DB retention:**
 
-- `telemetry.db` grows without bound. No automatic purge of old rows. For >100K rows, consider manual cleanup or a retention policy (not yet implemented).
+- `telemetry.db` grows without bound. No automatic purge of old rows. For
+  high-frequency cron jobs with >100K rows, consider periodic manual cleanup
+  (not yet automated).
 
 **Gateway restart required:**
 
-- Enabling the plugin takes effect only after gateway restart. Cron runs that started before the restart won't have telemetry.
-
+- Enabling or updating the plugin takes effect only after a gateway restart. Cron
+  runs that started before the restart won't have telemetry data.
 ---
 
 ## Troubleshooting
