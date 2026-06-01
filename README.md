@@ -725,9 +725,9 @@ The DB grows over time. For high-frequency cron jobs, consider periodic cleanup 
 
 - Child agents (`delegate_task`) run as their own sessions. Their tokens are captured independently and included in **global** totals. But there is no parent→child link in any hook — so `per_cron_job` budgets **exclude** subagent cost. Use the `global` budget for a cap that captures delegated work.
 
-**Pricing staleness:**
+**Pricing refresh only for Openroute models:**
 
-- `pricing.yaml` is manually maintained. A new model not in the table falls through to `$0.00` with a one-time warning. No auto-sync from provider APIs yet.
+- `pricing.yaml` is updated with Openrouter models via Openrouter API, preserving those entered manually by the user.
 
 **DB retention:**
 
