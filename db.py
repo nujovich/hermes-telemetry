@@ -577,3 +577,55 @@ def close_thread_conn() -> None:
         except Exception:
             pass
         _local.conn = None
+
+
+# ---------------------------------------------------------------------------
+# Estimated-price awareness (for budget degradation)
+# ---------------------------------------------------------------------------
+def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
+    """Return the fraction of API calls since `since_iso` that used models
+    marked with _estimated_price in pricing.yaml.
+
+    This lets the budget engine degrade hard verdicts to soft when spend
+    includes models without fixed pricing (e.g. OpenRouter auto-routing).
+
+    Returns 0.0–1.0.
+    """
+    pricing_file = _get_db_path().parent / "pricing.yaml"
+    if not pricing_file.exists():
+        return 0.0
+    try:
+        import yaml
+        cfg = yaml.safe_load(pricing_file.read_text()) or {}
+        est_models = set(cfg.get("_meta", {}).get("estimated_price_models", []))
+    except Exception:
+        return 0.0
+    if not est_models:
+        return 0.0
+
+    # Build WHERE clause for scope
+    where = ["r.started_at >= ?"]
+    params: list[Any] = [since_iso]
+    if scope == "cron_job":
+        where.append("r.cron_job_id = ?")
+        params.append(scope_id)
+    elif scope == "sender":
+        where.append("r.sender_id = ?")
+        params.append(scope_id)
+
+    placeholders = ", ".join(f"'{m}'" for m in est_models)
+    # Clamp to avoid SQLite parameter limits on huge lists
+    row = _get_conn().execute(
+        f"""
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN l.model IN ({placeholders}) THEN 1 ELSE 0 END) AS est_calls
+        FROM llm_calls l
+        JOIN runs r ON l.session_id = r.session_id
+        WHERE {" AND ".join(where)}
+        """,
+        params,
+    ).fetchone()
+    total = row["total"] or 0
+    est = row["est_calls"] or 0
+    return est / total if total else 0.0

@@ -209,6 +209,11 @@ def check(scope: str, scope_id: str = "") -> Optional[BudgetVerdict]:
         pct = spent / limit
         based_on_est = s["estimated_pct"] > 0.0
 
+        # Also check if any calls used models with estimated pricing
+        # (e.g. OpenRouter auto-routing models with no fixed price)
+        if not based_on_est:
+            based_on_est = db.estimated_price_share(scope, scope_id, _window_start_utc(window)) > 0.0
+
         if pct >= hard_pct:
             status = "hard"
         elif pct >= soft_pct:
@@ -370,6 +375,27 @@ def _status_block() -> str:
         lines.append("  or run: /budget set global daily 5.00")
     lines.append("")
     lines.append("  Legend:  (blank)=ok  !=soft (≥80%)  █=hard (≥100%)  ~est=estimated data")
+
+    # Estimated-price models warning
+    try:
+        import yaml
+        pricing_file = Path.home() / ".hermes" / "telemetry" / "pricing.yaml"
+        if pricing_file.exists():
+            cfg = yaml.safe_load(pricing_file.read_text()) or {}
+            est_models = cfg.get("_meta", {}).get("estimated_price_models", [])
+            if est_models:
+                lines.append("")
+                lines.append(
+                    f"  ⚠️  {len(est_models)} model(s) with estimated pricing "
+                    "(no fixed price → cost shown as $0.00)."
+                )
+                lines.append(
+                    "  If >0% of spend uses these models, budget hard-verdicts "
+                    "are degraded to soft (on_estimated.mode: warn_only)."
+                )
+    except Exception:
+        pass
+
     return "\n".join(lines)
 
 

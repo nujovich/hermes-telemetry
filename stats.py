@@ -12,6 +12,7 @@ Subcommands:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from . import db
@@ -154,6 +155,11 @@ def _providers_block(window_hours: int = 24) -> str:
         )
 
     lines.append("")
+    lines.append("  Provider key:")
+    lines.append("    openrouter  = model requested with 'openrouter/' prefix (routed through OpenRouter)")
+    lines.append("    nous        = model requested without prefix (direct to Nous Research)")
+    lines.append("    anthropic   = model requested with 'anthropic/' prefix (direct to Anthropic)")
+    lines.append("")
     lines.append(
         "  Est% = share of calls where the provider returned no usage data "
         "(tokens estimated locally)."
@@ -162,6 +168,32 @@ def _providers_block(window_hours: int = 24) -> str:
         "  If Est% > 0 for your main provider, budget hard-verdicts may be "
         "degraded to soft under on_estimated.mode: warn_only."
     )
+
+    # Check for estimated-price models
+    try:
+        import yaml
+        pricing_file = Path.home() / ".hermes" / "telemetry" / "pricing.yaml"
+        if pricing_file.exists():
+            cfg = yaml.safe_load(pricing_file.read_text()) or {}
+            est_models = cfg.get("_meta", {}).get("estimated_price_models", [])
+            if est_models:
+                lines.append("")
+                lines.append(
+                    f"  \u26a0\ufe0f  {len(est_models)} model(s) have estimated pricing "
+                    "(no fixed price from provider)."
+                )
+                lines.append(
+                    "  Budget hard-verdicts are degraded to soft under "
+                    "on_estimated.mode: warn_only when these models are used."
+                )
+                # Show first few examples
+                for m in est_models[:5]:
+                    lines.append(f"    - {m}")
+                if len(est_models) > 5:
+                    lines.append(f"    ... and {len(est_models) - 5} more")
+    except Exception:
+        pass
+
     return "\n".join(lines)
 
 

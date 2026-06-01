@@ -61,6 +61,31 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _try_pricing_refresh(log: logging.Logger) -> None:
+    """Refresh pricing from remote sources once per 24h.
+
+    Uses a sentinel file (~/.hermes/telemetry/.pricing_refresh) to track
+    last refresh time. Safe to call on every plugin load.
+    """
+    import time as _time
+    sentinel = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "telemetry" / ".pricing_refresh"
+    ttl = 86400  # 24h
+    try:
+        if sentinel.exists():
+            elapsed = _time.time() - sentinel.stat().st_mtime
+            if elapsed < ttl:
+                return
+        from . import pricing_refresh
+        changes = pricing_refresh.refresh_pricing()
+        if changes:
+            log.info("pricing auto-refreshed: %d model(s) updated", len(changes))
+        else:
+            log.debug("pricing auto-refresh: no changes")
+        sentinel.touch()
+    except Exception as exc:
+        log.warning("pricing auto-refresh failed (non-fatal): %s", exc)
+
+
 def _extract_cron_job_id(session_id: str, platform: str) -> Optional[str]:
     """Extract the job ID from a cron session ID.
 
@@ -106,6 +131,11 @@ def register(ctx) -> None:  # noqa: ANN001
     from . import pricing
     from . import stats
     from . import budget
+
+    # ------------------------------------------------------------------
+    # Auto-refresh pricing from remote sources (once per 24h)
+    # ------------------------------------------------------------------
+    _try_pricing_refresh(tele_log)
 
     # ------------------------------------------------------------------
     # on_session_start

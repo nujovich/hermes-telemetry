@@ -17,15 +17,24 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 ## Table of Contents
 
 - [Screenshots](#screenshots)
+  - [Dashboard (Web UI)](#dashboard-web-ui)
+  - [Slash Commands](#slash-commands-1)
 - [What It Measures](#what-it-measures)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Slash Commands](#slash-commands)
+- [Dashboard (Web UI)](#dashboard-web-ui-1)
+  - [Auto-Refresh](#auto-refresh)
+  - [Features](#features)
+- [Slash Commands](#slash-commands-2)
   - [/stats](#stats)
   - [/budget](#budget)
 - [Configuration](#configuration)
   - [pricing.yaml](#pricingyaml)
   - [budget.yaml](#budgetyaml)
+- [Pricing Auto-Refresh](#pricing-auto-refresh)
+  - [How It Works](#how-it-works)
+  - [Estimated-Price Models](#estimated-price-models)
+  - [CLI Usage](#cli-usage)
 - [Architecture](#architecture)
   - [Hook Pipeline](#hook-pipeline)
   - [Database Schema](#database-schema)
@@ -52,16 +61,26 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 ## Screenshots
 
-### `/stats` — Session analytics
+### Dashboard (Web UI)
+
+A standalone HTML dashboard for users who prefer a visual interface over slash commands. Served locally, reads directly from the telemetry SQLite database.
+
+![Dashboard overview](docs/screenshots/dashboard-overview.png)
+
+*The dashboard auto-refreshes every 30 seconds. Shows sessions, API calls, tokens, cost, budget status, daily cost trends, top tools, cost by cron job, provider distribution, and recent sessions.*
+
+### Slash Commands
+
+#### `/stats` — Session analytics
 ![Stats output](docs/screenshots/stats-output.png)
 
-### `/budget` — Current spending vs limits  
+#### `/budget` — Current spending vs limits  
 ![Budget output](docs/screenshots/budget-output.png)
 
-### `/stats cron week` — Cron job cost breakdown
+#### `/stats cron week` — Cron job cost breakdown
 ![Cron output](docs/screenshots/cron-output.png)
 
-### `/stats providers` — Real vs estimated usage
+#### `/stats providers` — Real vs estimated usage + estimated-price warning
 ![Providers output](docs/screenshots/providers-output.png)
 
 ---
@@ -224,6 +243,38 @@ hermes-telemetry — budget status
 
 ---
 
+## Dashboard (Web UI)
+
+A standalone HTML dashboard for users who prefer a visual interface over slash commands. Zero dependencies — uses only Python stdlib.
+
+### Auto-Refresh
+
+The dashboard auto-refreshes every 30 seconds. No manual reload needed.
+
+### Features
+
+- **Summary cards**: Sessions, OK/failed, API calls, tokens in, cost
+- **Budget bar**: Real-time spend vs limit with progress indicator
+- **Daily cost chart**: 7-day line chart of spending
+- **Top tools chart**: Bar chart of most-used tools
+- **Cost by cron job**: Per-job cost breakdown
+- **Provider distribution**: Donut chart (nous / openrouter / anthropic)
+- **Cron jobs table**: Runs, tokens, cost, avg duration, last run
+- **Recent sessions table**: All sessions with platform, model, status, cost
+- **Time range selector**: Last 24h / 7 days / 30 days
+
+### Usage
+
+```bash
+cd ~/.hermes/plugins/hermes-telemetry/dashboard
+python3 serve.py        # serves on http://localhost:8765
+python3 serve.py 9090   # custom port
+```
+
+Then open `http://localhost:8765` in your browser.
+
+---
+
 ## Configuration
 
 Configuration lives in `~/.hermes/telemetry/`:
@@ -317,6 +368,90 @@ on_estimated:
 | `per_sender` | Sessions from a specific sender (multi-user gateways) |
 
 **Window math:** daily and monthly windows are computed in the user's local timezone. A cron job that runs at 11:59 PM and another at 12:01 AM count against different daily windows.
+
+---
+
+## Pricing Auto-Refresh
+
+The plugin can automatically fetch model pricing from OpenRouter's public API, eliminating the need to manually maintain `pricing.yaml` for hundreds of models.
+
+### How It Works
+
+- **Source**: OpenRouter public API (`https://openrouter.ai/api/v1/models`) — no auth required
+- **Frequency**: Once per 24 hours (tracked via sentinel file)
+- **Trigger**: Automatically on plugin load (gateway startup), or manually via CLI
+- **Merge strategy**:
+  - User overrides in `pricing.yaml` are **always preserved** — manual entries take priority over auto-fetched ones
+  - New models from the API are added automatically
+  - Previously auto-fetched models are updated when prices change
+  - Models are tagged with `_auto: true` and `_source: openrouter` for traceability
+
+### Estimated-Price Models
+
+Some OpenRouter models have no fixed pricing (e.g. `auto` routing, experimental models). These are represented with negative prices in the API.
+
+The plugin handles these safely:
+
+- Prices are normalized to `$0.00` (they don't inflate cost calculations)
+- Flagged with `_estimated_price: true` in `pricing.yaml`
+- The budget engine detects when spend uses these models
+
+**Budget degradation logic:**
+
+| Condition | Effect |
+|-----------|--------|
+| `on_estimated.mode: warn_only` (default) | If >0% of calls use estimated-price models, **hard verdicts are degraded to soft** — the user gets a warning but tools aren't blocked |
+| `on_estimated.mode: enforce` | Hard verdicts take effect regardless |
+
+This ensures budgets are reliable even when some models lack fixed pricing.
+
+### CLI Usage
+
+```bash
+# Dry run — see what would change
+python -m hermes_telemetry.pricing_refresh --check
+
+# Apply changes
+python -m hermes_telemetry.pricing_refresh
+
+# Verbose output
+python -m hermes_telemetry.pricing_refresh --verbose
+```
+
+**Example output:**
+
+```
+INFO OpenRouterSource: fetched 320 models
+Updated 3 model(s):
+
+  ~ stepfun/step-3.7-flash  (openrouter)
+      input: 0.9999 → 0.2000
+      output: 9.9999 → 1.1500
+
+  + anthropic/claude-opus-4.8  (openrouter)
+      input=5.0000 output=25.0000
+
+  ⚠  Model(s) with estimated pricing: openrouter/auto, openrouter/bodybuilder, openrouter/pareto-code
+```
+
+### Extending with New Sources
+
+Add new pricing providers by subclassing `PricingSource`:
+
+```python
+from hermes_telemetry.pricing_refresh import PricingSource, register_source
+
+class AnthropicSource(PricingSource):
+    name = "anthropic"
+
+    def fetch(self) -> dict[str, dict]:
+        # Fetch from Anthropic's pricing page or API
+        ...
+
+register_source(AnthropicSource)
+```
+
+Sources are registered in `pricing_refresh.py` and fetched in parallel on each refresh cycle.
 
 ---
 
@@ -424,6 +559,8 @@ When the provider returns `usage=None`, the plugin estimates tokens and flags th
 
 The `/stats providers` command shows the `Est%` column so you can see at a glance whether your provider returns real usage data.
 
+**Estimated-price models:** Some models (e.g. OpenRouter `auto` routing) have no fixed pricing. These are flagged with `_estimated_price: true` in `pricing.yaml` and normalized to `$0.00`. If >0% of calls use these models, budget hard-verdicts are also degraded to soft under `warn_only` mode. See [Pricing Auto-Refresh](#pricing-auto-refresh) for details.
+
 ---
 
 ## Provider Probe: Verifying Your Provider Returns Real Usage
@@ -525,15 +662,18 @@ This demonstrates the core value proposition: **you can see exactly how much eac
 ### Results Summary
 
 | Component | Status |
-|-----------|--------|
-| Token capture from provider | ✅ Real usage (`estimated=0`) |
-| Cost estimation with pricing table | ✅ Accurate to pricing YAML |
-| Cron job session tracking | ✅ Captured via `session_id` regex |
-| Budget soft alerts | ✅ One-time context injection |
-| Budget hard enforcement | ✅ Paused job at $0.001/day |
-| Budget hot-reload via `/budget set` | ✅ Cache cleared, new limit active |
-| Multi-model cost comparison | ✅ Sonnet vs Opus vs Free |
-| 94 tests pass | ✅ |
+||-----------|--------|
+|| Token capture from provider | ✅ Real usage (`estimated=0`) |
+|| Cost estimation with pricing table | ✅ Accurate to pricing YAML |
+|| Cron job session tracking | ✅ Captured via `session_id` regex |
+|| Budget soft alerts | ✅ One-time context injection |
+|| Budget hard enforcement | ✅ Paused job at $0.001/day |
+|| Budget hot-reload via `/budget set` | ✅ Cache cleared, new limit active |
+|| Multi-model cost comparison | ✅ Sonnet vs Opus vs Free |
+|| Pricing auto-refresh (OpenRouter API) | ✅ 320 models fetched, manual overrides preserved |
+|| Estimated-price model handling | ✅ Negative prices → $0.00, budget degradation |
+|| Dashboard (HTML, auto-refresh 30s) | ✅ Charts, tables, budget bar, provider distribution |
+|| 94 tests pass | ✅ |
 
 ---
 

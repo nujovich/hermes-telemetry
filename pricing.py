@@ -130,7 +130,8 @@ def _load_custom_pricing() -> dict:
             for model, entry in raw_models.items():
                 if isinstance(entry, dict):
                     models[str(model).lower()] = {
-                        k: float(v) for k, v in entry.items() if v is not None
+                        k: float(v) for k, v in entry.items()
+                        if v is not None and not k.startswith("_")
                     }
             for k, v in raw_defaults.items():
                 try:
