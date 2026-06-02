@@ -131,6 +131,7 @@ def register(ctx) -> None:  # noqa: ANN001
     from . import pricing
     from . import stats
     from . import budget
+    from . import setup
 
     # ------------------------------------------------------------------
     # Auto-refresh pricing from remote sources (once per 24h)
@@ -440,6 +441,29 @@ def register(ctx) -> None:  # noqa: ANN001
         description="Show/set spend budgets (global, per cron job, per sender)",
         args_hint="[cron | set <scope> <window> <usd>]",
     )
+
+    # ------------------------------------------------------------------
+    # /setup slash command
+    # ------------------------------------------------------------------
+    ctx.register_command(
+        "setup",
+        setup.handle_command,
+        description="First-time setup wizard for pricing and budgets",
+        args_hint="[pricing|budget] [auto|minimal|skip|default|custom]",
+    )
+
+    # ------------------------------------------------------------------
+    # Auto-setup: if pricing.yaml and/or budget.yaml are missing, run
+    # non-interactive setup on first load (unless HERMES_TELEMETRY_NO_SETUP=1)
+    # ------------------------------------------------------------------
+    if os.environ.get("HERMES_TELEMETRY_NO_SETUP") != "1":
+        try:
+            auto_msg = setup.run(interactive=False)
+            # Log so the user sees it in telemetry.log on first load
+            for line in auto_msg.splitlines():
+                tele_log.info(line)
+        except Exception as exc:
+            tele_log.warning("auto-setup skipped: %s", exc)
 
     tele_log.info("hermes-telemetry loaded — SQLite at %s", _db_path_info())
 

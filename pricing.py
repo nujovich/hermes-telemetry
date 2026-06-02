@@ -60,8 +60,9 @@ _DEFAULT_PRICING: dict[str, dict] = {
     "deepseek-v3":   dict(input=0.27, output=1.10),
     "deepseek-r1":   dict(input=0.55, output=2.19),
     # ── Nous Research (Portal) ───────────────────────────────────────────────
-    "hermes-3-llama-3.1-405b": dict(input=3.00,  output=15.00),
-    "hermes-3-llama-3.1-70b":  dict(input=0.70,  output=0.90),
+    "owl-alpha":                   dict(input=0.00, output=0.00),
+    "hermes-3-llama-3.1-405b":     dict(input=3.00,  output=15.00),
+    "hermes-3-llama-3.1-70b":      dict(input=0.70,  output=0.90),
     # ── Meta (via OpenRouter / providers) ───────────────────────────────────
     "meta-llama/llama-3.1-405b-instruct": dict(input=2.70, output=2.70),
     "meta-llama/llama-3.1-70b-instruct":  dict(input=0.52, output=0.75),

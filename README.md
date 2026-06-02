@@ -6,7 +6,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 ![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg) ![Tests: 94 passing](https://img.shields.io/badge/Tests-94%20passing-green.svg) ![Provider Support](https://img.shields.io/badge/Providers-OpenRouter%20%7C%20OpenAI%20%7C%20Anthropic-orange.svg) ![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg) ![Tests: 115 passing](https://img.shields.io/badge/Tests-115%20passing-green.svg) ![Provider Support](https://img.shields.io/badge/Providers-OpenRouter%20%7C%20OpenAI%20%7C%20Anthropic-orange.svg) ![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)
 
 ---
 
@@ -138,14 +138,59 @@ hermes gateway restart
 
 1. Install and enable the plugin (see above)
 2. Restart the gateway
-3. Run any session, then type `/stats` to see captured data
-4. Optionally configure `pricing.yaml` and `budget.yaml` (see below)
+3. On first load, the plugin auto-generates `pricing.yaml` and `budget.yaml`
+   with sensible defaults (30+ built-in models + OpenRouter fetch, $5/day budget)
+4. Run any session, then type `/stats` to see captured data
+
+### Customizing the defaults
+
+```bash
+# View what's configured and what options exist
+/setup
+
+# Reconfigure pricing (auto-fetch from OpenRouter)
+/setup pricing auto
+
+# Reconfigure pricing (built-in defaults only)
+/setup pricing minimal
+
+# Reconfigure budget (recommended defaults)
+/setup budget default
+
+# Set custom budget
+/budget set global daily 10.00
+```
 
 That's it. The plugin captures data automatically — no agent action required.
 
 ---
 
 ## Slash Commands
+
+### `/setup`
+
+```bash
+/setup                          → show current status + available options
+/setup pricing auto             → auto-generate pricing (built-in + OpenRouter fetch)
+/setup pricing minimal          → built-in defaults only (~30 models, no network)
+/setup pricing skip             → don't configure pricing
+/setup budget default           → recommended global budget ($5/day, $100/month)
+/setup budget custom            → set your own limits (shows instructions)
+/setup budget skip              → no budgets (costs tracked, no enforcement)
+```
+
+The setup wizard runs automatically on first plugin load. It creates `pricing.yaml`
+and `budget.yaml` with sensible defaults so you don't have to. You can re-run
+`/setup` anytime to reconfigure.
+
+**Pricing auto-fetch:** When you run `/setup pricing auto`, the plugin fetches all
+models with fixed pricing from the OpenRouter API (~300+ models) and merges them
+with the built-in defaults. Models already in the built-in table (e.g. `claude-opus-4`,
+`gpt-4o`, `owl-alpha`) keep their built-in prices. New models from OpenRouter are
+added with their API-reported prices.
+
+**Budget defaults:** The recommended budget is `$5.00/day` and `$100.00/month` global.
+Adjust anytime with `/budget set global daily <amount>`.
 
 ### `/stats`
 
@@ -283,11 +328,13 @@ Configuration lives in `~/.hermes/telemetry/`:
 ~/.hermes/telemetry/
 ├── telemetry.db      ← SQLite database (WAL mode)
 ├── telemetry.log     ← plugin log (errors / debug)
-├── pricing.yaml      ← optional pricing overrides
-└── budget.yaml       ← optional spend budgets
+├── pricing.yaml      ← model prices (auto-generated on first load)
+└── budget.yaml       ← spend guardrails (auto-generated on first load)
 ```
 
-If these files don't exist, the plugin still works — it just uses defaults (all models at $0.00, budgets disabled).
+Both `pricing.yaml` and `budget.yaml` are auto-generated on first plugin load.
+If you delete either file, the wizard will offer to re-create it on the next
+gateway restart. You can also re-run `/setup` at any time.
 
 ### `pricing.yaml`
 
@@ -586,26 +633,11 @@ The following PoC was executed live to validate the plugin end-to-end.
 - **DB:** `/home/nujovich/.hermes/telemetry/telemetry.db` (schema v3, WAL mode)
 - **6 cron jobs** configured, 2 used for this PoC
 
-### Pricing Capture
+### Initial Configuration
 
-Added models to `~/.hermes/telemetry/pricing.yaml`:
-
-```yaml
-models:
-  "openrouter/owl-alpha":
-    input: 0.00    # Free model on OpenRouter
-    output: 0.00
-  "openrouter/anthropic/claude-sonnet-4-6":
-    input: 3.00
-    output: 15.00
-    cache_read: 0.30
-    cache_write: 3.75
-  "openrouter/anthropic/claude-opus-4-7":
-    input: 5.00
-    output: 25.00
-    cache_read: 0.50
-    cache_write: 6.25
-```
+On first load, the plugin auto-generated `pricing.yaml` with 30+ built-in models
+(including `owl-alpha` for Nous Portal and `openrouter/*` models) and `budget.yaml`
+with the default `$5/day, $100/month` global budget. No manual YAML editing needed.
 
 Set `on_estimated.mode: enforce` for deterministic enforcement.
 
@@ -685,7 +717,7 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (94 tests):**
+**Test suite (115 tests):**
 
 | File | Tests | Coverage |
 |------|-------|----------|
@@ -693,8 +725,9 @@ pytest tests/ -v
 | `test_pricing.py` | 17 | Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, unknown model handling |
 | `test_init.py` | 6 | Cron session ID regex, tool success/failure parsing |
 | `test_budget.py` | 17 | ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload |
-| `test_stats_providers.py` | 8 | Real vs estimated per provider, `/stats providers` output format, Nous warning dedup |
 | `test_subagent_reconciliation.py` | 4 | Parent + child hook sequence, token reconciliation, no double-counting |
+| `test_stats_providers.py` | 8 | Real vs estimated per provider, `/stats providers` output format, Nous warning dedup |
+| `test_setup.py` | 21 | Setup wizard: auto/minimal/skip pricing, default/custom/skip budget, command handler, idempotency, owl-alpha in defaults |
 
 No live Hermes is required — all tests are self-contained with in-memory SQLite.
 
@@ -742,10 +775,12 @@ The DB grows over time. For high-frequency cron jobs, consider periodic cleanup 
 
 **Pricing coverage:**
 
-- Automatic price refresh via the OpenRouter API covers OpenRouter-routed models
-  only. Models accessed directly through Anthropic, OpenAI, or other providers
-  must still be added manually to `pricing.yaml`. Unknown models fall back to
-  `$0.00` with a one-time warning in `telemetry.log`.
+- The built-in pricing table covers ~30 major models (Anthropic, OpenAI, DeepSeek,
+  Gemini, Meta, Nous Research including `owl-alpha`).
+- On first load, the plugin auto-fetches additional models from the OpenRouter API.
+- Models accessed directly through providers not covered by the built-in table or
+  OpenRouter can be added manually to `pricing.yaml` or via `/setup pricing auto`.
+- Unknown models fall back to `$0.00` with a one-time warning in `telemetry.log`.
 
 **Dashboard:**
 
@@ -783,11 +818,18 @@ The limit is cached in memory at gateway start. If you edited `budget.yaml` dire
 
 **Cost is $0.00 for all sessions:**
 
-Your model isn't in the pricing table. Check `telemetry.log` for a one-time warning like:
+Your model isn't in the pricing table. The plugin auto-generates `pricing.yaml`
+on first load with 30+ built-in models. If you're using a model that's not in
+the built-in table:
+
+```bash
+# Auto-fetch the latest pricing from OpenRouter
+/setup pricing auto
+
+# Or manually add your model to ~/.hermes/telemetry/pricing.yaml
 ```
-hermes-telemetry: unknown model 'openrouter/some-model' — cost recorded as $0.00
-```
-Add it to `pricing.yaml`.
+
+Check `telemetry.log` for the exact model name if you're unsure.
 
 **Provider Est% > 0:**
 

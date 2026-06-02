@@ -8,16 +8,17 @@
 `nujovich/hermes-telemetry` — `main` branch, latest commit Phase 3.1.
 Hermes source inspected at `/home/user/scratch/hermes-agent-src`.
 
-### What is Built (Phases 1–3.1)
+### What is Built (Phases 1–3.2)
 
 | Module | What it does |
 |--------|----------|
 | `db.py` | SQLite WAL, per-thread connections, schema v3. Tables: `runs`, `llm_calls`, `tool_calls`, `budget_alerts`. v2 columns: cache/reasoning tokens + `estimated` on `llm_calls`, `parent_session_id`/`estimated_llm_calls` on `runs`. v3 column: `runs.sender_id`. New function: `stats_by_provider(window_hours)`. |
-| `pricing.py` | `estimate_cost(usage: dict, model: str) → float`. Per-component split (input / output / cache_read / cache_write / reasoning). Fallback via multipliers (0.10× / 1.25×). YAML override `~/.hermes/telemetry/pricing.yaml` (`models:` + `defaults:` format). |
-| `__init__.py` | Hooks: `on_session_start`, `pre_api_request` (stash approx tokens), `post_api_request` (real tokens; falls back to estimate when `usage=None`, marked `estimated=1`; **one-time WARNING if provider contains "nous" and `usage=None`**), `post_tool_call`, `post_llm_call`, `on_session_end`, `on_session_finalize`, `subagent_stop`, `pre_llm_call` (soft alert + `sender_id`), `pre_tool_call` (hard gate). Anchored regex for cron job_id. `_nous_estimated_warned` module-level set for warning dedup. |
+| `pricing.py` | `estimate_cost(usage: dict, model: str) → float`. Per-component split (input / output / cache_read / cache_write / reasoning). Fallback via multipliers (0.10× / 1.25×). YAML override `~/.hermes/telemetry/pricing.yaml` (`models:` + `defaults:` format). Built-in table includes `owl-alpha` (Nous Portal, free). |
+| `__init__.py` | Hooks: `on_session_start`, `pre_api_request` (stash approx tokens), `post_api_request` (real tokens; falls back to estimate when `usage=None`, marked `estimated=1`; **one-time WARNING if provider contains "nous" and `usage=None`**), `post_tool_call`, `post_llm_call`, `on_session_end`, `on_session_finalize`, `subagent_stop`, `pre_llm_call` (soft alert + `sender_id`), `pre_tool_call` (hard gate). Anchored regex for cron job_id. `_nous_estimated_warned` module-level set for warning dedup. Auto-setup on first load via `setup.run(interactive=False)`. |
 | `stats.py` | `/stats [today\|week\|month\|cron\|raw [N]]`. **New: `/stats providers`** — per-provider table with columns total/real/estimated/est%/cost. Shows `~$cost` if estimated rows exist + estimation percentage. |
 | `budget.py` | Budget engine. Scopes: `global` / `cron_job` / `sender`. Windows: `daily` / `monthly` (local timezone). Verdicts: `ok` / `soft` / `hard`. Hard degrades to soft if `estimated` + `on_estimated.mode: warn_only`. Anti-spam via `budget_alerts`. Cron pause via `cron.jobs.pause_job`. `/budget [cron \| set <scope> <window> <usd>]`. |
-
+| `setup.py` | First-time setup wizard. Auto-runs on first plugin load. Generates `pricing.yaml` (30+ built-in models + optional OpenRouter fetch) and `budget.yaml` (global $5/day, $100/month). Also available as `/setup` slash command. |
+| `pricing_refresh.py` | Auto-refresh from OpenRouter API. Merge strategy: manual entries preserved, auto-refreshed models updated. |
 ### User config files
 ```
 ~/.hermes/telemetry/
@@ -27,7 +28,7 @@ Hermes source inspected at `/home/user/scratch/hermes-agent-src`.
 └── budget.yaml         ← guardrails (see budget.example.yaml)
 ```
 
-### Tests: 94 passing
+### Tests: 115 passing
 ```
 tests/test_db.py                      — schema v1→v3, writes, aggregations, concurrent WAL
 tests/test_pricing.py                 — cache/reasoning split, no double-counting, YAML, prefixes
@@ -38,6 +39,8 @@ tests/test_subagent_reconciliation.py — A1: full parent+child hook sequence, a
                                         db_child == result_child (exact count), no proxy rows
 tests/test_stats_providers.py         — A2: stats_by_provider real/estimated, /stats providers
                                         output format, Nous warning one-time deduplicated
+tests/test_setup.py                   — setup wizard: auto/minimal/skip, pricing + budget,
+                                        command handler, idempotency, owl-alpha in defaults
 ```
 
 ### Verifications A1 / A2 (Phase 3.1)
