@@ -159,7 +159,7 @@ def _save_yaml(path: Path, data: dict) -> None:
         logger.error("Failed to save %s: %s", path, exc)
 
 
-def refresh_pricing(dry_run: bool = False) -> dict[str, dict]:
+def refresh_pricing(dry_run: bool = False) -> tuple[dict[str, dict], list[dict]]:
     """Fetch all pricing sources and merge into pricing.yaml.
 
     Merge strategy:
@@ -168,7 +168,10 @@ def refresh_pricing(dry_run: bool = False) -> dict[str, dict]:
     - Existing auto-refreshed models are updated
     - Models are tagged with source and last_updated for traceability
 
-    Returns dict of changes: {model: {old: ..., new: ..., source: ...}}
+    Returns:
+        (changes, manual_overrides) where
+        changes: {model: {old, new, source}}
+        manual_overrides: [{model, local_input, remote_input, local_output, remote_output}]
     """
     existing = _load_yaml(PRICING_FILE)
     existing_models = existing.get("models", {})
@@ -195,17 +198,39 @@ def refresh_pricing(dry_run: bool = False) -> dict[str, dict]:
 
     # Merge: only update models that were auto-refreshed or are new
     new_auto_models = set()
+    manual_overrides: list[dict] = []
     for model, pricing in all_fetched.items():
         source = pricing.pop("_source", "unknown")
         new_auto_models.add(model)
 
         if model in existing_models:
+            # A model that exists but was never auto-fetched is manual.
+            # Never overwrite manual entries — user overrides take priority.
+            is_manual = model not in auto_models
+            if is_manual:
+                fetched_input = pricing.get("input", 0)
+                existing_input = existing_models[model].get("input", 0)
+                if fetched_input != existing_input:
+                    logger.info(
+                        "Manual override preserved for %s "
+                        "(remote=%s, local=%s) — update pricing.yaml manually if needed",
+                        model, fetched_input, existing_input,
+                    )
+                    manual_overrides.append({
+                        "model": model,
+                        "local_input": existing_input,
+                        "remote_input": fetched_input,
+                        "local_output": existing_models[model].get("output", 0),
+                        "remote_output": pricing.get("output", 0),
+                    })
+                new_auto_models.discard(model)
+                continue
+
+            # It was auto-refreshed before — update if values changed
             old = {k: v for k, v in existing_models[model].items() if not k.startswith("_")}
-            # Only update if it was auto-refreshed before, or if values differ
-            if model in auto_models or old != pricing:
-                if old != pricing:
-                    changes[model] = {"old": old, "new": pricing, "source": source}
-                existing_models[model] = {**pricing, "_auto": True, "_source": source}
+            if old != pricing:
+                changes[model] = {"old": old, "new": pricing, "source": source}
+            existing_models[model] = {**pricing, "_auto": True, "_source": source}
         else:
             # New model -- add it
             changes[model] = {"old": None, "new": pricing, "source": source}
@@ -231,7 +256,7 @@ def refresh_pricing(dry_run: bool = False) -> dict[str, dict]:
     else:
         logger.info("no changes detected")
 
-    return changes
+    return changes, manual_overrides 
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +274,7 @@ def main():
         format="%(levelname)s %(message)s",
     )
 
-    changes = refresh_pricing(dry_run=args.check)
+    changes, manual_overrides = refresh_pricing(dry_run=args.check)
 
     if changes:
         label = "Would update" if args.check else "Updated"
@@ -266,7 +291,17 @@ def main():
                     new_v = diff["new"].get(key, 0)
                     if old_v != new_v:
                         print(f"      {key}: {old_v:.4f} → {new_v:.4f}")
-    else:
+
+    if manual_overrides:
+        print(f"\n⚠  Manual overrides preserved ({len(manual_overrides)} model(s) with differing remote prices):\n")
+        for mo in sorted(manual_overrides, key=lambda x: x["model"]):
+            print(f"    {mo['model']}")
+            if mo["local_input"] != mo["remote_input"]:
+                print(f"      input:  local={mo['local_input']:.4f}  remote={mo['remote_input']:.4f}")
+            if mo["local_output"] != mo["remote_output"]:
+                print(f"      output: local={mo['local_output']:.4f}  remote={mo['remote_output']:.4f}")
+
+    if not changes and not manual_overrides:
         print("No changes. Pricing is up to date.")
 
 
