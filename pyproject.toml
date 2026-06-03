@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "hermes-telemetry"
+version = "0.3.0"
+description = "Observability + budget guardrails for Hermes Agent — tokens, cost, latency, tool calls per session and cron job."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "nujovich", email = "nujovich@gmail.com"},
+]
+keywords = ["hermes", "telemetry", "observability", "budget", "llm", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Monitoring",
+]
+
+[project.urls]
+Homepage = "https://github.com/nujovich/hermes-telemetry"
+Repository = "https://github.com/nujovich/hermes-telemetry"
+Issues = "https://github.com/nujovich/hermes-telemetry/issues"
+Changelog = "https://github.com/nujovich/hermes-telemetry/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+include = ["hermes_telemetry*"]
+
+[tool.setuptools.package-data]
+hermes_telemetry = ["*.yaml", "*.html"]
+
+# ---------------------------------------------------------------------------
+# Linting & formatting (ruff)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py38"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long (we use 100, not 79)
+    "B008",  # function call in default arg (common in fixtures)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # unused imports re-exportados
+"tests/*" = ["S101"]      # assert en tests
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# Type checking (mypy) — optional, para quien quiera usarlo
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+check_untyped_defs = true
+ignore_missing_imports = true
