@@ -11,15 +11,17 @@ import os
 import sqlite3
 import sys
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 # ---------------------------------------------------------------------------
 # DB path
 # ---------------------------------------------------------------------------
-DB_PATH = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "telemetry" / "telemetry.db"
+DB_PATH = (
+    Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "telemetry" / "telemetry.db"
+)
 
 _local = threading.local()
 
@@ -131,7 +133,8 @@ def api_providers(window_hours=24):
 
 
 def api_runs(limit=50):
-    return _rows("""
+    return _rows(
+        """
         SELECT session_id, platform, cron_job_id, model, provider,
                started_at, ended_at, status,
                tokens_in, tokens_out, cost_usd, duration_ms,
@@ -139,7 +142,9 @@ def api_runs(limit=50):
         FROM runs
         ORDER BY started_at DESC
         LIMIT ?
-    """, (int(limit),))
+    """,
+        (int(limit),),
+    )
 
 
 def api_budget():
@@ -149,6 +154,7 @@ def api_budget():
 
     try:
         import yaml
+
         cfg = yaml.safe_load(budget_path.read_text())
     except ImportError:
         return {"enabled": True, "raw": budget_path.read_text()}
@@ -159,19 +165,19 @@ def api_budget():
 
     # evaluate each scope
     now = datetime.now(timezone.utc)
-    today_key = now.strftime("%Y-%m-%d")
-    month_key = now.strftime("%Y-%m")
+    now.strftime("%Y-%m-%d")
+    now.strftime("%Y-%m")
     local_now = now.astimezone()
-    local_today = local_now.strftime("%Y-%m-%d")
-    local_month = local_now.strftime("%Y-%m")
+    local_now.strftime("%Y-%m-%d")
+    local_now.strftime("%Y-%m")
 
     scopes = []
 
     # global daily
     g = budgets.get("global", {})
     for win_key, win_label, since in [
-        ("daily", f"global/daily", now - timedelta(hours=24)),
-        ("monthly", f"monthly", now - timedelta(days=30)),
+        ("daily", "global/daily", now - timedelta(hours=24)),
+        ("monthly", "monthly", now - timedelta(days=30)),
     ]:
         limit = g.get(f"{win_key}_usd")
         if limit is None:
@@ -189,15 +195,17 @@ def api_budget():
             level = "hard"
         elif pct >= soft_pct:
             level = "soft"
-        scopes.append({
-            "scope": win_label,
-            "spent": round(spent, 6),
-            "limit": limit,
-            "pct": round(pct * 100, 1),
-            "level": level,
-            "estimated_calls": spend.get("est", 0),
-            "total_calls": spend.get("total", 0),
-        })
+        scopes.append(
+            {
+                "scope": win_label,
+                "spent": round(spent, 6),
+                "limit": limit,
+                "pct": round(pct * 100, 1),
+                "level": level,
+                "estimated_calls": spend.get("est", 0),
+                "total_calls": spend.get("total", 0),
+            }
+        )
 
     return {"enabled": True, "budgets": scopes, "on_estimated": on_est.get("mode", "warn_only")}
 

@@ -63,10 +63,7 @@ def _summary_block(window_hours: int) -> str:
     # Use ~ prefix on cost if any calls were estimated
     cost_label = "Cost (est.)   "
     cost_val = s.get("cost_usd")
-    if has_estimated:
-        cost_str = f"~{_fmt_cost(cost_val)}"
-    else:
-        cost_str = _fmt_cost(cost_val)
+    cost_str = f"~{_fmt_cost(cost_val)}" if has_estimated else _fmt_cost(cost_val)
 
     lines = [
         f"hermes-telemetry — {_window_label(window_hours)}",
@@ -128,7 +125,9 @@ def _cron_block(window_hours: int = 168) -> str:
         tout = _fmt_int(r.get("tokens_out"))
         cost = _fmt_cost(r.get("cost_usd"))
         dur = _fmt_ms(r.get("avg_duration_ms"))
-        lines.append(f"  {job_id:<20} {runs:>5} {ok:>5} {fail:>5} {tin:>9} {tout:>9} {cost:>12} {dur:>9}")
+        lines.append(
+            f"  {job_id:<20} {runs:>5} {ok:>5} {fail:>5} {tin:>9} {tout:>9} {cost:>12} {dur:>9}"
+        )
     return "\n".join(lines)
 
 
@@ -144,19 +143,19 @@ def _providers_block(window_hours: int = 24) -> str:
         "  " + "-" * 67,
     ]
     for r in rows:
-        prov    = (r.get("provider") or "(unknown)")[:28]
-        total   = _fmt_int(r.get("total_calls"))
-        real    = _fmt_int(r.get("real_calls"))
-        est     = _fmt_int(r.get("estimated_calls"))
+        prov = (r.get("provider") or "(unknown)")[:28]
+        total = _fmt_int(r.get("total_calls"))
+        real = _fmt_int(r.get("real_calls"))
+        est = _fmt_int(r.get("estimated_calls"))
         est_pct = f"{r.get('estimated_pct', 0.0) * 100:.0f}%"
-        cost    = _fmt_cost(r.get("cost_usd"))
-        lines.append(
-            f"  {prov:<28} {total:>6} {real:>6} {est:>5} {est_pct:>6} {cost:>12}"
-        )
+        cost = _fmt_cost(r.get("cost_usd"))
+        lines.append(f"  {prov:<28} {total:>6} {real:>6} {est:>5} {est_pct:>6} {cost:>12}")
 
     lines.append("")
     lines.append("  Provider key:")
-    lines.append("    openrouter  = model requested with 'openrouter/' prefix (routed through OpenRouter)")
+    lines.append(
+        "    openrouter  = model requested with 'openrouter/' prefix (routed through OpenRouter)"
+    )
     lines.append("    nous        = model requested without prefix (direct to Nous Research)")
     lines.append("    anthropic   = model requested with 'anthropic/' prefix (direct to Anthropic)")
     lines.append("")
@@ -172,6 +171,7 @@ def _providers_block(window_hours: int = 24) -> str:
     # Check for estimated-price models
     try:
         import yaml
+
         pricing_file = Path.home() / ".hermes" / "telemetry" / "pricing.yaml"
         if pricing_file.exists():
             cfg = yaml.safe_load(pricing_file.read_text()) or {}
@@ -207,7 +207,7 @@ def _raw_block(limit: int = 20) -> str:
         "=" * 80,
     ]
     for r in rows:
-        sid = (r.get("session_id") or "")[:32]
+        (r.get("session_id") or "")[:32]
         plat = (r.get("platform") or "")[:8]
         model = (r.get("model") or "")[:24]
         status = r.get("status") or "?"
@@ -216,9 +216,7 @@ def _raw_block(limit: int = 20) -> str:
         started = (r.get("started_at") or "")[:16]
         cron = r.get("cron_job_id") or ""
         tag = f" [{cron}]" if cron else ""
-        lines.append(
-            f"  {started}  {plat:<8}  {model:<24}  {status:<10}  {cost}  {dur}{tag}"
-        )
+        lines.append(f"  {started}  {plat:<8}  {model:<24}  {status:<10}  {cost}  {dur}{tag}")
     return "\n".join(lines)
 
 
@@ -247,7 +245,7 @@ def handle(raw_args: str) -> str:
         return _raw_block(min(limit, 200))
 
     if args.startswith("providers"):
-        sub = args[len("providers"):].strip()
+        sub = args[len("providers") :].strip()
         if sub in ("", "today"):
             return _providers_block(24)
         if sub == "week":

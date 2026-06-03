@@ -8,19 +8,19 @@ Usage (programmatic):
     setup.run(interactive=True)   # full wizard
     setup.run(interactive=False)  # auto-generate defaults, no prompts
 """
+
 from __future__ import annotations
 
 import logging
 import os
-import time
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Paths (resolved lazily so tests can monkeypatch HERMES_HOME)
 # ---------------------------------------------------------------------------
+
 
 def _pricing_path() -> Path:
     hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
@@ -44,45 +44,45 @@ def _tele_dir() -> Path:
 # ---------------------------------------------------------------------------
 _DEFAULT_SEED: dict[str, dict] = {
     # Anthropic / Nous Portal
-    "claude-opus-4-8":    dict(input=5.00,  output=25.00, cache_read=0.50,  cache_write=6.25),
-    "claude-opus-4-7":    dict(input=5.00,  output=25.00, cache_read=0.50,  cache_write=6.25),
-    "claude-sonnet-4-6":  dict(input=3.00,  output=15.00, cache_read=0.30,  cache_write=3.75),
-    "claude-sonnet-4-5":  dict(input=3.00,  output=15.00, cache_read=0.30,  cache_write=3.75),
-    "claude-haiku-4-5":   dict(input=0.80,  output=4.00,  cache_read=0.08,  cache_write=1.00),
-    "claude-opus-4":      dict(input=15.00, output=75.00, cache_read=1.50,  cache_write=18.75),
-    "claude-sonnet-4":    dict(input=3.00,  output=15.00, cache_read=0.30,  cache_write=3.75),
+    "claude-opus-4-8": dict(input=5.00, output=25.00, cache_read=0.50, cache_write=6.25),
+    "claude-opus-4-7": dict(input=5.00, output=25.00, cache_read=0.50, cache_write=6.25),
+    "claude-sonnet-4-6": dict(input=3.00, output=15.00, cache_read=0.30, cache_write=3.75),
+    "claude-sonnet-4-5": dict(input=3.00, output=15.00, cache_read=0.30, cache_write=3.75),
+    "claude-haiku-4-5": dict(input=0.80, output=4.00, cache_read=0.08, cache_write=1.00),
+    "claude-opus-4": dict(input=15.00, output=75.00, cache_read=1.50, cache_write=18.75),
+    "claude-sonnet-4": dict(input=3.00, output=15.00, cache_read=0.30, cache_write=3.75),
     "claude-3-5-sonnet-20241022": dict(input=3.00, output=15.00, cache_read=0.30, cache_write=3.75),
-    "claude-3-5-haiku-20241022":  dict(input=0.80, output=4.00,  cache_read=0.08, cache_write=1.00),
-    "claude-3-opus-20240229":     dict(input=15.00, output=75.00, cache_read=1.50, cache_write=18.75),
-    "claude-3-haiku-20240307":    dict(input=0.25, output=1.25,  cache_read=0.03, cache_write=0.30),
+    "claude-3-5-haiku-20241022": dict(input=0.80, output=4.00, cache_read=0.08, cache_write=1.00),
+    "claude-3-opus-20240229": dict(input=15.00, output=75.00, cache_read=1.50, cache_write=18.75),
+    "claude-3-haiku-20240307": dict(input=0.25, output=1.25, cache_read=0.03, cache_write=0.30),
     # OpenAI
-    "gpt-4o":        dict(input=2.50,  output=10.00),
-    "gpt-4o-mini":   dict(input=0.15,  output=0.60),
-    "gpt-4-turbo":   dict(input=10.00, output=30.00),
-    "gpt-4":         dict(input=30.00, output=60.00),
-    "gpt-3.5-turbo": dict(input=0.50,  output=1.50),
-    "o1":            dict(input=15.00, output=60.00),
-    "o1-mini":       dict(input=3.00,  output=12.00),
-    "o3":            dict(input=10.00, output=40.00),
-    "o3-mini":       dict(input=1.10,  output=4.40),
-    "o4-mini":       dict(input=1.10,  output=4.40),
+    "gpt-4o": dict(input=2.50, output=10.00),
+    "gpt-4o-mini": dict(input=0.15, output=0.60),
+    "gpt-4-turbo": dict(input=10.00, output=30.00),
+    "gpt-4": dict(input=30.00, output=60.00),
+    "gpt-3.5-turbo": dict(input=0.50, output=1.50),
+    "o1": dict(input=15.00, output=60.00),
+    "o1-mini": dict(input=3.00, output=12.00),
+    "o3": dict(input=10.00, output=40.00),
+    "o3-mini": dict(input=1.10, output=4.40),
+    "o4-mini": dict(input=1.10, output=4.40),
     # DeepSeek
     "deepseek-chat": dict(input=0.27, output=1.10),
-    "deepseek-v3":   dict(input=0.27, output=1.10),
-    "deepseek-r1":   dict(input=0.55, output=2.19),
+    "deepseek-v3": dict(input=0.27, output=1.10),
+    "deepseek-r1": dict(input=0.55, output=2.19),
     # Nous Research (Portal)
-    "owl-alpha":                   dict(input=0.00, output=0.00),
-    "hermes-3-llama-3.1-405b":     dict(input=3.00,  output=15.00),
-    "hermes-3-llama-3.1-70b":      dict(input=0.70,  output=0.90),
+    "owl-alpha": dict(input=0.00, output=0.00),
+    "hermes-3-llama-3.1-405b": dict(input=3.00, output=15.00),
+    "hermes-3-llama-3.1-70b": dict(input=0.70, output=0.90),
     # Meta (via OpenRouter)
     "meta-llama/llama-3.1-405b-instruct": dict(input=2.70, output=2.70),
-    "meta-llama/llama-3.1-70b-instruct":  dict(input=0.52, output=0.75),
-    "meta-llama/llama-3.3-70b-instruct":  dict(input=0.59, output=0.79),
+    "meta-llama/llama-3.1-70b-instruct": dict(input=0.52, output=0.75),
+    "meta-llama/llama-3.3-70b-instruct": dict(input=0.59, output=0.79),
     # Google
-    "gemini-1.5-pro":   dict(input=3.50,  output=10.50),
+    "gemini-1.5-pro": dict(input=3.50, output=10.50),
     "gemini-1.5-flash": dict(input=0.075, output=0.30),
-    "gemini-2.0-flash": dict(input=0.10,  output=0.40),
-    "gemini-2.5-pro":   dict(input=1.25,  output=10.00),
+    "gemini-2.0-flash": dict(input=0.10, output=0.40),
+    "gemini-2.5-pro": dict(input=1.25, output=10.00),
 }
 
 
@@ -92,8 +92,10 @@ _DEFAULT_SEED: dict[str, dict] = {
 def _dump_yaml(data: dict) -> str:
     """Serialize a dict to YAML string using stdlib-only fallback or PyYAML."""
     try:
-        import yaml
         from io import StringIO
+
+        import yaml
+
         buf = StringIO()
         yaml.dump(data, buf, default_flow_style=False, sort_keys=False, allow_unicode=True)
         return buf.getvalue()
@@ -140,9 +142,9 @@ def _fetch_openrouter_models() -> dict[str, dict]:
     Returns {model_id: {input, output}} in USD per 1M tokens.
     Models with negative prices (no fixed pricing) are excluded.
     """
-    import urllib.request
-    import urllib.error
     import json as _json
+    import urllib.error
+    import urllib.request
 
     url = "https://openrouter.ai/api/v1/models"
     req = urllib.request.Request(url, headers={"User-Agent": "hermes-telemetry/0.2"})
@@ -189,7 +191,7 @@ def _build_pricing_yaml(models: dict[str, dict]) -> str:
         "# Models without prefix = auto-refreshed from OpenRouter API.\n"
         "#\n"
         "# Add your own overrides:\n"
-        "#   \"my-custom-model\":\n"
+        '#   "my-custom-model":\n'
         "#     input: 1.00\n"
         "#     output: 3.00\n"
         "#\n"

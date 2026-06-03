@@ -70,7 +70,12 @@ def _try_pricing_refresh(log: logging.Logger) -> None:
     last refresh time. Safe to call on every plugin load.
     """
     import time as _time
-    sentinel = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "telemetry" / ".pricing_refresh"
+
+    sentinel = (
+        Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        / "telemetry"
+        / ".pricing_refresh"
+    )
     ttl = 86400  # 24h
     try:
         if sentinel.exists():
@@ -78,6 +83,7 @@ def _try_pricing_refresh(log: logging.Logger) -> None:
             if elapsed < ttl:
                 return
         from . import pricing_refresh
+
         changes = pricing_refresh.refresh_pricing()
         if changes:
             log.info("pricing auto-refreshed: %d model(s) updated", len(changes))
@@ -88,7 +94,7 @@ def _try_pricing_refresh(log: logging.Logger) -> None:
         log.warning("pricing auto-refresh failed (non-fatal): %s", exc)
 
 
-def _extract_cron_job_id(session_id: str, platform: str) -> Optional[str]:
+def _extract_cron_job_id(session_id: str, platform: str) -> str | None:
     """Extract the job ID from a cron session ID.
 
     Cron session IDs have the format: cron_{job_id}_{YYYYMMDD_HHMMSS}
@@ -129,11 +135,7 @@ def register(ctx) -> None:  # noqa: ANN001
     _setup_log_file()
     tele_log = logging.getLogger("hermes_telemetry")
 
-    from . import db
-    from . import pricing
-    from . import stats
-    from . import budget
-    from . import setup
+    from . import budget, db, pricing, setup, stats
 
     # ------------------------------------------------------------------
     # Auto-refresh pricing from remote sources (once per 24h)
@@ -148,8 +150,15 @@ def register(ctx) -> None:  # noqa: ANN001
     def on_session_start(session_id: str = "", model: str = "", platform: str = "", **_kw) -> None:
         try:
             cron_job_id = _extract_cron_job_id(session_id, platform)
-            db.start_run(session_id=session_id, model=model, platform=platform, cron_job_id=cron_job_id)
-            tele_log.debug("session_start session=%s platform=%s cron_job=%s", session_id, platform, cron_job_id)
+            db.start_run(
+                session_id=session_id, model=model, platform=platform, cron_job_id=cron_job_id
+            )
+            tele_log.debug(
+                "session_start session=%s platform=%s cron_job=%s",
+                session_id,
+                platform,
+                cron_job_id,
+            )
         except Exception as exc:
             tele_log.error("on_session_start failed: %s", exc)
 
@@ -185,8 +194,8 @@ def register(ctx) -> None:  # noqa: ANN001
         model: str = "",
         provider: str = "",
         api_duration: float = 0.0,
-        usage: Optional[dict] = None,
-        response_model: Optional[str] = None,
+        usage: dict | None = None,
+        response_model: str | None = None,
         api_call_count: int = 0,
         assistant_content_chars: int = 0,
         **_kw,
@@ -199,25 +208,27 @@ def register(ctx) -> None:  # noqa: ANN001
                 approx_in = _approx_store.pop((session_id, api_call_count), 0)
 
             if isinstance(usage, dict):
-                tokens_in        = int(usage.get("input_tokens")     or 0)
-                tokens_out       = int(usage.get("output_tokens")    or 0)
-                cache_read_tok   = int(usage.get("cache_read_tokens")  or 0)
-                cache_write_tok  = int(usage.get("cache_write_tokens") or 0)
-                reasoning_tok    = int(usage.get("reasoning_tokens")   or 0)
-                estimated        = False
+                tokens_in = int(usage.get("input_tokens") or 0)
+                tokens_out = int(usage.get("output_tokens") or 0)
+                cache_read_tok = int(usage.get("cache_read_tokens") or 0)
+                cache_write_tok = int(usage.get("cache_write_tokens") or 0)
+                reasoning_tok = int(usage.get("reasoning_tokens") or 0)
+                estimated = False
             else:
                 # usage=None: estimate from pre_api_request stash + response chars
                 tele_log.debug(
                     "post_api_request: usage=None for session=%s — estimating from "
                     "approx_input_tokens=%d + assistant_content_chars=%d",
-                    session_id, approx_in, assistant_content_chars,
+                    session_id,
+                    approx_in,
+                    assistant_content_chars,
                 )
-                tokens_in        = approx_in
-                tokens_out       = int(assistant_content_chars / _CHARS_PER_TOKEN)
-                cache_read_tok   = 0
-                cache_write_tok  = 0
-                reasoning_tok    = 0
-                estimated        = True
+                tokens_in = approx_in
+                tokens_out = int(assistant_content_chars / _CHARS_PER_TOKEN)
+                cache_read_tok = 0
+                cache_write_tok = 0
+                reasoning_tok = 0
+                estimated = True
                 # One-time warning: fires the first time a Nous Portal call returns
                 # usage=None so you don't have to grep logs to know your provider
                 # isn't returning real usage data.
@@ -234,11 +245,11 @@ def register(ctx) -> None:  # noqa: ANN001
                     )
 
             full_usage = {
-                "input_tokens":        tokens_in,
-                "output_tokens":       tokens_out,
-                "cache_read_tokens":   cache_read_tok,
-                "cache_write_tokens":  cache_write_tok,
-                "reasoning_tokens":    reasoning_tok,
+                "input_tokens": tokens_in,
+                "output_tokens": tokens_out,
+                "cache_read_tokens": cache_read_tok,
+                "cache_write_tokens": cache_write_tok,
+                "reasoning_tokens": reasoning_tok,
             }
             cost = pricing.estimate_cost(full_usage, effective_model)
             latency_ms = int(api_duration * 1000)
@@ -359,7 +370,7 @@ def register(ctx) -> None:  # noqa: ANN001
     # Fired when the session is truly torn down (CLI atexit, gateway expiry).
     # kwargs: session_id, platform
     # ------------------------------------------------------------------
-    def on_session_finalize(session_id: Optional[str] = None, **_kw) -> None:
+    def on_session_finalize(session_id: str | None = None, **_kw) -> None:
         if not session_id:
             return
         try:

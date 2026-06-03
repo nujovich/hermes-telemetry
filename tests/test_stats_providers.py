@@ -9,19 +9,18 @@ Covers:
 from __future__ import annotations
 
 import importlib.util
-import sys
 from pathlib import Path
-
-import pytest
 
 import hermes_telemetry.db as db
 import hermes_telemetry.stats as stats_mod
+import pytest
 
 # Load the plugin __init__ by exec-ing it into the real hermes_telemetry package
 # stub that conftest already set up.  This lets register()'s relative imports
 # (from . import db) resolve correctly via hermes_telemetry.__path__.
 _ROOT = Path(__file__).parent.parent
 import hermes_telemetry as _init_mod
+
 _spec = importlib.util.spec_from_file_location("hermes_telemetry", str(_ROOT / "__init__.py"))
 _spec.loader.exec_module(_init_mod)
 
@@ -58,6 +57,7 @@ def isolated_db(tmp_path, monkeypatch):
 # db.stats_by_provider
 # ---------------------------------------------------------------------------
 
+
 def test_stats_by_provider_empty():
     rows = db.stats_by_provider(window_hours=24)
     assert rows == []
@@ -77,16 +77,16 @@ def test_stats_by_provider_real_vs_estimated():
     by_name = {r["provider"]: r for r in rows}
 
     a = by_name["anthropic"]
-    assert a["total_calls"]     == 2
-    assert a["real_calls"]      == 2
+    assert a["total_calls"] == 2
+    assert a["real_calls"] == 2
     assert a["estimated_calls"] == 0
-    assert a["estimated_pct"]   == 0.0
+    assert a["estimated_pct"] == 0.0
 
     n = by_name["nous_portal"]
-    assert n["total_calls"]     == 1
-    assert n["real_calls"]      == 0
+    assert n["total_calls"] == 1
+    assert n["real_calls"] == 0
     assert n["estimated_calls"] == 1
-    assert n["estimated_pct"]   == 1.0
+    assert n["estimated_pct"] == 1.0
 
 
 def test_stats_by_provider_mixed_estimated():
@@ -100,8 +100,8 @@ def test_stats_by_provider_mixed_estimated():
     rows = db.stats_by_provider(window_hours=24)
     assert len(rows) == 1
     r = rows[0]
-    assert r["total_calls"]     == 4
-    assert r["real_calls"]      == 3
+    assert r["total_calls"] == 4
+    assert r["real_calls"] == 3
     assert r["estimated_calls"] == 1
     assert abs(r["estimated_pct"] - 0.25) < 1e-9
 
@@ -135,6 +135,7 @@ def test_stats_by_provider_unknown_provider():
 # ---------------------------------------------------------------------------
 # /stats providers command output format
 # ---------------------------------------------------------------------------
+
 
 def test_stats_providers_command_output():
     now = db._utcnow()
@@ -183,16 +184,23 @@ def test_stats_providers_explains_impact():
 # Nous Portal one-time warning (tests the _nous_estimated_warned set behavior)
 # ---------------------------------------------------------------------------
 
+
 def test_nous_warning_fires_for_nous_provider():
     ctx = _MockCtx()
     _init_mod.register(ctx)
 
     db.start_run("s1", model="m", platform="cli")
-    ctx.fire("pre_api_request", session_id="s1", api_call_count=0,
-             approx_input_tokens=1000)
-    ctx.fire("post_api_request", session_id="s1", model="m",
-             provider="nous_portal", api_duration=0.5, api_call_count=0,
-             assistant_content_chars=200, usage=None)
+    ctx.fire("pre_api_request", session_id="s1", api_call_count=0, approx_input_tokens=1000)
+    ctx.fire(
+        "post_api_request",
+        session_id="s1",
+        model="m",
+        provider="nous_portal",
+        api_duration=0.5,
+        api_call_count=0,
+        assistant_content_chars=200,
+        usage=None,
+    )
 
     # Side-effect: provider added to the warned set
     assert "nous_portal" in _init_mod._nous_estimated_warned
@@ -206,17 +214,27 @@ def test_nous_warning_deduplicates():
 
     # Fire twice — set should still contain exactly one entry for this provider
     for call_idx in range(2):
-        ctx.fire("pre_api_request", session_id="s1", api_call_count=call_idx,
-                 approx_input_tokens=1000)
-        ctx.fire("post_api_request", session_id="s1", model="m",
-                 provider="nous_portal", api_duration=0.5, api_call_count=call_idx,
-                 assistant_content_chars=200, usage=None)
+        ctx.fire(
+            "pre_api_request", session_id="s1", api_call_count=call_idx, approx_input_tokens=1000
+        )
+        ctx.fire(
+            "post_api_request",
+            session_id="s1",
+            model="m",
+            provider="nous_portal",
+            api_duration=0.5,
+            api_call_count=call_idx,
+            assistant_content_chars=200,
+            usage=None,
+        )
 
-    assert _init_mod._nous_estimated_warned.count if hasattr(
-        _init_mod._nous_estimated_warned, "count") else True
+    assert (
+        _init_mod._nous_estimated_warned.count
+        if hasattr(_init_mod._nous_estimated_warned, "count")
+        else True
+    )
     # The set has exactly one entry (deduplication works)
-    assert len([p for p in _init_mod._nous_estimated_warned
-                if p == "nous_portal"]) == 1
+    assert len([p for p in _init_mod._nous_estimated_warned if p == "nous_portal"]) == 1
 
 
 def test_nous_warning_does_not_fire_for_other_providers():
@@ -224,11 +242,17 @@ def test_nous_warning_does_not_fire_for_other_providers():
     _init_mod.register(ctx)
 
     db.start_run("s1", model="m", platform="cli")
-    ctx.fire("pre_api_request", session_id="s1", api_call_count=0,
-             approx_input_tokens=1000)
-    ctx.fire("post_api_request", session_id="s1", model="m",
-             provider="anthropic", api_duration=0.5, api_call_count=0,
-             assistant_content_chars=200, usage=None)
+    ctx.fire("pre_api_request", session_id="s1", api_call_count=0, approx_input_tokens=1000)
+    ctx.fire(
+        "post_api_request",
+        session_id="s1",
+        model="m",
+        provider="anthropic",
+        api_duration=0.5,
+        api_call_count=0,
+        assistant_content_chars=200,
+        usage=None,
+    )
 
     assert "anthropic" not in _init_mod._nous_estimated_warned
     assert len(_init_mod._nous_estimated_warned) == 0
@@ -240,14 +264,23 @@ def test_nous_warning_does_not_fire_when_usage_real():
     _init_mod.register(ctx)
 
     db.start_run("s1", model="m", platform="cli")
-    ctx.fire("pre_api_request", session_id="s1", api_call_count=0,
-             approx_input_tokens=1000)
-    ctx.fire("post_api_request", session_id="s1", model="m",
-             provider="nous_portal", api_duration=0.5, api_call_count=0,
-             assistant_content_chars=200,
-             usage={"input_tokens": 1000, "output_tokens": 50,
-                    "cache_read_tokens": 0, "cache_write_tokens": 0,
-                    "reasoning_tokens": 0})
+    ctx.fire("pre_api_request", session_id="s1", api_call_count=0, approx_input_tokens=1000)
+    ctx.fire(
+        "post_api_request",
+        session_id="s1",
+        model="m",
+        provider="nous_portal",
+        api_duration=0.5,
+        api_call_count=0,
+        assistant_content_chars=200,
+        usage={
+            "input_tokens": 1000,
+            "output_tokens": 50,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+    )
 
     assert "nous_portal" not in _init_mod._nous_estimated_warned
 
@@ -258,10 +291,16 @@ def test_nous_warning_case_insensitive():
     _init_mod.register(ctx)
 
     db.start_run("s1", model="m", platform="cli")
-    ctx.fire("pre_api_request", session_id="s1", api_call_count=0,
-             approx_input_tokens=1000)
-    ctx.fire("post_api_request", session_id="s1", model="m",
-             provider="Nous_Research", api_duration=0.5, api_call_count=0,
-             assistant_content_chars=200, usage=None)
+    ctx.fire("pre_api_request", session_id="s1", api_call_count=0, approx_input_tokens=1000)
+    ctx.fire(
+        "post_api_request",
+        session_id="s1",
+        model="m",
+        provider="Nous_Research",
+        api_duration=0.5,
+        api_call_count=0,
+        assistant_content_chars=200,
+        usage=None,
+    )
 
     assert "Nous_Research" in _init_mod._nous_estimated_warned

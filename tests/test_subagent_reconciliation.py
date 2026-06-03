@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -42,6 +41,7 @@ import pytest
 # ---------------------------------------------------------------------------
 _ROOT = Path(__file__).parent.parent
 import hermes_telemetry as _init_mod
+
 _spec = importlib.util.spec_from_file_location("hermes_telemetry", str(_ROOT / "__init__.py"))
 _spec.loader.exec_module(_init_mod)
 
@@ -70,6 +70,7 @@ class MockPluginContext:
 def isolated_db(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import hermes_telemetry.db as db_mod
+
     db_mod._local.conn = None
     yield
     if getattr(db_mod._local, "conn", None):
@@ -81,24 +82,29 @@ def isolated_db(tmp_path, monkeypatch):
 # Helper: delegate_task result shape from tools/delegate_tool.py:2303-2309
 # ---------------------------------------------------------------------------
 
-def _delegate_result(input_tokens: int, output_tokens: int, model: str,
-                     api_calls: int = 1, status: str = "ok") -> str:
+
+def _delegate_result(
+    input_tokens: int, output_tokens: int, model: str, api_calls: int = 1, status: str = "ok"
+) -> str:
     """Serialize a delegate_task result the way Hermes does."""
-    return json.dumps({
-        "results": [
-            {
-                "tokens": {"input": input_tokens, "output": output_tokens},
-                "model": model,
-                "api_calls": api_calls,
-                "status": status,
-            }
-        ]
-    })
+    return json.dumps(
+        {
+            "results": [
+                {
+                    "tokens": {"input": input_tokens, "output": output_tokens},
+                    "model": model,
+                    "api_calls": api_calls,
+                    "status": status,
+                }
+            ]
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # A1 core: tokens counted once, not double, not missed
 # ---------------------------------------------------------------------------
+
 
 def test_subagent_tokens_counted_once():
     """With plugin in both parent and child, tokens appear exactly once in DB.
@@ -114,38 +120,56 @@ def test_subagent_tokens_counted_once():
     _init_mod.register(ctx)
 
     PARENT = "parent_recon_001"
-    CHILD  = "child_recon_001"
-    MODEL  = "claude-sonnet-4-6"
-    PROV   = "anthropic"
+    CHILD = "child_recon_001"
+    MODEL = "claude-sonnet-4-6"
+    PROV = "anthropic"
 
-    PARENT_IN  = 5_000
+    PARENT_IN = 5_000
     PARENT_OUT = 500
-    CHILD_IN   = 3_000
-    CHILD_OUT  = 800
+    CHILD_IN = 3_000
+    CHILD_OUT = 800
 
     # --- Parent session starts ---
     ctx.fire("on_session_start", session_id=PARENT, model=MODEL, platform="cli")
 
     # --- Parent makes one API call (deciding to delegate) ---
-    ctx.fire("pre_api_request", session_id=PARENT, api_call_count=0,
-             approx_input_tokens=PARENT_IN)
-    ctx.fire("post_api_request", session_id=PARENT, model=MODEL, provider=PROV,
-             api_duration=1.5, api_call_count=0,
-             assistant_content_chars=PARENT_OUT * 4,
-             usage={"input_tokens": PARENT_IN, "output_tokens": PARENT_OUT,
-                    "cache_read_tokens": 0, "cache_write_tokens": 0,
-                    "reasoning_tokens": 0})
+    ctx.fire("pre_api_request", session_id=PARENT, api_call_count=0, approx_input_tokens=PARENT_IN)
+    ctx.fire(
+        "post_api_request",
+        session_id=PARENT,
+        model=MODEL,
+        provider=PROV,
+        api_duration=1.5,
+        api_call_count=0,
+        assistant_content_chars=PARENT_OUT * 4,
+        usage={
+            "input_tokens": PARENT_IN,
+            "output_tokens": PARENT_OUT,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+    )
 
     # --- Child session runs its own hooks (plugin loaded in child too) ---
     ctx.fire("on_session_start", session_id=CHILD, model=MODEL, platform="cli")
-    ctx.fire("pre_api_request", session_id=CHILD, api_call_count=0,
-             approx_input_tokens=CHILD_IN)
-    ctx.fire("post_api_request", session_id=CHILD, model=MODEL, provider=PROV,
-             api_duration=0.8, api_call_count=0,
-             assistant_content_chars=CHILD_OUT * 4,
-             usage={"input_tokens": CHILD_IN, "output_tokens": CHILD_OUT,
-                    "cache_read_tokens": 0, "cache_write_tokens": 0,
-                    "reasoning_tokens": 0})
+    ctx.fire("pre_api_request", session_id=CHILD, api_call_count=0, approx_input_tokens=CHILD_IN)
+    ctx.fire(
+        "post_api_request",
+        session_id=CHILD,
+        model=MODEL,
+        provider=PROV,
+        api_duration=0.8,
+        api_call_count=0,
+        assistant_content_chars=CHILD_OUT * 4,
+        usage={
+            "input_tokens": CHILD_IN,
+            "output_tokens": CHILD_OUT,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+    )
     ctx.fire("on_session_end", session_id=CHILD, completed=True, interrupted=False)
 
     # Snapshot llm_calls count BEFORE post_tool_call(delegate_task)
@@ -154,12 +178,22 @@ def test_subagent_tokens_counted_once():
 
     # --- Parent receives delegate_task result (exact shape from delegate_tool.py:2303-2309) ---
     result_json = _delegate_result(CHILD_IN, CHILD_OUT, MODEL)
-    ctx.fire("post_tool_call", tool_name="delegate_task",
-             result=result_json, duration_ms=2_500, session_id=PARENT)
+    ctx.fire(
+        "post_tool_call",
+        tool_name="delegate_task",
+        result=result_json,
+        duration_ms=2_500,
+        session_id=PARENT,
+    )
 
     # --- subagent_stop fires on parent ---
-    ctx.fire("subagent_stop", parent_session_id=PARENT, child_role="assistant",
-             child_status="ok", duration_ms=2_500)
+    ctx.fire(
+        "subagent_stop",
+        parent_session_id=PARENT,
+        child_role="assistant",
+        child_status="ok",
+        duration_ms=2_500,
+    )
 
     # --- Parent ends ---
     ctx.fire("on_session_end", session_id=PARENT, completed=True, interrupted=False)
@@ -183,8 +217,7 @@ def test_subagent_tokens_counted_once():
     )
     db_child_tokens = child_run["tokens_in"] + child_run["tokens_out"]
     result_child_tokens = sum(
-        r["tokens"]["input"] + r["tokens"]["output"]
-        for r in json.loads(result_json)["results"]
+        r["tokens"]["input"] + r["tokens"]["output"] for r in json.loads(result_json)["results"]
     )
     assert db_child_tokens == result_child_tokens, (
         f"Token mismatch: DB child={db_child_tokens}, "
@@ -205,8 +238,12 @@ def test_subagent_tokens_counted_once():
     # -----------------------------------------------------------------------
     # Assert D: global total = parent + child (nothing lost)
     # -----------------------------------------------------------------------
-    db_total = (parent_run["tokens_in"] + parent_run["tokens_out"]
-                + child_run["tokens_in"] + child_run["tokens_out"])
+    db_total = (
+        parent_run["tokens_in"]
+        + parent_run["tokens_out"]
+        + child_run["tokens_in"]
+        + child_run["tokens_out"]
+    )
     expected_total = PARENT_IN + PARENT_OUT + CHILD_IN + CHILD_OUT
     assert db_total == expected_total, (
         f"Global token total {db_total} != expected {expected_total}."
@@ -221,9 +258,9 @@ def test_subagent_with_multiple_child_api_calls():
     _init_mod.register(ctx)
 
     PARENT = "parent_multi_001"
-    CHILD  = "child_multi_001"
-    MODEL  = "claude-sonnet-4-6"
-    PROV   = "anthropic"
+    CHILD = "child_multi_001"
+    MODEL = "claude-sonnet-4-6"
+    PROV = "anthropic"
 
     CHILD_IN_1, CHILD_OUT_1 = 2_000, 300
     CHILD_IN_2, CHILD_OUT_2 = 2_500, 400
@@ -233,29 +270,42 @@ def test_subagent_with_multiple_child_api_calls():
 
     # Child makes 2 API calls
     for i, (tin, tout) in enumerate([(CHILD_IN_1, CHILD_OUT_1), (CHILD_IN_2, CHILD_OUT_2)]):
-        ctx.fire("pre_api_request", session_id=CHILD, api_call_count=i,
-                 approx_input_tokens=tin)
-        ctx.fire("post_api_request", session_id=CHILD, model=MODEL, provider=PROV,
-                 api_duration=0.5, api_call_count=i,
-                 assistant_content_chars=tout * 4,
-                 usage={"input_tokens": tin, "output_tokens": tout,
-                        "cache_read_tokens": 0, "cache_write_tokens": 0,
-                        "reasoning_tokens": 0})
+        ctx.fire("pre_api_request", session_id=CHILD, api_call_count=i, approx_input_tokens=tin)
+        ctx.fire(
+            "post_api_request",
+            session_id=CHILD,
+            model=MODEL,
+            provider=PROV,
+            api_duration=0.5,
+            api_call_count=i,
+            assistant_content_chars=tout * 4,
+            usage={
+                "input_tokens": tin,
+                "output_tokens": tout,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+            },
+        )
     ctx.fire("on_session_end", session_id=CHILD, completed=True, interrupted=False)
 
     # delegate_task result reports the sum of all child calls
     result_json = _delegate_result(
         CHILD_IN_1 + CHILD_IN_2, CHILD_OUT_1 + CHILD_OUT_2, MODEL, api_calls=2
     )
-    ctx.fire("post_tool_call", tool_name="delegate_task",
-             result=result_json, duration_ms=3_000, session_id=PARENT)
+    ctx.fire(
+        "post_tool_call",
+        tool_name="delegate_task",
+        result=result_json,
+        duration_ms=3_000,
+        session_id=PARENT,
+    )
     ctx.fire("on_session_end", session_id=PARENT, completed=True, interrupted=False)
 
     child_run = db.get_run(CHILD)
     db_child_tokens = child_run["tokens_in"] + child_run["tokens_out"]
     result_child_tokens = sum(
-        r["tokens"]["input"] + r["tokens"]["output"]
-        for r in json.loads(result_json)["results"]
+        r["tokens"]["input"] + r["tokens"]["output"] for r in json.loads(result_json)["results"]
     )
     assert db_child_tokens == result_child_tokens
     assert child_run["api_calls"] == 2
@@ -272,8 +322,13 @@ def test_subagent_tool_call_recorded_on_parent():
     ctx.fire("on_session_start", session_id=PARENT, model="m", platform="cli")
 
     result_json = _delegate_result(1000, 200, "m")
-    ctx.fire("post_tool_call", tool_name="delegate_task",
-             result=result_json, duration_ms=1_000, session_id=PARENT)
+    ctx.fire(
+        "post_tool_call",
+        tool_name="delegate_task",
+        result=result_json,
+        duration_ms=1_000,
+        session_id=PARENT,
+    )
     ctx.fire("on_session_end", session_id=PARENT, completed=True, interrupted=False)
 
     parent_run = db.get_run(PARENT)
@@ -299,38 +354,63 @@ def test_subagent_cron_parent_costs_exclude_child():
     _init_mod.register(ctx)
 
     PARENT_SID = "cron_nightly_20260601_020000"
-    CHILD_SID  = "child_cron_recon_001"
+    CHILD_SID = "child_cron_recon_001"
     MODEL = "claude-sonnet-4-6"
-    PROV  = "anthropic"
+    PROV = "anthropic"
 
     # Parent is a cron job
     ctx.fire("on_session_start", session_id=PARENT_SID, model=MODEL, platform="cron")
-    ctx.fire("pre_api_request", session_id=PARENT_SID, api_call_count=0,
-             approx_input_tokens=1_000)
-    ctx.fire("post_api_request", session_id=PARENT_SID, model=MODEL, provider=PROV,
-             api_duration=0.5, api_call_count=0, assistant_content_chars=200,
-             usage={"input_tokens": 1_000, "output_tokens": 100,
-                    "cache_read_tokens": 0, "cache_write_tokens": 0,
-                    "reasoning_tokens": 0})
+    ctx.fire("pre_api_request", session_id=PARENT_SID, api_call_count=0, approx_input_tokens=1_000)
+    ctx.fire(
+        "post_api_request",
+        session_id=PARENT_SID,
+        model=MODEL,
+        provider=PROV,
+        api_duration=0.5,
+        api_call_count=0,
+        assistant_content_chars=200,
+        usage={
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+    )
 
     # Child has its own session (no cron_job_id — standard child run format)
     ctx.fire("on_session_start", session_id=CHILD_SID, model=MODEL, platform="cli")
-    ctx.fire("pre_api_request", session_id=CHILD_SID, api_call_count=0,
-             approx_input_tokens=5_000)
-    ctx.fire("post_api_request", session_id=CHILD_SID, model=MODEL, provider=PROV,
-             api_duration=1.0, api_call_count=0, assistant_content_chars=1_000,
-             usage={"input_tokens": 5_000, "output_tokens": 500,
-                    "cache_read_tokens": 0, "cache_write_tokens": 0,
-                    "reasoning_tokens": 0})
+    ctx.fire("pre_api_request", session_id=CHILD_SID, api_call_count=0, approx_input_tokens=5_000)
+    ctx.fire(
+        "post_api_request",
+        session_id=CHILD_SID,
+        model=MODEL,
+        provider=PROV,
+        api_duration=1.0,
+        api_call_count=0,
+        assistant_content_chars=1_000,
+        usage={
+            "input_tokens": 5_000,
+            "output_tokens": 500,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+    )
     ctx.fire("on_session_end", session_id=CHILD_SID, completed=True, interrupted=False)
 
     result_json = _delegate_result(5_000, 500, MODEL)
-    ctx.fire("post_tool_call", tool_name="delegate_task",
-             result=result_json, duration_ms=2_000, session_id=PARENT_SID)
+    ctx.fire(
+        "post_tool_call",
+        tool_name="delegate_task",
+        result=result_json,
+        duration_ms=2_000,
+        session_id=PARENT_SID,
+    )
     ctx.fire("on_session_end", session_id=PARENT_SID, completed=True, interrupted=False)
 
     parent_run = db.get_run(PARENT_SID)
-    child_run  = db.get_run(CHILD_SID)
+    child_run = db.get_run(CHILD_SID)
 
     # The cron job row carries only the parent's tokens
     assert parent_run["cron_job_id"] == "nightly"

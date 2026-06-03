@@ -27,14 +27,14 @@ Budget support (used by budget.py):
 
 from __future__ import annotations
 
-import json
+import contextlib
 import logging
 import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -148,10 +148,10 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
         return
 
     new_cols_llm = [
-        ("cache_read_tokens",  "INTEGER DEFAULT 0"),
+        ("cache_read_tokens", "INTEGER DEFAULT 0"),
         ("cache_write_tokens", "INTEGER DEFAULT 0"),
-        ("reasoning_tokens",   "INTEGER DEFAULT 0"),
-        ("estimated",          "INTEGER DEFAULT 0"),
+        ("reasoning_tokens", "INTEGER DEFAULT 0"),
+        ("estimated", "INTEGER DEFAULT 0"),
     ]
     for col, typedef in new_cols_llm:
         try:
@@ -160,7 +160,7 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
             pass  # already exists
 
     new_cols_runs = [
-        ("parent_session_id",   "TEXT"),
+        ("parent_session_id", "TEXT"),
         ("estimated_llm_calls", "INTEGER DEFAULT 0"),
     ]
     for col, typedef in new_cols_runs:
@@ -222,12 +222,13 @@ def _run_hours_ago_expr(hours: int) -> str:
 # Write API
 # ---------------------------------------------------------------------------
 
+
 def start_run(
     session_id: str,
     model: str,
     platform: str,
-    cron_job_id: Optional[str] = None,
-    parent_session_id: Optional[str] = None,
+    cron_job_id: str | None = None,
+    parent_session_id: str | None = None,
 ) -> None:
     conn = _get_conn()
     conn.execute(
@@ -240,7 +241,7 @@ def start_run(
     )
 
 
-def end_run(session_id: str, status: str, ended_at: Optional[str] = None) -> None:
+def end_run(session_id: str, status: str, ended_at: str | None = None) -> None:
     now = ended_at or _utcnow()
     conn = _get_conn()
     conn.execute(
@@ -279,8 +280,20 @@ def record_llm_call(
              cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms,
-         cache_read_tokens, cache_write_tokens, reasoning_tokens, 1 if estimated else 0),
+        (
+            session_id,
+            ts,
+            model,
+            provider,
+            tokens_in,
+            tokens_out,
+            cost_usd,
+            latency_ms,
+            cache_read_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+            1 if estimated else 0,
+        ),
     )
     conn.execute(
         """
@@ -315,12 +328,10 @@ def set_sender(session_id: str, sender_id: str) -> None:
     )
 
 
-def get_run(session_id: str) -> Optional[dict[str, Any]]:
+def get_run(session_id: str) -> dict[str, Any] | None:
     """Return the run row for a session, or None if not recorded."""
     conn = _get_conn()
-    row = conn.execute(
-        "SELECT * FROM runs WHERE session_id = ?", (session_id,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM runs WHERE session_id = ?", (session_id,)).fetchone()
     return dict(row) if row else None
 
 
@@ -329,7 +340,7 @@ def record_tool_call(
     ts: str,
     tool_name: str,
     ok: bool,
-    latency_ms: Optional[int],
+    latency_ms: int | None,
 ) -> None:
     conn = _get_conn()
     conn.execute(
@@ -348,6 +359,7 @@ def record_tool_call(
 # ---------------------------------------------------------------------------
 # Read API (used by stats.py)
 # ---------------------------------------------------------------------------
+
 
 def stats_summary(window_hours: int = 24) -> dict[str, Any]:
     conn = _get_conn()
@@ -452,6 +464,7 @@ def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
 # Budget support (used by budget.py)
 # ---------------------------------------------------------------------------
 
+
 def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:
     """Aggregate spend for a budget scope since an ISO-8601 UTC timestamp.
 
@@ -476,7 +489,7 @@ def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:
                COALESCE(SUM(estimated_llm_calls), 0)   AS estimated_calls,
                COALESCE(SUM(api_calls), 0)             AS total_calls
         FROM runs
-        WHERE {' AND '.join(where)}
+        WHERE {" AND ".join(where)}
         """,
         params,
     ).fetchone()
@@ -519,8 +532,7 @@ def try_budget_alert(
 def list_cron_job_ids(since_iso: str) -> list[str]:
     conn = _get_conn()
     rows = conn.execute(
-        "SELECT DISTINCT cron_job_id FROM runs "
-        "WHERE cron_job_id IS NOT NULL AND started_at >= ?",
+        "SELECT DISTINCT cron_job_id FROM runs WHERE cron_job_id IS NOT NULL AND started_at >= ?",
         (since_iso,),
     ).fetchall()
     return [r["cron_job_id"] for r in rows]
@@ -562,7 +574,7 @@ def stats_by_provider(window_hours: int = 24) -> list[dict[str, Any]]:
     for r in rows:
         row = dict(r)
         total = row.get("total_calls") or 0
-        est   = row.get("estimated_calls") or 0
+        est = row.get("estimated_calls") or 0
         row["estimated_pct"] = (est / total) if total else 0.0
         result.append(row)
     return result
@@ -572,10 +584,8 @@ def close_thread_conn() -> None:
     """Close this thread's connection — call on clean thread exit if needed."""
     conn = getattr(_local, "conn", None)
     if conn:
-        try:
+        with contextlib.suppress(Exception):
             conn.close()
-        except Exception:
-            pass
         _local.conn = None
 
 
@@ -596,6 +606,7 @@ def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
         return 0.0
     try:
         import yaml
+
         cfg = yaml.safe_load(pricing_file.read_text()) or {}
         est_models = set(cfg.get("_meta", {}).get("estimated_price_models", []))
     except Exception:
@@ -615,8 +626,10 @@ def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
 
     placeholders = ", ".join(f"'{m}'" for m in est_models)
     # Clamp to avoid SQLite parameter limits on huge lists
-    row = _get_conn().execute(
-        f"""
+    row = (
+        _get_conn()
+        .execute(
+            f"""
         SELECT
             COUNT(*) AS total,
             SUM(CASE WHEN l.model IN ({placeholders}) THEN 1 ELSE 0 END) AS est_calls
@@ -624,8 +637,10 @@ def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
         JOIN runs r ON l.session_id = r.session_id
         WHERE {" AND ".join(where)}
         """,
-        params,
-    ).fetchone()
+            params,
+        )
+        .fetchone()
+    )
     total = row["total"] or 0
     est = row["est_calls"] or 0
     return est / total if total else 0.0

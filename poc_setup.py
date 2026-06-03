@@ -1,8 +1,9 @@
 """PoC Step 1+3: Auto-setup from scratch + owl-alpha verification."""
+
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import types
 from pathlib import Path
 
@@ -35,6 +36,7 @@ _tele_pkg.__file__ = str(REPO / "__init__.py")
 sys.modules.setdefault("hermes_telemetry", _tele_pkg)
 
 from hermes_telemetry import setup as setup_mod  # noqa: E402
+
 importlib.reload(setup_mod)
 
 # ── Verify owl-alpha in built-in seed ──
@@ -62,6 +64,7 @@ print()
 
 # ── Verify pricing.yaml content ──
 import yaml
+
 pdata = yaml.safe_load(pricing_file.read_text())
 models = pdata.get("models", {})
 print(f"[PoC] pricing.yaml: {len(models)} models total")
@@ -86,7 +89,9 @@ assert global_budget.get("monthly_usd") == 100.00
 print("  ✅ Global budget: $5.00/day, $100.00/month\n")
 
 # ── Verify no per_cron_job in default budget ──
-assert "per_cron_job" not in bdata.get("budgets", {}), "per_cron_job should NOT be in default budget!"
+assert "per_cron_job" not in bdata.get("budgets", {}), (
+    "per_cron_job should NOT be in default budget!"
+)
 print("  ✅ No per_cron_job in default budget (as expected)\n")
 
 # ── Test idempotency: run again, should not overwrite ──

@@ -6,10 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
-import sys
 from pathlib import Path
-
-import pytest
 
 # Load __init__.py as a module directly — the conftest stub does not execute it.
 # We need the module-level constants (CRON_SESSION_RE) and functions.
@@ -24,6 +21,7 @@ _spec.loader.exec_module(_init_mod)
 # ---------------------------------------------------------------------------
 # CRON_SESSION_RE and _extract_cron_job_id
 # ---------------------------------------------------------------------------
+
 
 def test_cron_session_id_regex_current_format():
     """Standard format cron_abc123_YYYYMMDD_HHMMSS → job_id='abc123'."""
@@ -42,6 +40,7 @@ def test_cron_session_id_regex_with_underscores():
 def test_cron_session_id_regex_bad_format_returns_none(caplog):
     """A bad format causes _extract_cron_job_id to return None and log a warning."""
     import logging
+
     with caplog.at_level(logging.WARNING):
         result = _init_mod._extract_cron_job_id("cron_abc123_notadate", "cron")
     assert result is None
@@ -60,6 +59,7 @@ def test_cron_session_id_non_cron_platform():
 # ---------------------------------------------------------------------------
 # _is_tool_ok
 # ---------------------------------------------------------------------------
+
 
 def test_is_tool_ok_json_error():
     """A JSON response with an 'error' key is not ok."""

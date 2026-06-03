@@ -7,13 +7,13 @@ Covers:
   - Idempotency: skips files that already exist
   - owl-alpha present in pricing after setup
 """
+
 from __future__ import annotations
 
 import importlib
 import json
 import sys
 import types
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -52,10 +52,12 @@ def tmp_telemetry(tmp_path, monkeypatch):
 class TestSetupPricing:
     def test_auto_generates_pricing_yaml(self, tmp_telemetry):
         """Non-interactive auto mode creates pricing.yaml with defaults + OR fetch."""
-        with patch.object(setup, "_fetch_openrouter_models", return_value={
-            "openrouter/some-new-model": {"input": 1.00, "output": 2.00}
-        }):
-            result = setup.run(interactive=False)
+        with patch.object(
+            setup,
+            "_fetch_openrouter_models",
+            return_value={"openrouter/some-new-model": {"input": 1.00, "output": 2.00}},
+        ):
+            setup.run(interactive=False)
 
         pricing_file = tmp_telemetry / "telemetry" / "pricing.yaml"
         assert pricing_file.exists(), "pricing.yaml should be created"
@@ -93,7 +95,7 @@ class TestSetupPricing:
         existing = tele_dir / "pricing.yaml"
         existing.write_text("# my custom pricing\nmodels: {}\n")
 
-        result = setup.run(interactive=False)
+        setup.run(interactive=False)
         assert existing.read_text() == "# my custom pricing\nmodels: {}\n"
 
 
@@ -130,7 +132,7 @@ class TestSetupBudget:
         existing = tele_dir / "budget.yaml"
         existing.write_text("# custom\nbudgets:\n  global:\n    daily_usd: 99.00\n")
 
-        result = setup.run(interactive=False)
+        setup.run(interactive=False)
         assert "99.0" in existing.read_text()
 
 
@@ -158,13 +160,13 @@ class TestSetupCommandHandler:
     def test_pricing_auto_via_command(self, tmp_telemetry):
         """/setup pricing auto triggers fetch and writes file."""
         with patch.object(setup, "_fetch_openrouter_models", return_value={}):
-            result = setup.handle_command("pricing auto")
+            setup.handle_command("pricing auto")
         pricing_file = tmp_telemetry / "telemetry" / "pricing.yaml"
         assert pricing_file.exists()
 
     def test_budget_default_via_command(self, tmp_telemetry):
         """/setup budget default writes file with expected content."""
-        result = setup.handle_command("budget default")
+        setup.handle_command("budget default")
         budget_file = tmp_telemetry / "telemetry" / "budget.yaml"
         assert budget_file.exists()
         content = budget_file.read_text()
@@ -191,9 +193,7 @@ class TestOpenRouterFetch:
         """Helper to mock urllib with a JSON response."""
         mock_cm = MagicMock()
         raw = json.dumps(data).encode()
-        mock_cm.__enter__ = MagicMock(return_value=MagicMock(
-            read=MagicMock(return_value=raw)
-        ))
+        mock_cm.__enter__ = MagicMock(return_value=MagicMock(read=MagicMock(return_value=raw)))
         mock_cm.__exit__ = MagicMock(return_value=False)
         return mock_cm
 

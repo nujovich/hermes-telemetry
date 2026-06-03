@@ -1,8 +1,9 @@
 """PoC Step 2: /setup command handler — simulate user interactions."""
+
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import types
 from pathlib import Path
 
@@ -23,7 +24,9 @@ _tele_pkg.__file__ = str(REPO / "__init__.py")
 sys.modules.setdefault("hermes_telemetry", _tele_pkg)
 
 import importlib
+
 from hermes_telemetry import setup as setup_mod
+
 importlib.reload(setup_mod)
 
 pricing_file = Path(tmp) / "telemetry" / "pricing.yaml"
@@ -48,6 +51,7 @@ print(result)
 print()
 assert pricing_file.exists()
 import yaml
+
 pdata = yaml.safe_load(pricing_file.read_text())
 print(f"  Models written: {len(pdata['models'])}")
 assert "owl-alpha" in pdata["models"]

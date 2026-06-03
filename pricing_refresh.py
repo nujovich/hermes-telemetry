@@ -14,16 +14,16 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
-import sys
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-PRICING_FILE = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "telemetry" / "pricing.yaml"
+PRICING_FILE = (
+    Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "telemetry" / "pricing.yaml"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -44,8 +44,9 @@ class PricingSource(ABC):
 
     def _get(self, url: str, timeout: int = 15) -> dict:
         """Simple HTTP GET using stdlib only."""
-        import urllib.request
         import urllib.error
+        import urllib.request
+
         req = urllib.request.Request(url, headers={"User-Agent": "hermes-telemetry/0.2"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -139,9 +140,13 @@ def register_source(cls: type[PricingSource]) -> None:
 # ---------------------------------------------------------------------------
 def _load_yaml(path: Path) -> dict:
     if not path.exists():
-        return {"models": {}, "defaults": {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25}}
+        return {
+            "models": {},
+            "defaults": {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25},
+        }
     try:
         import yaml
+
         with open(path) as f:
             return yaml.safe_load(f) or {"models": {}, "defaults": {}}
     except Exception as exc:
@@ -152,6 +157,7 @@ def _load_yaml(path: Path) -> dict:
 def _save_yaml(path: Path, data: dict) -> None:
     try:
         import yaml
+
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
@@ -175,7 +181,9 @@ def refresh_pricing(dry_run: bool = False) -> tuple[dict[str, dict], list[dict]]
     """
     existing = _load_yaml(PRICING_FILE)
     existing_models = existing.get("models", {})
-    defaults = existing.get("defaults", {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25})
+    defaults = existing.get(
+        "defaults", {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25}
+    )
 
     # Track which models came from auto-refresh vs manual
     # We use a special _meta key to track auto-refreshed models
@@ -214,15 +222,19 @@ def refresh_pricing(dry_run: bool = False) -> tuple[dict[str, dict], list[dict]]
                     logger.info(
                         "Manual override preserved for %s "
                         "(remote=%s, local=%s) — update pricing.yaml manually if needed",
-                        model, fetched_input, existing_input,
+                        model,
+                        fetched_input,
+                        existing_input,
                     )
-                    manual_overrides.append({
-                        "model": model,
-                        "local_input": existing_input,
-                        "remote_input": fetched_input,
-                        "local_output": existing_models[model].get("output", 0),
-                        "remote_output": pricing.get("output", 0),
-                    })
+                    manual_overrides.append(
+                        {
+                            "model": model,
+                            "local_input": existing_input,
+                            "remote_input": fetched_input,
+                            "local_output": existing_models[model].get("output", 0),
+                            "remote_output": pricing.get("output", 0),
+                        }
+                    )
                 new_auto_models.discard(model)
                 continue
 
@@ -256,7 +268,7 @@ def refresh_pricing(dry_run: bool = False) -> tuple[dict[str, dict], list[dict]]
     else:
         logger.info("no changes detected")
 
-    return changes, manual_overrides 
+    return changes, manual_overrides
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +276,7 @@ def refresh_pricing(dry_run: bool = False) -> tuple[dict[str, dict], list[dict]]
 # ---------------------------------------------------------------------------
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="Refresh pricing from remote sources")
     parser.add_argument("--check", action="store_true", help="dry run, don't write")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -293,13 +306,19 @@ def main():
                         print(f"      {key}: {old_v:.4f} → {new_v:.4f}")
 
     if manual_overrides:
-        print(f"\n⚠  Manual overrides preserved ({len(manual_overrides)} model(s) with differing remote prices):\n")
+        print(
+            f"\n⚠  Manual overrides preserved ({len(manual_overrides)} model(s) with differing remote prices):\n"
+        )
         for mo in sorted(manual_overrides, key=lambda x: x["model"]):
             print(f"    {mo['model']}")
             if mo["local_input"] != mo["remote_input"]:
-                print(f"      input:  local={mo['local_input']:.4f}  remote={mo['remote_input']:.4f}")
+                print(
+                    f"      input:  local={mo['local_input']:.4f}  remote={mo['remote_input']:.4f}"
+                )
             if mo["local_output"] != mo["remote_output"]:
-                print(f"      output: local={mo['local_output']:.4f}  remote={mo['remote_output']:.4f}")
+                print(
+                    f"      output: local={mo['local_output']:.4f}  remote={mo['remote_output']:.4f}"
+                )
 
     if not changes and not manual_overrides:
         print("No changes. Pricing is up to date.")

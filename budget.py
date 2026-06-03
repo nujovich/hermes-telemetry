@@ -24,13 +24,14 @@ Config: ~/.hermes/telemetry/budget.yaml  (absent → budgets disabled, all ok).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from . import db
 
@@ -44,7 +45,7 @@ _DEFAULT_ON_ESTIMATED = {"mode": "warn_only"}  # warn_only | enforce
 
 _WINDOWS = (("daily", "daily_usd"), ("monthly", "monthly_usd"))
 
-_config_cache: Optional[dict] = None
+_config_cache: dict | None = None
 _config_lock = threading.Lock()
 
 # Short-TTL verdict cache so the pre_tool_call gate (which fires on EVERY tool
@@ -76,6 +77,7 @@ def load_config() -> dict:
         if path.exists():
             try:
                 import yaml
+
                 with open(path) as f:
                     raw = yaml.safe_load(f) or {}
                 cfg["budgets"] = raw.get("budgets") or {}
@@ -102,6 +104,7 @@ def reload_config() -> None:
 # Window math (local timezone)
 # ---------------------------------------------------------------------------
 
+
 def _now_local() -> datetime:
     return datetime.now().astimezone()
 
@@ -127,17 +130,18 @@ def _period_key(window: str) -> str:
 # Verdict
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class BudgetVerdict:
-    scope: str            # global | cron_job | sender
-    scope_id: str         # "" for global
-    window: str           # daily | monthly
-    status: str           # ok | soft | hard
+    scope: str  # global | cron_job | sender
+    scope_id: str  # "" for global
+    window: str  # daily | monthly
+    status: str  # ok | soft | hard
     spent: float
     limit: float
     pct: float
     based_on_estimates: bool
-    degraded: bool        # True if a hard verdict was softened by on_estimated
+    degraded: bool  # True if a hard verdict was softened by on_estimated
     period_key: str
 
     _SEVERITY = {"ok": 0, "soft": 1, "hard": 2}
@@ -176,14 +180,12 @@ def _resolve_limits(scope: str, scope_id: str) -> dict[str, float]:
     for _, key in _WINDOWS:
         val = node.get(key) if isinstance(node, dict) else None
         if val is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 out[key] = float(val)
-            except (TypeError, ValueError):
-                pass
     return out
 
 
-def check(scope: str, scope_id: str = "") -> Optional[BudgetVerdict]:
+def check(scope: str, scope_id: str = "") -> BudgetVerdict | None:
     """Evaluate every configured window for a scope and return the single most
     severe verdict, or None if the scope has no configured limit."""
     cache_key = (scope, scope_id)
@@ -199,7 +201,7 @@ def check(scope: str, scope_id: str = "") -> Optional[BudgetVerdict]:
     hard_pct = float(thresholds.get("hard_pct", 1.00))
     mode = load_config().get("on_estimated", _DEFAULT_ON_ESTIMATED).get("mode", "warn_only")
 
-    best: Optional[BudgetVerdict] = None
+    best: BudgetVerdict | None = None
     for window, key in _WINDOWS:
         limit = limits.get(key)
         if not limit or limit <= 0:
@@ -212,7 +214,9 @@ def check(scope: str, scope_id: str = "") -> Optional[BudgetVerdict]:
         # Also check if any calls used models with estimated pricing
         # (e.g. OpenRouter auto-routing models with no fixed price)
         if not based_on_est:
-            based_on_est = db.estimated_price_share(scope, scope_id, _window_start_utc(window)) > 0.0
+            based_on_est = (
+                db.estimated_price_share(scope, scope_id, _window_start_utc(window)) > 0.0
+            )
 
         if pct >= hard_pct:
             status = "hard"
@@ -227,13 +231,21 @@ def check(scope: str, scope_id: str = "") -> Optional[BudgetVerdict]:
             degraded = True
 
         v = BudgetVerdict(
-            scope=scope, scope_id=scope_id, window=window, status=status,
-            spent=spent, limit=limit, pct=pct,
-            based_on_estimates=based_on_est, degraded=degraded,
+            scope=scope,
+            scope_id=scope_id,
+            window=window,
+            status=status,
+            spent=spent,
+            limit=limit,
+            pct=pct,
+            based_on_estimates=based_on_est,
+            degraded=degraded,
             period_key=_period_key(window),
         )
-        if best is None or v.severity > best.severity or (
-            v.severity == best.severity and v.pct > best.pct
+        if (
+            best is None
+            or v.severity > best.severity
+            or (v.severity == best.severity and v.pct > best.pct)
         ):
             best = v
 
@@ -266,7 +278,8 @@ def evaluate_run(run_row: dict) -> list[BudgetVerdict]:
 # Enforcement helpers
 # ---------------------------------------------------------------------------
 
-def block_message_for(verdicts: list[BudgetVerdict]) -> Optional[str]:
+
+def block_message_for(verdicts: list[BudgetVerdict]) -> str | None:
     """If any verdict is a (non-degraded) hard breach, return an actionable
     block message for the pre_tool_call gate. Degraded-by-estimate verdicts are
     already 'soft' and never reach here."""
@@ -282,7 +295,7 @@ def block_message_for(verdicts: list[BudgetVerdict]) -> Optional[str]:
     )
 
 
-def alert_context(verdicts: list[BudgetVerdict]) -> Optional[str]:
+def alert_context(verdicts: list[BudgetVerdict]) -> str | None:
     """Build a one-time-per-window notice (soft or hard) for context injection
     via pre_llm_call. Anti-spam is enforced through db.try_budget_alert."""
     parts: list[str] = []
@@ -312,6 +325,7 @@ def _pause_cron_job(job_id: str, reason: str) -> bool:
     """Pause a cron job for future runs. Isolated so tests can monkeypatch it."""
     try:
         from cron.jobs import pause_job  # type: ignore
+
         pause_job(job_id, reason=reason)
         return True
     except Exception as exc:  # cron module unavailable or call failed
@@ -328,10 +342,7 @@ def enforce_cron_pause(verdicts: list[BudgetVerdict]) -> None:
         if db.try_budget_alert(
             v.scope, v.scope_id, v.window, v.period_key, "paused", v.spent, v.limit
         ):
-            reason = (
-                f"hermes-telemetry budget: spent ${v.spent:.4f} of "
-                f"${v.limit:.2f} ({v.window})"
-            )
+            reason = f"hermes-telemetry budget: spent ${v.spent:.4f} of ${v.limit:.2f} ({v.window})"
             _pause_cron_job(v.scope_id, reason)
 
 
@@ -339,7 +350,8 @@ def enforce_cron_pause(verdicts: list[BudgetVerdict]) -> None:
 # /budget slash command
 # ---------------------------------------------------------------------------
 
-def _fmt_verdict_line(label: str, v: Optional[BudgetVerdict]) -> str:
+
+def _fmt_verdict_line(label: str, v: BudgetVerdict | None) -> str:
     if v is None:
         return f"  {label:<28} (no limit set)"
     flag = {"ok": " ", "soft": "!", "hard": "█"}[v.status]
@@ -379,6 +391,7 @@ def _status_block() -> str:
     # Estimated-price models warning
     try:
         import yaml
+
         pricing_file = Path.home() / ".hermes" / "telemetry" / "pricing.yaml"
         if pricing_file.exists():
             cfg = yaml.safe_load(pricing_file.read_text()) or {}
@@ -418,6 +431,7 @@ def _cron_block() -> str:
 def _set_budget(scope: str, window: str, usd: float) -> str:
     """Persist a limit to budget.yaml and hot-reload."""
     import yaml
+
     if scope not in ("global", "cron_job", "sender"):
         return f"Unknown scope {scope!r}. Use: global | cron_job | sender"
     if window not in ("daily", "monthly"):
@@ -449,6 +463,7 @@ def _set_budget(scope: str, window: str, usd: float) -> str:
 
 def _days_ago_utc(days: int) -> str:
     from datetime import timedelta
+
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 

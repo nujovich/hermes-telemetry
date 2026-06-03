@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import sys
 import threading
-import time
-from pathlib import Path
 
 import pytest
 
@@ -14,12 +10,14 @@ import pytest
 # Fixture: isolate each test in a fresh temp DB
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path, monkeypatch):
     """Point HERMES_HOME at a temp dir so every test gets a clean DB."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # Force the per-thread connection to be reset between tests
     import hermes_telemetry.db as db_mod
+
     db_mod._local.conn = None
     yield
     # Cleanup
@@ -31,16 +29,16 @@ def isolated_db(tmp_path, monkeypatch):
 import hermes_telemetry.db as db
 from hermes_telemetry.db import _SCHEMA_VERSION
 
-
 # ---------------------------------------------------------------------------
 # Schema migrations — idempotent
 # ---------------------------------------------------------------------------
 
+
 def test_schema_creates_tables():
     conn = db._get_conn()
-    tables = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()}
+    tables = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
     assert "runs" in tables
     assert "llm_calls" in tables
     assert "tool_calls" in tables
@@ -66,6 +64,7 @@ def test_schema_idempotent():
 # start_run / end_run
 # ---------------------------------------------------------------------------
 
+
 def test_start_run_creates_row():
     db.start_run("sess-1", model="claude-sonnet", platform="cli")
     conn = db._get_conn()
@@ -78,9 +77,13 @@ def test_start_run_creates_row():
 
 
 def test_start_run_with_cron_job_id():
-    db.start_run("cron_abc123_20260601_120000", model="gpt-4o", platform="cron", cron_job_id="abc123")
+    db.start_run(
+        "cron_abc123_20260601_120000", model="gpt-4o", platform="cron", cron_job_id="abc123"
+    )
     conn = db._get_conn()
-    row = conn.execute("SELECT * FROM runs WHERE session_id = 'cron_abc123_20260601_120000'").fetchone()
+    row = conn.execute(
+        "SELECT * FROM runs WHERE session_id = 'cron_abc123_20260601_120000'"
+    ).fetchone()
     assert row["cron_job_id"] == "abc123"
     assert row["platform"] == "cron"
 
@@ -98,7 +101,9 @@ def test_end_run_sets_status():
     db.start_run("sess-end", model="m", platform="cli")
     db.end_run("sess-end", status="ok")
     conn = db._get_conn()
-    row = conn.execute("SELECT status, ended_at, duration_ms FROM runs WHERE session_id='sess-end'").fetchone()
+    row = conn.execute(
+        "SELECT status, ended_at, duration_ms FROM runs WHERE session_id='sess-end'"
+    ).fetchone()
     assert row["status"] == "ok"
     assert row["ended_at"] is not None
     assert row["duration_ms"] is not None
@@ -109,9 +114,12 @@ def test_end_run_sets_status():
 # record_llm_call
 # ---------------------------------------------------------------------------
 
+
 def test_record_llm_call_writes_row():
     db.start_run("sess-llm", model="gpt-4o", platform="cli")
-    db.record_llm_call("sess-llm", "2026-01-01T00:00:00+00:00", "gpt-4o", "openai", 1000, 200, 0.003, 500)
+    db.record_llm_call(
+        "sess-llm", "2026-01-01T00:00:00+00:00", "gpt-4o", "openai", 1000, 200, 0.003, 500
+    )
     conn = db._get_conn()
     rows = conn.execute("SELECT * FROM llm_calls WHERE session_id='sess-llm'").fetchall()
     assert len(rows) == 1
@@ -124,8 +132,12 @@ def test_record_llm_call_writes_row():
 
 def test_record_llm_call_accumulates_in_runs():
     db.start_run("sess-accum", model="gpt-4o", platform="cli")
-    db.record_llm_call("sess-accum", "2026-01-01T00:00:00+00:00", "gpt-4o", "openai", 500, 100, 0.001, 300)
-    db.record_llm_call("sess-accum", "2026-01-01T00:01:00+00:00", "gpt-4o", "openai", 500, 100, 0.001, 300)
+    db.record_llm_call(
+        "sess-accum", "2026-01-01T00:00:00+00:00", "gpt-4o", "openai", 500, 100, 0.001, 300
+    )
+    db.record_llm_call(
+        "sess-accum", "2026-01-01T00:01:00+00:00", "gpt-4o", "openai", 500, 100, 0.001, 300
+    )
     conn = db._get_conn()
     row = conn.execute("SELECT * FROM runs WHERE session_id='sess-accum'").fetchone()
     assert row["tokens_in"] == 1000
@@ -137,6 +149,7 @@ def test_record_llm_call_accumulates_in_runs():
 # ---------------------------------------------------------------------------
 # record_tool_call
 # ---------------------------------------------------------------------------
+
 
 def test_record_tool_call_ok():
     db.start_run("sess-tool", model="m", platform="cli")
@@ -163,9 +176,11 @@ def test_record_tool_call_failure():
 # Aggregation queries
 # ---------------------------------------------------------------------------
 
+
 def _seed_data():
     """Insert a minimal dataset for aggregation tests."""
     import datetime
+
     now = datetime.datetime.now(datetime.timezone.utc)
 
     for i in range(3):
@@ -176,8 +191,19 @@ def _seed_data():
         db.end_run(sid, "ok")
 
     # One cron run
-    db.start_run("cron_job1_20260601_120000", model="claude-sonnet", platform="cron", cron_job_id="job1")
-    db.record_llm_call("cron_job1_20260601_120000", now.isoformat(), "claude-sonnet", "anthropic", 2000, 500, 0.01, 800)
+    db.start_run(
+        "cron_job1_20260601_120000", model="claude-sonnet", platform="cron", cron_job_id="job1"
+    )
+    db.record_llm_call(
+        "cron_job1_20260601_120000",
+        now.isoformat(),
+        "claude-sonnet",
+        "anthropic",
+        2000,
+        500,
+        0.01,
+        800,
+    )
     db.end_run("cron_job1_20260601_120000", "ok")
 
 
@@ -217,6 +243,7 @@ def test_recent_runs_ordered():
 # Schema v2 columns (Refinement 2)
 # ---------------------------------------------------------------------------
 
+
 def test_schema_v2_columns():
     conn = db._get_conn()
     # Check llm_calls columns
@@ -234,10 +261,16 @@ def test_schema_v2_columns():
 def test_record_llm_call_with_cache_tokens():
     db.start_run("sess-cache", model="claude-sonnet-4-6", platform="cli")
     db.record_llm_call(
-        "sess-cache", "2026-01-01T00:00:00+00:00",
-        "claude-sonnet-4-6", "anthropic",
-        tokens_in=1000, tokens_out=200, cost_usd=0.004, latency_ms=300,
-        cache_read_tokens=1000, cache_write_tokens=500,
+        "sess-cache",
+        "2026-01-01T00:00:00+00:00",
+        "claude-sonnet-4-6",
+        "anthropic",
+        tokens_in=1000,
+        tokens_out=200,
+        cost_usd=0.004,
+        latency_ms=300,
+        cache_read_tokens=1000,
+        cache_write_tokens=500,
     )
     conn = db._get_conn()
     row = conn.execute("SELECT * FROM llm_calls WHERE session_id='sess-cache'").fetchone()
@@ -251,29 +284,44 @@ def test_record_llm_call_estimated():
     """estimated=True increments estimated_llm_calls on the runs row."""
     db.start_run("sess-est", model="gpt-4o", platform="cli")
     db.record_llm_call(
-        "sess-est", "2026-01-01T00:00:00+00:00",
-        "gpt-4o", "openai",
-        tokens_in=100, tokens_out=50, cost_usd=0.001, latency_ms=100,
+        "sess-est",
+        "2026-01-01T00:00:00+00:00",
+        "gpt-4o",
+        "openai",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.001,
+        latency_ms=100,
         estimated=True,
     )
     conn = db._get_conn()
-    row = conn.execute("SELECT estimated_llm_calls FROM runs WHERE session_id='sess-est'").fetchone()
+    row = conn.execute(
+        "SELECT estimated_llm_calls FROM runs WHERE session_id='sess-est'"
+    ).fetchone()
     assert row["estimated_llm_calls"] == 1
 
     # A second non-estimated call should not increment
     db.record_llm_call(
-        "sess-est", "2026-01-01T00:01:00+00:00",
-        "gpt-4o", "openai",
-        tokens_in=100, tokens_out=50, cost_usd=0.001, latency_ms=100,
+        "sess-est",
+        "2026-01-01T00:01:00+00:00",
+        "gpt-4o",
+        "openai",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.001,
+        latency_ms=100,
         estimated=False,
     )
-    row = conn.execute("SELECT estimated_llm_calls FROM runs WHERE session_id='sess-est'").fetchone()
+    row = conn.execute(
+        "SELECT estimated_llm_calls FROM runs WHERE session_id='sess-est'"
+    ).fetchone()
     assert row["estimated_llm_calls"] == 1
 
 
 def test_stats_summary_estimated_percentage():
     """Seed 2 real + 1 estimated calls; stats_summary should report correct estimated_llm_calls."""
     import datetime
+
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     db.start_run("sess-mix", model="gpt-4o", platform="cli")
     # Two real calls
@@ -292,6 +340,7 @@ def test_stats_summary_estimated_percentage():
 # Concurrency: N threads writing simultaneously must not corrupt/lose rows
 # ---------------------------------------------------------------------------
 
+
 def test_concurrent_writes(tmp_path, monkeypatch):
     """WAL + per-thread connections — N concurrent writers, no corruption."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -305,7 +354,8 @@ def test_concurrent_writes(tmp_path, monkeypatch):
     def worker(thread_idx: int) -> None:
         # Each thread has its own _local, so it will create its own connection
         db_mod._local.conn = None  # ensure fresh connection per thread
-        import datetime, uuid
+        import datetime
+
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
             for j in range(N_WRITES_PER_THREAD):
@@ -344,12 +394,12 @@ def test_concurrent_writes(tmp_path, monkeypatch):
 # Schema v3: sender_id + budget_alerts + budget queries
 # ---------------------------------------------------------------------------
 
+
 def test_schema_v3_columns_and_table():
     conn = db._get_conn()
     run_cols = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
     assert "sender_id" in run_cols
-    tables = {r["name"] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "budget_alerts" in tables
 
 

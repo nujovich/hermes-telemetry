@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import textwrap
-from pathlib import Path
-
-import pytest
 
 import hermes_telemetry.pricing as pricing
+import pytest
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +21,7 @@ def reset_pricing():
 # ---------------------------------------------------------------------------
 # Basic calculation — new usage-dict signature
 # ---------------------------------------------------------------------------
+
 
 def test_known_model_anthropic():
     cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "claude-sonnet-4-6")
@@ -62,15 +60,14 @@ def test_deepseek_pricing():
 
 
 def test_openai_gpt4o():
-    cost = pricing.estimate_cost(
-        {"input_tokens": 1_000_000, "output_tokens": 1_000_000}, "gpt-4o"
-    )
+    cost = pricing.estimate_cost({"input_tokens": 1_000_000, "output_tokens": 1_000_000}, "gpt-4o")
     assert abs(cost - (2.50 + 10.00)) < 1e-6
 
 
 # ---------------------------------------------------------------------------
 # Case-insensitive matching
 # ---------------------------------------------------------------------------
+
 
 def test_case_insensitive():
     cost_lower = pricing.estimate_cost({"input_tokens": 1000}, "claude-sonnet-4-6")
@@ -81,6 +78,7 @@ def test_case_insensitive():
 # ---------------------------------------------------------------------------
 # Prefix matching
 # ---------------------------------------------------------------------------
+
 
 def test_prefix_match_unknown_variant():
     # A hypothetical future claude-sonnet-4-9-... should hit the prefix
@@ -97,8 +95,10 @@ def test_prefix_match_opus():
 # Unknown model
 # ---------------------------------------------------------------------------
 
+
 def test_unknown_model_returns_zero(caplog):
     import logging
+
     with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
         cost = pricing.estimate_cost(
             {"input_tokens": 5000, "output_tokens": 2000}, "totally-unknown-model-xyz"
@@ -108,6 +108,7 @@ def test_unknown_model_returns_zero(caplog):
 
 def test_unknown_model_warns_once(caplog):
     import logging
+
     with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
         pricing.estimate_cost({"input_tokens": 100, "output_tokens": 100}, "new-unknown-model")
         pricing.estimate_cost({"input_tokens": 100, "output_tokens": 100}, "new-unknown-model")
@@ -125,15 +126,18 @@ def test_empty_model_returns_zero():
 # Custom pricing via YAML override
 # ---------------------------------------------------------------------------
 
+
 def test_custom_pricing_yaml(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     tele_dir = tmp_path / "telemetry"
     tele_dir.mkdir()
-    (tele_dir / "pricing.yaml").write_text(textwrap.dedent("""
+    (tele_dir / "pricing.yaml").write_text(
+        textwrap.dedent("""
         my-custom-model:
           input: 10.00
           output: 20.00
-    """))
+    """)
+    )
     pricing._custom_pricing = None
 
     cost = pricing.estimate_cost(
@@ -146,11 +150,13 @@ def test_custom_pricing_overrides_default(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     tele_dir = tmp_path / "telemetry"
     tele_dir.mkdir()
-    (tele_dir / "pricing.yaml").write_text(textwrap.dedent("""
+    (tele_dir / "pricing.yaml").write_text(
+        textwrap.dedent("""
         claude-sonnet-4-6:
           input: 99.00
           output: 99.00
-    """))
+    """)
+    )
     pricing._custom_pricing = None
 
     cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "claude-sonnet-4-6")
@@ -168,6 +174,7 @@ def test_custom_pricing_missing_file(tmp_path, monkeypatch):
 
 def test_custom_pricing_malformed_yaml(tmp_path, monkeypatch, caplog):
     import logging
+
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     tele_dir = tmp_path / "telemetry"
     tele_dir.mkdir()
@@ -182,6 +189,7 @@ def test_custom_pricing_malformed_yaml(tmp_path, monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 # New tests for cache/reasoning split (Refinement 1)
 # ---------------------------------------------------------------------------
+
 
 def test_cache_pricing_cheaper_than_fresh_input():
     """Cache reads should cost less than fresh input tokens for the same total."""
@@ -212,12 +220,7 @@ def test_cache_read_and_write_split_exact():
     }
     cost = pricing.estimate_cost(usage, "claude-sonnet-4-6")
     # claude-sonnet-4-6: input 3.00, output 15.00, cache_read 0.30, cache_write 3.75
-    expected = (
-        100_000 * 3.00 +
-        500_000 * 0.30 +
-        200_000 * 3.75 +
-        50_000 * 15.00
-    ) / 1_000_000
+    expected = (100_000 * 3.00 + 500_000 * 0.30 + 200_000 * 3.75 + 50_000 * 15.00) / 1_000_000
     assert abs(cost - expected) < 1e-9
 
     # cache_read is cheaper than fresh input; cache_write is more expensive.
@@ -263,11 +266,10 @@ def test_estimate_cost_empty_usage():
 def test_cache_multiplier_fallback(caplog):
     """Models without explicit cache_read use input * 0.10 default multiplier."""
     import logging
+
     # gpt-4o has no explicit cache_read price
     with caplog.at_level(logging.DEBUG, logger="hermes_telemetry.pricing"):
-        cost = pricing.estimate_cost(
-            {"cache_read_tokens": 1_000_000}, "gpt-4o"
-        )
+        cost = pricing.estimate_cost({"cache_read_tokens": 1_000_000}, "gpt-4o")
     # Expected: 1M * (2.50 * 0.10) / 1M = $0.25
     expected = 2.50 * 0.10
     assert abs(cost - expected) < 1e-9

@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-telemetry"
@@ -63,7 +63,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # unused imports re-exportados
-"tests/*" = ["S101"]      # assert en tests
+"tests/*" = ["S101", "E402"]  # assert en tests, imports diferidos
+"poc_setup*.py" = ["E402"]  # imports diferidos para setup de paquete
+"db.py" = ["SIM105"]  # try/except en migraciones (contextlib.suppress rompe la legibilidad)
 
 [tool.ruff.format]
 quote-style = "double"
