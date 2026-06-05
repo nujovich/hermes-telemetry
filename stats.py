@@ -154,24 +154,12 @@ def _providers_block(window_hours: int = 24) -> str:
 
     lines.append("")
     lines.append("  Provider key:")
-    lines.append(
-        "    The provider label is whatever the Hermes gateway reports for each API"
-    )
-    lines.append(
-        "    call (post_api_request hook); it is stored verbatim and rows are grouped"
-    )
-    lines.append(
-        "    by it. It is NOT derived from the model name — so everything the gateway"
-    )
-    lines.append(
-        "    routes through OpenRouter shows up under its 'openrouter' label regardless"
-    )
-    lines.append(
-        "    of the model's own 'google/', 'openai/', 'anthropic/', … prefix."
-    )
-    lines.append(
-        "    '(unknown)' = the gateway reported no provider for that call."
-    )
+    lines.append("    The provider label is whatever the Hermes gateway reports for each API")
+    lines.append("    call (post_api_request hook); it is stored verbatim and rows are grouped")
+    lines.append("    by it. It is NOT derived from the model name — so everything the gateway")
+    lines.append("    routes through OpenRouter shows up under its 'openrouter' label regardless")
+    lines.append("    of the model's own 'google/', 'openai/', 'anthropic/', … prefix.")
+    lines.append("    '(unknown)' = the gateway reported no provider for that call.")
     lines.append("")
     lines.append(
         "  Est% = share of calls where the provider returned no usage data "
@@ -238,9 +226,7 @@ def _models_block(window_hours: int = 24) -> str:
         "  Rows are grouped by provider, then by calls (desc). A model showing "
         "$0.00 has no price entry"
     )
-    lines.append(
-        "  in pricing.yaml — run /setup pricing auto to refresh, or add it manually."
-    )
+    lines.append("  in pricing.yaml — run /setup pricing auto to refresh, or add it manually.")
     return "\n".join(lines)
 
 
