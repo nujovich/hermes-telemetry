@@ -102,7 +102,7 @@ A standalone HTML dashboard for users who prefer a visual interface over slash c
 | **Cost (USD)** | Local pricing table × tokens | ⚠️ **Estimated** |
 | Tokens when provider returns `usage=None` | Fallback approximation | ⚠️ **Estimated, flagged** |
 
-Cost is always an **estimate** computed from a locally-maintained pricing table. No external pricing API is called. When the provider returns no usage data, tokens are estimated from a pre-request approximation + response length and the row is flagged as `estimated=1`, so `/stats` and `/budget` show a `~` prefix and an "estimated data" percentage.
+Cost is always an **estimate** computed locally: a pricing table (USD per 1M tokens) multiplied by the token counts from each API call. The pricing table is refreshed periodically from the OpenRouter public API (`https://openrouter.ai/api/v1/models`, no auth required); this fetch downloads **only** model prices — no user usage data is sent. User overrides in `pricing.yaml` are always preserved over auto-fetched values. When the provider returns no usage data, tokens are estimated from a pre-request approximation + response length and the row is flagged as `estimated=1`, so `/stats` and `/budget` show a `~` prefix and an "estimated data" percentage.
 
 ---
 
@@ -777,10 +777,14 @@ The DB grows over time. For high-frequency cron jobs, consider periodic cleanup 
 
 - The built-in pricing table covers ~30 major models (Anthropic, OpenAI, DeepSeek,
   Gemini, Meta, Nous Research including `owl-alpha`).
-- On first load, the plugin auto-fetches additional models from the OpenRouter API.
-- Models accessed directly through providers not covered by the built-in table or
-  OpenRouter can be added manually to `pricing.yaml` or via `/setup pricing auto`.
-- Unknown models fall back to `$0.00` with a one-time warning in `telemetry.log`.
+- On first load (and every 24h), the plugin auto-fetches additional models from the
+  **OpenRouter** public API. User overrides in `pricing.yaml` are always preserved.
+- Models routed **through OpenRouter** are covered by the auto-refresh. Models accessed
+  **directly** through other providers (e.g. Gemini direct via Google AI Studio,
+  Anthropic direct, OpenAI direct) are **not** auto-refreshed — they rely on the
+  built-in table or manual overrides in `pricing.yaml`.
+- Any model not found in either the built-in table or the auto-fetched data falls
+  back to `$0.00` with a one-time warning in `telemetry.log`.
 
 **Dashboard:**
 
@@ -819,17 +823,18 @@ The limit is cached in memory at gateway start. If you edited `budget.yaml` dire
 **Cost is $0.00 for all sessions:**
 
 Your model isn't in the pricing table. The plugin auto-generates `pricing.yaml`
-on first load with 30+ built-in models. If you're using a model that's not in
-the built-in table:
+on first load with 30+ built-in models plus an auto-fetch from the **OpenRouter**
+public API. If you're using a model that's not covered by either:
 
 ```bash
-# Auto-fetch the latest pricing from OpenRouter
+# Re-run the auto-fetch to pick up the latest OpenRouter models
 /setup pricing auto
 
 # Or manually add your model to ~/.hermes/telemetry/pricing.yaml
 ```
 
-Check `telemetry.log` for the exact model name if you're unsure.
+Models accessed directly (not through OpenRouter) that aren't in the built-in
+table need manual entries — the auto-refresh only covers OpenRouter-routed models.
 
 **Provider Est% > 0:**
 
