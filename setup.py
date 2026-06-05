@@ -207,6 +207,22 @@ def _write_pricing(models: dict[str, dict]) -> Path:
     return p
 
 
+def _reload_pricing_cache() -> None:
+    """Drop the in-process pricing cache so prices just written to disk take
+    effect immediately, without a gateway restart.
+
+    pricing.py memoizes the parsed YAML in a module global (_custom_pricing);
+    reload_custom_pricing() clears it so the next estimate_cost() re-reads the
+    file. Same hot-reload pattern as /budget set. Non-fatal on error —
+    telemetry must never take down a session."""
+    try:
+        from . import pricing
+
+        pricing.reload_custom_pricing()
+    except Exception as exc:
+        logger.warning("pricing hot-reload failed (non-fatal): %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Budget setup
 # ---------------------------------------------------------------------------
@@ -310,6 +326,7 @@ def run(interactive: bool = True, daily_usd: float = 5.00, monthly_usd: float = 
             except Exception as exc:
                 lines.append(f"  OpenRouter fetch failed ({exc}), using built-in defaults only.")
             path = _write_pricing(models)
+            _reload_pricing_cache()
             lines.append(f"  Wrote {len(models)} models to {path}")
             pricing_done = True
 
@@ -416,16 +433,18 @@ def handle_command(raw_args: str) -> str:
                 if mid not in models:
                     models[mid] = prices
             path = _write_pricing(models)
+            _reload_pricing_cache()
             return (
                 f"Pricing configured: {len(models)} models written to {path}\n"
                 f"  ({len(_DEFAULT_SEED)} built-in + {len(or_models)} from OpenRouter)\n"
-                f"  Restart the gateway to pick up changes."
+                f"  New prices are live now — no gateway restart needed."
             )
         elif choice == "minimal":
             path = _write_pricing(dict(_DEFAULT_SEED))
+            _reload_pricing_cache()
             return (
                 f"Pricing configured: {len(_DEFAULT_SEED)} built-in models written to {path}\n"
-                f"  Restart the gateway to pick up changes."
+                f"  New prices are live now — no gateway restart needed."
             )
         elif choice == "skip":
             return "Pricing setup skipped. Models not in the pricing table will record $0.00 cost."

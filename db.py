@@ -23,6 +23,7 @@ Budget support (used by budget.py):
   list_cron_job_ids(since_iso) -> list[str]
   list_sender_ids(since_iso)   -> list[str]
   stats_by_provider(window_hours) -> list[dict]
+  stats_by_model(window_hours)    -> list[dict]
 """
 
 from __future__ import annotations
@@ -570,6 +571,43 @@ def stats_by_provider(window_hours: int = 24) -> list[dict[str, Any]]:
         WHERE ts >= {since}
         GROUP BY COALESCE(provider, '(unknown)')
         ORDER BY cost_usd DESC
+        """
+    ).fetchall()
+    result = []
+    for r in rows:
+        row = dict(r)
+        total = row.get("total_calls") or 0
+        est = row.get("estimated_calls") or 0
+        row["estimated_pct"] = (est / total) if total else 0.0
+        result.append(row)
+    return result
+
+
+def stats_by_model(window_hours: int = 24) -> list[dict[str, Any]]:
+    """Per-model breakdown within each provider, for /stats models.
+
+    Returns one row per (provider, model) seen in llm_calls within the window:
+      provider, model, total_calls, real_calls, estimated_calls, estimated_pct, cost_usd
+
+    Ordered by provider (asc) then call count (desc) so each provider's busiest
+    models surface first — this is the view that exposes dated models costing
+    $0.00 separately, without dropping to raw SQL.
+    """
+    conn = _get_conn()
+    since = _run_hours_ago_expr(window_hours)
+    rows = conn.execute(
+        f"""
+        SELECT
+            COALESCE(provider, '(unknown)') AS provider,
+            COALESCE(model, '(unknown)')    AS model,
+            COUNT(*)                                          AS total_calls,
+            SUM(CASE WHEN estimated = 0 THEN 1 ELSE 0 END)   AS real_calls,
+            SUM(CASE WHEN estimated = 1 THEN 1 ELSE 0 END)   AS estimated_calls,
+            ROUND(SUM(cost_usd), 6)                           AS cost_usd
+        FROM llm_calls
+        WHERE ts >= {since}
+        GROUP BY COALESCE(provider, '(unknown)'), COALESCE(model, '(unknown)')
+        ORDER BY provider ASC, total_calls DESC
         """
     ).fetchall()
     result = []

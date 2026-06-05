@@ -159,12 +159,25 @@ def _lookup_base(model: str) -> dict | None:
     model_lc = model.lower()
     custom = _load_custom_pricing()
     custom_models = custom.get("models", {})
+    # Exact match wins, custom overrides defaults.
     if model_lc in custom_models:
         return custom_models[model_lc]
     if model_lc in _DEFAULT_PRICING:
         return _DEFAULT_PRICING[model_lc]
-    # Prefix match (longest prefix first)
-    for prefix, prices in sorted(_PREFIX_PRICING, key=lambda x: -len(x[0])):
+    # Prefix fallback: scan ALL known keys — custom (auto-refreshed + user) and
+    # default exact keys, plus the curated family-prefix table — longest prefix
+    # wins. This lets an auto-refreshed key like 'google/gemini-3-flash-preview'
+    # cover the dated variants the gateway actually sends, e.g.
+    # 'google/gemini-3-flash-preview-20251217'. Among equal-length prefixes the
+    # more authoritative source is preferred (custom > default > prefix table),
+    # mirroring the exact-match precedence above.
+    candidates: list[tuple[str, dict]] = [
+        *custom_models.items(),
+        *_DEFAULT_PRICING.items(),
+        *_PREFIX_PRICING,
+    ]
+    # Stable sort by descending prefix length keeps the source order for ties.
+    for prefix, prices in sorted(candidates, key=lambda x: -len(x[0])):
         if model_lc.startswith(prefix):
             return prices
     return None

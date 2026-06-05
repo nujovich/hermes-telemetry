@@ -8,6 +8,7 @@ Subcommands:
   /stats cron         → cost/failure breakdown by cron_job_id
   /stats raw [N]      → last N runs (default 20)
   /stats providers    → per-provider real vs estimated breakdown (last 24h)
+  /stats models       → per-model breakdown within each provider (last 24h)
 """
 
 from __future__ import annotations
@@ -154,10 +155,23 @@ def _providers_block(window_hours: int = 24) -> str:
     lines.append("")
     lines.append("  Provider key:")
     lines.append(
-        "    openrouter  = model requested with 'openrouter/' prefix (routed through OpenRouter)"
+        "    The provider label is whatever the Hermes gateway reports for each API"
     )
-    lines.append("    nous        = model requested without prefix (direct to Nous Research)")
-    lines.append("    anthropic   = model requested with 'anthropic/' prefix (direct to Anthropic)")
+    lines.append(
+        "    call (post_api_request hook); it is stored verbatim and rows are grouped"
+    )
+    lines.append(
+        "    by it. It is NOT derived from the model name — so everything the gateway"
+    )
+    lines.append(
+        "    routes through OpenRouter shows up under its 'openrouter' label regardless"
+    )
+    lines.append(
+        "    of the model's own 'google/', 'openai/', 'anthropic/', … prefix."
+    )
+    lines.append(
+        "    '(unknown)' = the gateway reported no provider for that call."
+    )
     lines.append("")
     lines.append(
         "  Est% = share of calls where the provider returned no usage data "
@@ -194,6 +208,39 @@ def _providers_block(window_hours: int = 24) -> str:
     except Exception:
         pass
 
+    return "\n".join(lines)
+
+
+def _models_block(window_hours: int = 24) -> str:
+    rows = db.stats_by_model(window_hours)
+    if not rows:
+        return f"No API calls recorded in the {_window_label(window_hours)}."
+
+    lines = [
+        f"hermes-telemetry — models ({_window_label(window_hours)})",
+        "=" * 96,
+        f"  {'Provider':<20} {'Model':<46} {'Calls':>6} {'Real':>6} {'Est':>5} {'Cost':>12}",
+        "  " + "-" * 94,
+    ]
+    for r in rows:
+        prov = (r.get("provider") or "(unknown)")[:20]
+        # Model names (esp. OpenRouter's dated keys) are kept wide so the date
+        # suffix stays visible — that's the whole point of this view.
+        model = (r.get("model") or "(unknown)")[:46]
+        total = _fmt_int(r.get("total_calls"))
+        real = _fmt_int(r.get("real_calls"))
+        est = _fmt_int(r.get("estimated_calls"))
+        cost = _fmt_cost(r.get("cost_usd"))
+        lines.append(f"  {prov:<20} {model:<46} {total:>6} {real:>6} {est:>5} {cost:>12}")
+
+    lines.append("")
+    lines.append(
+        "  Rows are grouped by provider, then by calls (desc). A model showing "
+        "$0.00 has no price entry"
+    )
+    lines.append(
+        "  in pricing.yaml — run /setup pricing auto to refresh, or add it manually."
+    )
     return "\n".join(lines)
 
 
@@ -253,13 +300,24 @@ def handle(raw_args: str) -> str:
         if sub == "month":
             return _providers_block(720)
 
+    if args.startswith("models"):
+        sub = args[len("models") :].strip()
+        if sub in ("", "today"):
+            return _models_block(24)
+        if sub == "week":
+            return _models_block(168)
+        if sub == "month":
+            return _models_block(720)
+
     return (
-        "Usage: /stats [today|week|month|cron|cron week|cron month|providers|raw [N]]\n"
+        "Usage: /stats [today|week|month|cron|cron week|cron month|providers|models|raw [N]]\n"
         "  /stats               — last 24h summary\n"
         "  /stats week          — last 7 days summary\n"
         "  /stats month         — last 30 days summary\n"
         "  /stats cron          — breakdown by cron job (last 7 days)\n"
         "  /stats providers     — per-provider real vs estimated breakdown (24h)\n"
         "  /stats providers week — provider breakdown, last 7 days\n"
+        "  /stats models        — per-model breakdown within each provider (24h)\n"
+        "  /stats models week   — per-model breakdown, last 7 days\n"
         "  /stats raw [N]       — last N raw run records (default 20)"
     )

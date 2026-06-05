@@ -263,6 +263,98 @@ def test_estimate_cost_empty_usage():
     assert pricing.estimate_cost({}, "claude-sonnet-4-6") == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Auto-refreshed (dateless) key covers dated model variants by prefix
+# (CAMBIO 1: the gateway records models with a date suffix, but pricing.yaml
+#  keys arrive from OpenRouter without the date.)
+# ---------------------------------------------------------------------------
+
+
+def _write_pricing_yaml(tmp_path, monkeypatch, body: str):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    tele_dir = tmp_path / "telemetry"
+    tele_dir.mkdir(exist_ok=True)
+    (tele_dir / "pricing.yaml").write_text(body)
+    pricing._custom_pricing = None
+
+
+def test_dated_model_covered_by_dateless_prefix_key(tmp_path, monkeypatch):
+    """A dated model from the gateway is costed via the dateless auto key by
+    prefix. This is the bug fix: was $0.00 before, real cost now."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "google/gemini-3-flash-preview":
+            input: 0.5
+            output: 3.0
+        defaults:
+          cache_read_multiplier: 0.10
+          cache_write_multiplier: 1.25
+    """),
+    )
+
+    cost = pricing.estimate_cost(
+        {"input_tokens": 19291, "output_tokens": 704},
+        "google/gemini-3-flash-preview-20251217",
+    )
+    expected = (19291 * 0.5 + 704 * 3.0) / 1e6
+    assert abs(cost - expected) < 1e-12
+
+
+def test_exact_match_still_preferred_over_prefix(tmp_path, monkeypatch):
+    """An exact key resolves by exact match, not the dateless-prefix path."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "google/gemini-2.5-flash-lite":
+            input: 0.10
+            output: 0.40
+          "google/gemini-2.5-flash":
+            input: 99.0
+            output: 99.0
+    """),
+    )
+
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "google/gemini-2.5-flash-lite",
+    )
+    # Must use the exact lite price, NOT the longer/other 'flash' key.
+    assert abs(cost - (0.10 + 0.40)) < 1e-9
+
+
+def test_regression_dated_claude_resolves_by_prefix():
+    """A dated Claude model still resolves to $3/$15 via prefix (no custom file)."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "claude-sonnet-4-20250514",
+    )
+    assert abs(cost - (3.00 + 15.00)) < 1e-9
+
+
+def test_regression_unknown_model_no_false_positive(tmp_path, monkeypatch):
+    """Widening the prefix scan must not turn unknown models into matches."""
+    # Even with custom keys present, a truly unrelated model stays $0.00.
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "google/gemini-3-flash-preview":
+            input: 0.5
+            output: 3.0
+    """),
+    )
+    cost = pricing.estimate_cost(
+        {"input_tokens": 5000, "output_tokens": 2000}, "totally-unknown-model-xyz"
+    )
+    assert cost == 0.0
+
+
 def test_cache_multiplier_fallback(caplog):
     """Models without explicit cache_read use input * 0.10 default multiplier."""
     import logging

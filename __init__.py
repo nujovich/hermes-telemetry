@@ -82,11 +82,15 @@ def _try_pricing_refresh(log: logging.Logger) -> None:
             elapsed = _time.time() - sentinel.stat().st_mtime
             if elapsed < ttl:
                 return
-        from . import pricing_refresh
+        from . import pricing, pricing_refresh
 
-        changes = pricing_refresh.refresh_pricing()
+        # refresh_pricing returns (changes, manual_overrides).
+        changes, _overrides = pricing_refresh.refresh_pricing()
         if changes:
             log.info("pricing auto-refreshed: %d model(s) updated", len(changes))
+            # Drop the in-process pricing cache so the new prices are picked up
+            # immediately — no gateway restart needed.
+            pricing.reload_custom_pricing()
         else:
             log.debug("pricing auto-refresh: no changes")
         sentinel.touch()
@@ -442,7 +446,7 @@ def register(ctx) -> None:  # noqa: ANN001
         "stats",
         stats.handle,
         description="Show telemetry: tokens, cost, latency, tool usage per session/cron job",
-        args_hint="[today|week|month|cron|raw]",
+        args_hint="[today|week|month|cron|providers|models|raw]",
     )
 
     # ------------------------------------------------------------------

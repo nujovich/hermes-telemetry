@@ -6,7 +6,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 ![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg) ![Tests: 115 passing](https://img.shields.io/badge/Tests-115%20passing-green.svg) ![Provider Support](https://img.shields.io/badge/Providers-OpenRouter%20%7C%20OpenAI%20%7C%20Anthropic-orange.svg) ![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg) ![Tests: 130 passing](https://img.shields.io/badge/Tests-130%20passing-green.svg) ![Provider Support](https://img.shields.io/badge/Providers-OpenRouter%20%7C%20OpenAI%20%7C%20Anthropic-orange.svg) ![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)
 
 ---
 
@@ -189,6 +189,13 @@ with the built-in defaults. Models already in the built-in table (e.g. `claude-o
 `gpt-4o`, `owl-alpha`) keep their built-in prices. New models from OpenRouter are
 added with their API-reported prices.
 
+> **No restart needed:** `/setup pricing auto` (and `pricing minimal`) hot-reload
+> the in-process pricing cache after writing `pricing.yaml`, so new prices take
+> effect on the very next API call — same pattern as `/budget set`. The 24h
+> background auto-refresh does the same when it detects changes. (Editing
+> `pricing.yaml` by hand is still picked up on the next gateway restart, since
+> nothing signals the running process to reload.)
+
 **Budget defaults:** The recommended budget is `$5.00/day` and `$100.00/month` global.
 Adjust anytime with `/budget set global daily <amount>`.
 
@@ -205,6 +212,9 @@ Adjust anytime with `/budget set global daily <amount>`.
 /stats cron today       → cron breakdown, last 24 hours
 /stats providers        → per-provider: real vs estimated calls + cost (last 24h)
 /stats providers week   → provider breakdown, last 7 days
+/stats models           → per-model breakdown within each provider (last 24h)
+/stats models week      → per-model breakdown, last 7 days
+/stats models month     → per-model breakdown, last 30 days
 /stats raw [N]          → last N raw run records (default 20, max 200)
 ```
 
@@ -255,6 +265,32 @@ hermes-telemetry — providers (last 24 h)
   (tokens estimated locally).
   If Est% > 0 for your main provider, budget hard-verdicts may be
   degraded to soft under on_estimated.mode: warn_only.
+```
+
+> **Note on the provider label:** the provider shown by `/stats providers` is
+> whatever the Hermes gateway reports for each API call (`post_api_request`
+> hook), stored verbatim and grouped — it is **not** derived from the model
+> name. Everything the gateway routes through OpenRouter therefore appears under
+> its `openrouter` label regardless of the model's own `google/`, `openai/`,
+> `anthropic/`, … prefix. `(unknown)` means the gateway reported no provider.
+
+**Example output (`/stats models`):**
+
+`/stats models` breaks each provider down by model. It's the quickest way to
+spot a model billing at `$0.00` — usually a model the gateway records with a
+date suffix (e.g. `google/gemini-3-flash-preview-20251217`) whose price entry
+in `pricing.yaml` is the date-less key. (As of the latest pricing matcher,
+date-less keys cover their dated variants by prefix, so most of these now cost
+correctly — this view confirms it.)
+
+```
+hermes-telemetry — models (last 24 h)
+================================================================================================
+  Provider             Model                                           Calls   Real   Est         Cost
+  ----------------------------------------------------------------------------------------------
+  anthropic            claude-opus-4-8                                    31     31     0    $0.892100
+  openrouter           google/gemini-3-flash-preview-20251217             22     22     0    $0.021455
+  openrouter           openai/gpt-5.5-20260423                             13     13     0    $0.003217
 ```
 
 ### `/budget`
@@ -371,7 +407,13 @@ defaults:
 
 1. Exact match (case-insensitive) against `models:` keys in your YAML
 2. Exact match against the built-in pricing table (~35 models)
-3. Longest-prefix match (e.g. `claude-sonnet` matches `claude-sonnet-4-6-future`)
+3. Longest-prefix match across **all** known keys — your YAML models
+   (including auto-refreshed OpenRouter keys), the built-in table, **and** the
+   curated family-prefix table. The longest matching prefix wins, with the more
+   authoritative source preferred on ties (YAML > built-in > family table).
+   This is why a date-less key like `google/gemini-3-flash-preview` covers the
+   dated variant the gateway actually sends (`google/gemini-3-flash-preview-20251217`),
+   and why `claude-sonnet` still matches `claude-sonnet-4-6-future`.
 4. Unknown → `$0.00` with a one-time warning in `telemetry.log`
 
 The built-in table covers: Anthropic (Claude 3/4 family), OpenAI (GPT-4o, GPT-4, o1, o3, o4), DeepSeek, Gemini, Llama, and Hermes models. Prices sourced from official provider pages (May 2026).
@@ -705,7 +747,7 @@ This demonstrates the core value proposition: **you can see exactly how much eac
 || Pricing auto-refresh (OpenRouter API) | ✅ 320 models fetched, manual overrides preserved |
 || Estimated-price model handling | ✅ Negative prices → $0.00, budget degradation |
 || Dashboard (HTML, auto-refresh 30s) | ✅ Charts, tables, budget bar, provider distribution |
-|| 94 tests pass | ✅ |
+|| 130 tests pass | ✅ |
 
 ---
 
@@ -717,16 +759,18 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (115 tests):**
+**Test suite (130 tests):**
 
 | File | Tests | Coverage |
 |------|-------|----------|
-| `test_db.py` | 15 | Schema v1→v3 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes) |
-| `test_pricing.py` | 17 | Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, unknown model handling |
-| `test_init.py` | 6 | Cron session ID regex, tool success/failure parsing |
-| `test_budget.py` | 17 | ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload |
+| `test_db.py` | 24 | Schema v1→v3 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes) |
+| `test_pricing.py` | 27 | Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching (incl. date-less keys covering dated variants), unknown model handling |
+| `test_pricing_hot_reload.py` | 3 | `/setup pricing auto`/`minimal` hot-reload the in-process pricing cache — new prices live without a gateway restart |
+| `test_init.py` | 9 | Cron session ID regex, tool success/failure parsing |
+| `test_budget.py` | 20 | ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload |
 | `test_subagent_reconciliation.py` | 4 | Parent + child hook sequence, token reconciliation, no double-counting |
-| `test_stats_providers.py` | 8 | Real vs estimated per provider, `/stats providers` output format, Nous warning dedup |
+| `test_stats_providers.py` | 14 | Real vs estimated per provider, `/stats providers` output format, Nous warning dedup |
+| `test_stats_models.py` | 8 | Per-model aggregation within each provider, ordering, `/stats models` output format |
 | `test_setup.py` | 21 | Setup wizard: auto/minimal/skip pricing, default/custom/skip budget, command handler, idempotency, owl-alpha in defaults |
 
 No live Hermes is required — all tests are self-contained with in-memory SQLite.
