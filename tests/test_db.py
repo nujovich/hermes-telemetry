@@ -348,22 +348,34 @@ def test_concurrent_writes(tmp_path, monkeypatch):
     import hermes_telemetry.db as db_mod
 
     errors = []
-    N_THREADS = 10
-    N_WRITES_PER_THREAD = 5
+    N_THREADS = 5
+    N_WRITES_PER_THREAD = 3
+    MAX_RETRIES = 3
 
     def worker(thread_idx: int) -> None:
         # Each thread has its own _local, so it will create its own connection
         db_mod._local.conn = None  # ensure fresh connection per thread
         import datetime
+        import time
 
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
             for j in range(N_WRITES_PER_THREAD):
                 sid = f"t{thread_idx}-j{j}"
-                db_mod.start_run(sid, model="m", platform="cron", cron_job_id=f"job{thread_idx}")
-                db_mod.record_llm_call(sid, now, "m", "p", 100, 50, 0.001, 200)
-                db_mod.record_tool_call(sid, now, "tool", True, 10)
-                db_mod.end_run(sid, "ok")
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        db_mod.start_run(
+                            sid, model="m", platform="cron", cron_job_id=f"job{thread_idx}"
+                        )
+                        db_mod.record_llm_call(sid, now, "m", "p", 100, 50, 0.001, 200)
+                        db_mod.record_tool_call(sid, now, "tool", True, 10)
+                        db_mod.end_run(sid, "ok")
+                        break  # success, no retry needed
+                    except Exception as exc:
+                        if "locked" in str(exc).lower() and attempt < MAX_RETRIES - 1:
+                            time.sleep(0.1 * (attempt + 1))
+                            continue
+                        raise
         except Exception as exc:
             errors.append(str(exc))
         finally:

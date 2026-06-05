@@ -63,9 +63,11 @@ def _get_conn() -> sqlite3.Connection:
         conn = sqlite3.connect(str(db_path), isolation_level=None, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         # busy_timeout MUST be set before journal_mode=WAL: switching a fresh,
-        # contended DB to WAL needs a brief lock, and with the default timeout
+        # contested DB to WAL needs a brief lock, and with the default timeout
         # of 0 a concurrent switch fails immediately with "database is locked".
-        conn.execute("PRAGMA busy_timeout=5000")
+        # 30s gives enough headroom for CI environments with slow or
+        # network-backed filesystems where concurrent writes contend.
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         _local.conn = conn
