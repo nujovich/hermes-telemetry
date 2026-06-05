@@ -494,53 +494,25 @@ The plugin handles these safely:
 
 This ensures budgets are reliable even when some models lack fixed pricing.
 
-### CLI Usage
+
+**Example output (`/setup pricing auto`):**
+
+```
+⚙️  /setup pricing auto
+Pricing configured: 345 models written to ~/.hermes/telemetry/pricing.yaml
+  (34 built-in + 313 from OpenRouter)
+  New prices are live now — no gateway restart needed.
+```
+
+### Updating the plugin
+
+To pull a new version of the plugin:
 
 ```bash
-# Dry run — see what would change
-python -m hermes_telemetry.pricing_refresh --check
-
-# Apply changes
-python -m hermes_telemetry.pricing_refresh
-
-# Verbose output
-python -m hermes_telemetry.pricing_refresh --verbose
+hermes plugins update hermes-telemetry
 ```
 
-**Example output:**
-
-```
-INFO OpenRouterSource: fetched 320 models
-Updated 3 model(s):
-
-  ~ stepfun/step-3.7-flash  (openrouter)
-      input: 0.9999 → 0.2000
-      output: 9.9999 → 1.1500
-
-  + anthropic/claude-opus-4.8  (openrouter)
-      input=5.0000 output=25.0000
-
-  ⚠  Model(s) with estimated pricing: openrouter/auto, openrouter/bodybuilder, openrouter/pareto-code
-```
-
-### Extending with New Sources
-
-Add new pricing providers by subclassing `PricingSource`:
-
-```python
-from hermes_telemetry.pricing_refresh import PricingSource, register_source
-
-class AnthropicSource(PricingSource):
-    name = "anthropic"
-
-    def fetch(self) -> dict[str, dict]:
-        # Fetch from Anthropic's pricing page or API
-        ...
-
-register_source(AnthropicSource)
-```
-
-Sources are registered in `pricing_refresh.py` and fetched in parallel on each refresh cycle.
+Then **exit your current session and start a new one** so the updated plugin code is loaded. (Unlike a pricing refresh — which is hot-reloaded with no restart — a plugin **code** update is only picked up when the plugin is reloaded.)
 
 ---
 
