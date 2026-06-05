@@ -51,14 +51,26 @@ pip install -e ".[dev]"
 
 ### Verify the setup
 
-```bash
-# Run all tests
-pytest tests/ -v
+Run the exact same checks CI runs, in the same order (the CI `test` job
+`needs: lint`, and lint runs `ruff format --check` **first** — so a formatting
+miss fails the whole pipeline, tests included):
 
-# Check linting
-ruff check .
-ruff format --check .
+```bash
+# One-liner: format check → lint → tests (matches .github/workflows/ci.yml)
+ruff format --check . && ruff check . && pytest tests/ -v
 ```
+
+### Enable the pre-commit hook (recommended)
+
+A versioned hook in [`.githooks/pre-commit`](.githooks/pre-commit) runs the same
+three checks before every commit, so you never push a red CI. Enable it once per
+clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Bypass for a single commit with `git commit --no-verify` (use sparingly).
 
 ### Enable the plugin for local development
 

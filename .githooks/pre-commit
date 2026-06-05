@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Pre-commit hook — mirrors .github/workflows/ci.yml so a green local commit
+# means a green CI. Run order matches CI exactly: the lint job runs
+# `ruff format --check` FIRST, and the test job has `needs: lint`, so a
+# formatting miss fails the whole pipeline (and makes the test job look like it
+# "failed" even though no test broke). Catch it here instead.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# Bypass for a single commit (use sparingly):
+#   git commit --no-verify
+
+set -euo pipefail
+
+echo "▶ ruff format --check ."
+ruff format --check .
+
+echo "▶ ruff check ."
+ruff check .
+
+echo "▶ pytest tests/"
+pytest tests/ -q --tb=short
+
+echo "✓ all pre-commit checks passed"
