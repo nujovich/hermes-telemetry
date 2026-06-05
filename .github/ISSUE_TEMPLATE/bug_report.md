@@ -1,25 +1,32 @@
 ---
-name: Bug report
-about: Something is broken
-title: "[fix] "
+name: 🐛 Bug report
+about: Report unexpected behavior, crashes, or incorrect output
+title: "[BUG] "
 labels: ["bug"]
 assignees: []
 ---
 
-## Description
-<!-- What happened? What did you expect? -->
+**Summary**
+<!-- One-line description of the bug -->
 
-## Steps to reproduce
+**Steps to reproduce**
 1.
 2.
 3.
 
-## Environment
-- hermes-telemetry version:
-- Python version:
-- OS:
+**Expected behavior**
 
-## Logs / traceback
+**Actual behavior**
+
+**Environment**
+- **Plugin version:** <!-- e.g. v0.2.0 -->
+- **Hermes version:** <!-- `hermes --version` -->
+- **Python version:** <!-- `python3 --version` -->
+- **OS:** <!-- e.g. WSL2 / Ubuntu 24 / macOS -->
+- **Provider(s) affected:** <!-- e.g. openrouter, anthropic, nous -->
+
+**Relevant logs**
+<!-- Paste from ~/.hermes/telemetry/telemetry.log or /stats output -->
 ```
-paste output here
+(paste here)
 ```

@@ -1,19 +1,19 @@
 ---
-name: Feature request
-about: Suggest an idea
-title: "[feat] "
+name: ✨ Feature request
+about: Propose a new feature or enhancement
+title: "[FEAT] "
 labels: ["enhancement"]
 assignees: []
 ---
 
-## Problem
-<!-- What problem are you trying to solve? -->
+**What problem are you trying to solve?**
+<!-- Describe the limitation or pain point -->
 
-## Proposed solution
-<!-- What do you want to happen? -->
+**Describe the solution you'd like**
+<!-- What should happen? -->
 
-## Alternatives considered
-<!-- Any other approaches you thought of? -->
+**Describe alternatives you've considered**
+<!-- Any workarounds or other approaches you looked at -->
 
-## Additional context
-<!-- Screenshots, references, etc. -->
+**Additional context**
+<!-- Screenshots, references to other plugins, API docs, etc. -->
