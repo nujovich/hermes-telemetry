@@ -461,3 +461,163 @@ def test_try_budget_alert_is_idempotent():
     assert second is False
     # A different level is a distinct alert
     assert db.try_budget_alert("global", "", "daily", "2026-05-31", "hard", 5.0, 5.0) is True
+
+
+# ---------------------------------------------------------------------------
+# Orphan-session recovery (issue #3)
+#
+# Some callers fire post_api_request / on_session_end without an earlier
+# on_session_start having reached the plugin. This happens for any chat
+# platform session that pre-existed the plugin enable, and for sessions
+# resumed across gateway restarts via resume_pending (see hermes-agent
+# gateway/session.py:889 — "Restart-interrupted session: preserve the
+# session_id"). The plugin must still aggregate those calls under a runs
+# row instead of silently no-op'ing.
+# ---------------------------------------------------------------------------
+
+
+def test_record_llm_call_lazy_creates_runs_row_when_start_missed():
+    """record_llm_call for an unknown session must create a 'running' row
+    and aggregate against it — not silently UPDATE WHERE no row matches."""
+    db.record_llm_call(
+        "orphan-session",
+        "2026-06-05T12:00:00+00:00",
+        "gemini-3-flash-preview",
+        "gemini",
+        100,
+        50,
+        0.001,
+        200,
+    )
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT session_id, status, tokens_in, tokens_out, cost_usd, api_calls, model, provider "
+        "FROM runs WHERE session_id = ?",
+        ("orphan-session",),
+    ).fetchone()
+    assert row is not None
+    assert dict(row) == {
+        "session_id": "orphan-session",
+        "status": "running",
+        "tokens_in": 100,
+        "tokens_out": 50,
+        "cost_usd": 0.001,
+        "api_calls": 1,
+        "model": "gemini-3-flash-preview",
+        "provider": "gemini",
+    }
+
+
+def test_record_llm_call_does_not_duplicate_with_explicit_start_run():
+    """When on_session_start did fire normally, the lazy INSERT OR IGNORE in
+    record_llm_call must be a no-op — same row, aggregated correctly."""
+    db.start_run("happy-path", model="gemini-3-flash-preview", platform="cli")
+    db.record_llm_call(
+        "happy-path",
+        "2026-06-05T12:00:00+00:00",
+        "gemini-3-flash-preview",
+        "gemini",
+        100,
+        50,
+        0.001,
+        200,
+    )
+    conn = db._get_conn()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM runs WHERE session_id = ?", ("happy-path",)
+    ).fetchone()[0]
+    assert count == 1
+    row = conn.execute(
+        "SELECT platform, tokens_in, api_calls FROM runs WHERE session_id = ?", ("happy-path",)
+    ).fetchone()
+    # platform was set by start_run and preserved (not overwritten by lazy insert)
+    assert row["platform"] == "cli"
+    assert row["tokens_in"] == 100
+    assert row["api_calls"] == 1
+
+
+def test_end_run_lazy_creates_row_when_start_missed():
+    """end_run for an unknown session_id (no prior start_run, no prior
+    record_llm_call) still records a closing row. Defensive guard against
+    rare hook ordering — Nadia's review case 4."""
+    db.end_run("never-started", status="ok")
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT session_id, status, ended_at IS NOT NULL AS has_end FROM runs WHERE session_id = ?",
+        ("never-started",),
+    ).fetchone()
+    assert row is not None
+    assert row["status"] == "ok"
+    assert row["has_end"] == 1
+
+
+def test_chat_bot_session_aggregates_after_orphan_recovery():
+    """Regression: chat-bot scenario — plugin enabled mid-session.
+    Multiple record_llm_call for the same orphan session_id, then a
+    per-turn end_run closes the run cleanly. /stats must see the
+    aggregated cost.
+    """
+    sid = "20260605_074023_3cd3bf2a"  # mimics the production session id format
+
+    # Three turns of a Telegram bot — no preceding start_run because the
+    # session pre-dated the plugin install.
+    db.record_llm_call(
+        sid,
+        "2026-06-05T17:35:48+00:00",
+        "gemini-3-flash-preview",
+        "gemini",
+        29912,
+        19,
+        0.024799,
+        2575,
+    )
+    db.record_llm_call(
+        sid,
+        "2026-06-05T17:41:39+00:00",
+        "gemini-3-flash-preview",
+        "gemini",
+        10808,
+        39,
+        0.005534,
+        2359,
+    )
+    db.record_llm_call(
+        sid,
+        "2026-06-05T17:48:30+00:00",
+        "gemini-3-flash-preview",
+        "gemini",
+        49285,
+        52,
+        0.024799,
+        1840,
+    )
+
+    # Hermes fires on_session_end per-turn (agent/conversation_loop.py:4870)
+    db.end_run(sid, status="ok")
+
+    # /stats reads from runs — must see the aggregated chat-bot cost
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT tokens_in, tokens_out, api_calls, cost_usd, status FROM runs WHERE session_id = ?",
+        (sid,),
+    ).fetchone()
+    assert row is not None
+    assert row["api_calls"] == 3
+    assert row["tokens_in"] == 90005
+    assert row["tokens_out"] == 110
+    assert abs(row["cost_usd"] - 0.055132) < 1e-6
+    assert row["status"] == "ok"
+
+
+def test_orphan_session_appears_in_stats_summary():
+    """End-to-end: orphan-recovered session shows up in stats_summary
+    aggregates (previously invisible). 24h window includes recent insert."""
+    db.record_llm_call(
+        "orphan-stats", db._utcnow(), "gemini-3-flash-preview", "gemini", 1000, 200, 0.005, 500
+    )
+    db.end_run("orphan-stats", status="ok")
+
+    summary = db.stats_summary(window_hours=24)
+    assert summary["total_runs"] >= 1
+    assert summary["tokens_in"] >= 1000
+    assert summary["cost_usd"] >= 0.005

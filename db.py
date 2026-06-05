@@ -247,6 +247,14 @@ def start_run(
 def end_run(session_id: str, status: str, ended_at: str | None = None) -> None:
     now = ended_at or _utcnow()
     conn = _get_conn()
+    # Defensive lazy-create: if end_run is called for a session_id that
+    # never went through start_run or record_llm_call (e.g. a hook-event
+    # ordering quirk), still record a closing row. Idempotent — matches
+    # the INSERT OR IGNORE pattern used in start_run and record_llm_call.
+    conn.execute(
+        "INSERT OR IGNORE INTO runs (session_id, started_at, status) VALUES (?, ?, 'running')",
+        (session_id, now),
+    )
     conn.execute(
         """
         UPDATE runs
@@ -297,6 +305,18 @@ def record_llm_call(
             reasoning_tokens,
             1 if estimated else 0,
         ),
+    )
+    # Lazy-create the runs row if on_session_start was missed.
+    # This covers chat-platform sessions that pre-date plugin install
+    # and any other path where the start hook didn't fire for the
+    # plugin (the UPDATE below is otherwise a silent no-op).
+    # See hermes-agent agent/conversation_loop.py:296 — on_session_start
+    # "fired once when a brand-new session is created (not on
+    # continuation)" — so the start hook never re-fires for resumed
+    # sessions.
+    conn.execute(
+        "INSERT OR IGNORE INTO runs (session_id, started_at, status) VALUES (?, ?, 'running')",
+        (session_id, ts),
     )
     conn.execute(
         """
