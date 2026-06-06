@@ -2,11 +2,27 @@
 """hermes-telemetry dashboard server -- zero dependencies, stdlib only.
 
 Usage:
-    python serve.py           # serves on http://localhost:8765
-    python serve.py 9090      # custom port
+    python serve.py                            # http://localhost:8765 (loopback only)
+    python serve.py --port 9090                # custom port, still loopback
+    python serve.py 9090                       # positional port (back-compat)
+    python serve.py --host 0.0.0.0             # bind all interfaces (no auth!)
+
+The dashboard has no authentication. By default it binds to 127.0.0.1 so it is
+unreachable from other hosts. To view it from another machine, either:
+
+  - Open an SSH tunnel from your client:
+        ssh -L 8765:localhost:8765 <user>@<server>
+    then browse http://localhost:8765 on the client.
+
+  - Or, on a trusted LAN only, pass --host 0.0.0.0 to bind all interfaces.
+    Anyone who can reach the chosen port will see every captured token, cost,
+    and tool-call detail with no login. Do not expose this to the public
+    internet or to networks that include untrusted hosts.
 """
 
+import argparse
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -15,6 +31,11 @@ from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8765
+
+logger = logging.getLogger("hermes_telemetry.dashboard")
 
 # ---------------------------------------------------------------------------
 # DB path
@@ -273,17 +294,88 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 # ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+def _parse_args(argv=None):
+    """Parse command-line arguments.
+
+    Back-compat: the original signature was `serve.py [port]` — a single
+    positional integer. Preserved so existing scripts and docs keep working.
+    """
+    parser = argparse.ArgumentParser(
+        prog="serve.py",
+        description="hermes-telemetry dashboard server.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  serve.py                       # bind 127.0.0.1:8765\n"
+            "  serve.py --port 9090           # custom port, still loopback\n"
+            "  serve.py 9090                  # positional port (back-compat)\n"
+            "  serve.py --host 0.0.0.0        # all interfaces (NO AUTH!)\n"
+        ),
+    )
+    parser.add_argument(
+        "--host",
+        default=DEFAULT_HOST,
+        help=(
+            f"Interface to bind to (default: {DEFAULT_HOST}). Use 0.0.0.0 to "
+            "expose on every interface — the dashboard has NO authentication, "
+            "so only do this on a trusted LAN."
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=f"Port to bind to (default: {DEFAULT_PORT}).",
+    )
+    parser.add_argument(
+        "port_positional",
+        nargs="?",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="Back-compat: positional port (use --port instead).",
+    )
+    args = parser.parse_args(argv)
+
+    port = args.port if args.port is not None else args.port_positional
+    if port is None:
+        port = DEFAULT_PORT
+    return args.host, port
+
+
+def _warn_if_exposed(host: str) -> None:
+    """Print a clear warning when binding to anything except loopback."""
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return
+    msg = (
+        f"WARNING: binding dashboard on {host} exposes it to every host "
+        "that can reach this interface, and the dashboard has NO "
+        "authentication. Anyone who reaches the port will see every "
+        "captured token, cost, and tool-call detail. Do not expose to "
+        "the public internet or to untrusted networks."
+    )
+    print(msg, file=sys.stderr)
+    logger.warning("Dashboard bound on %s with no authentication.", host)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+def main(argv=None):
+    host, port = _parse_args(argv)
+
     if not DB_PATH.exists():
         print(f"ERROR: telemetry DB not found at {DB_PATH}")
         print("Make sure hermes-telemetry plugin has captured data.")
         sys.exit(1)
 
-    server = HTTPServer(("127.0.0.1", port), Handler)
-    print(f"hermes-telemetry dashboard at http://localhost:{port}")
+    _warn_if_exposed(host)
+
+    server = HTTPServer((host, port), Handler)
+    display_host = "localhost" if host in ("127.0.0.1", "localhost") else host
+    print(f"hermes-telemetry dashboard at http://{display_host}:{port}")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
