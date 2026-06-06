@@ -68,10 +68,18 @@ _DEFAULT_PRICING: dict[str, dict] = {
     "meta-llama/llama-3.1-70b-instruct": dict(input=0.52, output=0.75),
     "meta-llama/llama-3.3-70b-instruct": dict(input=0.59, output=0.79),
     # ── Google ──────────────────────────────────────────────────────────────
-    "gemini-1.5-pro": dict(input=3.50, output=10.50),
-    "gemini-1.5-flash": dict(input=0.075, output=0.30),
-    "gemini-2.0-flash": dict(input=0.10, output=0.40),
-    "gemini-2.5-pro": dict(input=1.25, output=10.00),
+    # Prices verified at https://ai.google.dev/gemini-api/docs/pricing on 2026-06-05.
+    # Removed deprecated models: gemini-1.5-pro/-flash (off pricing page),
+    # gemini-2.0-flash/-lite (sunset 2026-06-01). Tiered-pricing models
+    # (gemini-2.5-pro, gemini-3.1-pro-preview) use the <=200k context tier;
+    # >200k usage is undercounted (separate issue to track).
+    "gemini-3.5-flash": dict(input=1.50, output=9.00, cache_read=0.15),
+    "gemini-3.1-pro-preview": dict(input=2.00, output=12.00, cache_read=0.20),
+    "gemini-3.1-flash-lite": dict(input=0.25, output=1.50, cache_read=0.025),
+    "gemini-3-flash-preview": dict(input=0.50, output=3.00, cache_read=0.05),
+    "gemini-2.5-pro": dict(input=1.25, output=10.00, cache_read=0.125),
+    "gemini-2.5-flash": dict(input=0.30, output=2.50, cache_read=0.03),
+    "gemini-2.5-flash-lite": dict(input=0.10, output=0.40, cache_read=0.01),
 }
 
 # Prefix-based fallback for model families (matched in order, longest first)
@@ -90,10 +98,17 @@ _PREFIX_PRICING: list[tuple[str, dict]] = [
     ("o4-mini", dict(input=1.10, output=4.40)),
     ("deepseek-r1", dict(input=0.55, output=2.19)),
     ("deepseek", dict(input=0.27, output=1.10)),
-    ("gemini-2.5", dict(input=1.25, output=10.00)),
-    ("gemini-2", dict(input=0.10, output=0.40)),
-    ("gemini-1.5-pro", dict(input=3.50, output=10.50)),
-    ("gemini", dict(input=0.075, output=0.30)),
+    # Gemini family prefixes catch dated variants (e.g. gemini-3-flash-preview-20251217).
+    # Specific prefixes only — no generic "gemini" catch-all, since Flash 1.5 is
+    # deprecated and a bare "gemini" prefix would mis-price unknown models. An
+    # unknown gemini variant now logs a warning instead of being silently mis-priced.
+    ("gemini-3.1-flash-lite", dict(input=0.25, output=1.50, cache_read=0.025)),
+    ("gemini-2.5-flash-lite", dict(input=0.10, output=0.40, cache_read=0.01)),
+    ("gemini-3.5-flash", dict(input=1.50, output=9.00, cache_read=0.15)),
+    ("gemini-3.1-pro", dict(input=2.00, output=12.00, cache_read=0.20)),
+    ("gemini-3-flash", dict(input=0.50, output=3.00, cache_read=0.05)),
+    ("gemini-2.5-flash", dict(input=0.30, output=2.50, cache_read=0.03)),
+    ("gemini-2.5-pro", dict(input=1.25, output=10.00, cache_read=0.125)),
     ("llama-3.1-405", dict(input=2.70, output=2.70)),
     ("llama-3.1-70", dict(input=0.52, output=0.75)),
     ("llama-3.3-70", dict(input=0.59, output=0.79)),
