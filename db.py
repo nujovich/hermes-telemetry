@@ -226,6 +226,26 @@ def _run_hours_ago_expr(hours: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _ensure_run_row(session_id: str, ts: str) -> None:
+    """Idempotently ensure a `runs` row exists for ``session_id``.
+
+    `INSERT OR IGNORE` so any existing row (created by `start_run` on the
+    happy path) is preserved untouched. The row is opened in `running`
+    status with `ts` as `started_at`; subsequent UPDATEs in
+    `record_llm_call` / `end_run` populate the rest.
+
+    Called by `record_llm_call` and `end_run` so the `UPDATE WHERE
+    session_id = ?` paths never silently no-op for sessions whose
+    `on_session_start` hook didn't reach the plugin — see
+    hermes-agent `agent/conversation_loop.py:296` (the start hook fires
+    "once when a brand-new session is created (not on continuation)").
+    """
+    _get_conn().execute(
+        "INSERT OR IGNORE INTO runs (session_id, started_at, status) VALUES (?, ?, 'running')",
+        (session_id, ts),
+    )
+
+
 def start_run(
     session_id: str,
     model: str,
@@ -246,15 +266,8 @@ def start_run(
 
 def end_run(session_id: str, status: str, ended_at: str | None = None) -> None:
     now = ended_at or _utcnow()
+    _ensure_run_row(session_id, now)
     conn = _get_conn()
-    # Defensive lazy-create: if end_run is called for a session_id that
-    # never went through start_run or record_llm_call (e.g. a hook-event
-    # ordering quirk), still record a closing row. Idempotent — matches
-    # the INSERT OR IGNORE pattern used in start_run and record_llm_call.
-    conn.execute(
-        "INSERT OR IGNORE INTO runs (session_id, started_at, status) VALUES (?, ?, 'running')",
-        (session_id, now),
-    )
     conn.execute(
         """
         UPDATE runs
@@ -306,18 +319,7 @@ def record_llm_call(
             1 if estimated else 0,
         ),
     )
-    # Lazy-create the runs row if on_session_start was missed.
-    # This covers chat-platform sessions that pre-date plugin install
-    # and any other path where the start hook didn't fire for the
-    # plugin (the UPDATE below is otherwise a silent no-op).
-    # See hermes-agent agent/conversation_loop.py:296 — on_session_start
-    # "fired once when a brand-new session is created (not on
-    # continuation)" — so the start hook never re-fires for resumed
-    # sessions.
-    conn.execute(
-        "INSERT OR IGNORE INTO runs (session_id, started_at, status) VALUES (?, ?, 'running')",
-        (session_id, ts),
-    )
+    _ensure_run_row(session_id, ts)
     conn.execute(
         """
         UPDATE runs

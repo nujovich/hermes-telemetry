@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-06-06
+
+### Fixed
+- `runs` rows are now lazy-created from `record_llm_call` and `end_run` when
+  `on_session_start` was missed (issue #3). Affected any deployment where the
+  plugin was enabled on a gateway with already-running chat-platform sessions:
+  the bot's `session_id` never received the start hook, so all subsequent
+  `UPDATE runs WHERE session_id = ?` calls were silent no-ops and `/stats` /
+  `/budget` under-reported. The new private `_ensure_run_row` helper mirrors the
+  `INSERT OR IGNORE` pattern already used by `start_run`, so the happy path is
+  unchanged (no duplicate rows, `platform` / `cron_job_id` preserved).
+
 ## [0.3.0] - 2026-06-02
 
 ### Added
