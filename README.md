@@ -15,6 +15,15 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 Hermes Agent runs autonomously — across sessions, platforms, and cron jobs — which means it can keep spending even when you’re not watching.
 **hermes-telemetry lives inside the runtime** and enforces hard budget limits before the next LLM call is made.
 
+Hermes Agent runs autonomously — across sessions, platforms, and cron jobs — which 
+means it can keep spending even when you're not watching.  
+**hermes-telemetry lives inside the runtime** and enforces hard budget limits before 
+the next LLM call is made.
+
+> This plugin addresses [NousResearch/hermes-agent#6642](https://github.com/NousResearch/hermes-agent/issues/6642) — 
+> the open feature request for a first-class telemetry and budget subsystem for Hermes Agent.
+
+
 ```
 Your Hermes session
   ↓ every API call
