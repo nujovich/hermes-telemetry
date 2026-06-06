@@ -20,6 +20,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
   - [Dashboard (Web UI)](#dashboard-web-ui)
   - [Slash Commands](#slash-commands-1)
 - [What It Measures](#what-it-measures)
+- [Hermes Observability Landscape](#hermes-observability-landscape)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Dashboard (Web UI)](#dashboard-web-ui-1)
@@ -103,6 +104,24 @@ A standalone HTML dashboard for users who prefer a visual interface over slash c
 | Tokens when provider returns `usage=None` | Fallback approximation | ⚠️ **Estimated, flagged** |
 
 Cost is always an **estimate** computed locally: a pricing table (USD per 1M tokens) multiplied by the token counts from each API call. The pricing table is refreshed periodically from the OpenRouter public API (`https://openrouter.ai/api/v1/models`, no auth required); this fetch downloads **only** model prices — no user usage data is sent. User overrides in `pricing.yaml` are always preserved over auto-fetched values. When the provider returns no usage data, tokens are estimated from a pre-request approximation + response length and the row is flagged as `estimated=1`, so `/stats` and `/budget` show a `~` prefix and an "estimated data" percentage.
+
+---
+
+## Hermes Observability Landscape
+
+As of Hermes v0.12.0, multiple observability options exist for the Hermes Agent ecosystem. Each serves a different use case: some require existing infrastructure, others work out of the box. The table below outlines the practical differences.
+
+| | hermes-telemetry | Langfuse plugin | OpenLit |
+|---|---|---|---|
+| Setup | `hermes plugins install` | API key + Langfuse account | Grafana + Tempo + Prometheus |
+| Works offline / zero infra | ✅ | ❌ | ❌ |
+| Budget enforcement (soft/hard limits) | ✅ | ❌ | ❌ |
+| Auto-pause cron jobs on breach | ✅ | ❌ | ❌ |
+| Slash commands (`/stats`, `/budget`) | ✅ | ❌ | ❌ |
+| Full trace UI / dashboards | slash commands in chat | ✅ | ✅ Grafana |
+| Data stays local | ✅ SQLite | ❌ external server | ❌ external stack |
+
+If you want guardrails and zero friction, hermes-telemetry is your starting point. If you already have observability infrastructure, it complements Langfuse or OpenLit.
 
 ---
 
