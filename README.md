@@ -300,11 +300,47 @@ The dashboard auto-refreshes every 30 seconds. No manual reload needed.
 
 ```
 cd ~/.hermes/plugins/hermes-telemetry/dashboard
-python3 serve.py        # serves on http://localhost:8765
-python3 serve.py 9090   # custom port
+python3 serve.py                  # http://localhost:8765 (loopback only)
+python3 serve.py --port 9090      # custom port, still loopback
+python3 serve.py 9090             # positional port (back-compat)
 ```
 
 Then open `http://localhost:8765` in your browser.
+
+### Accessing the dashboard from another host
+
+The dashboard has **no authentication** — anyone who can reach the port sees
+every captured token, cost, and tool-call detail. By default it binds to
+`127.0.0.1`, which is unreachable from other machines.
+
+If your Hermes server is headless (Pi, VPS, NAS) and you browse from a laptop,
+two options:
+
+**Recommended — SSH tunnel** (no server-side change, leaves the safe default in
+place):
+
+```bash
+# Start the dashboard on the server as usual
+ssh server "cd ~/.hermes/plugins/hermes-telemetry/dashboard && python3 serve.py &"
+
+# Tunnel from your client
+ssh -L 8765:localhost:8765 -N server &
+
+# Browse on the client
+open http://localhost:8765
+```
+
+**Trusted-LAN shortcut — `--host 0.0.0.0`:**
+
+```bash
+python3 serve.py --host 0.0.0.0
+```
+
+The script prints a warning when binding to any non-loopback interface. Only
+use this on a network where you trust every host. **Do not expose to the
+public internet or to networks that include untrusted hosts** — the dashboard
+ships without an auth layer by design (see CONTRIBUTING.md if you want to add
+one).
 
 -----
 
