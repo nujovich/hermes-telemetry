@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.1] - 2026-06-06
 
+### Added
+- Gemini 3.x and 2.5 family pricing in `_DEFAULT_PRICING` (issue #2):
+  `gemini-3.5-flash`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`,
+  `gemini-3-flash-preview`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`.
+  All entries include explicit `cache_read` matching Google's published rates.
+- Family-specific Gemini prefix entries in `_PREFIX_PRICING` to cover dated
+  variants (e.g. `gemini-3-flash-preview-20251217`).
+
+### Changed
+- `gemini-2.5-pro` entry now includes explicit `cache_read: 0.125`.
+- Direct-Google Gemini lookups (no `google/` prefix) now resolve to correct
+  prices — previously fell through to the legacy generic `gemini` prefix and
+  were priced as Flash 1.5, underestimating cost by ~6.5x for Gemini 3 Flash.
+
 ### Fixed
 - `runs` rows are now lazy-created from `record_llm_call` and `end_run` when
   `on_session_start` was missed (issue #3). Affected any deployment where the
@@ -16,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/budget` under-reported. The new private `_ensure_run_row` helper mirrors the
   `INSERT OR IGNORE` pattern already used by `start_run`, so the happy path is
   unchanged (no duplicate rows, `platform` / `cron_job_id` preserved).
+
+### Removed
+- Deprecated Gemini entries from `_DEFAULT_PRICING`: `gemini-1.5-pro`,
+  `gemini-1.5-flash`, `gemini-2.0-flash` (removed from Google's pricing page;
+  2.0 family sunset 2026-06-01).
+- Generic `gemini` catch-all prefix in `_PREFIX_PRICING` (was Flash 1.5 pricing
+  for any unknown gemini-* variant — silently mis-priced new models). Unknown
+  Gemini variants now surface as `unknown-model` warnings instead.
 
 ## [0.3.0] - 2026-06-02
 

@@ -1,18 +1,46 @@
-# hermes-telemetry
+# hermes-telemetry ☤
 
 > *Observability + budget guardrails for [Hermes Agent](https://github.com/NousResearch/hermes-agent)*
 
+**Budget enforcement + observability for Hermes Agent. The only plugin that can stop a run before it overspends.**
+
 A comprehensive telemetry plugin that captures real usage data, enforces budget limits, and provides detailed cost analysis for AI agent operations. Built for the [Hermes Agent Challenge](https://dev.to/devteam/join-the-hermes-agent-challenge-1000-in-prizes-13cd) by [Nadia Ujovich](https://nadiaujovich.dev).
 
-![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
+[![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg) ![Tests: 130 passing](https://img.shields.io/badge/Tests-130%20passing-green.svg) ![Provider Support](https://img.shields.io/badge/Providers-OpenRouter%20%7C%20OpenAI%20%7C%20Anthropic-orange.svg) ![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 94 passing](https://img.shields.io/badge/Tests-94%20passing-green.svg)](https://camo.githubusercontent.com/89bc4bc6079d0e919e0c1363852fe900e05cb49429800097aa3ca83908c5cd59/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f54657374732d393425323070617373696e672d677265656e2e737667) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter%20%7C%20OpenAI%20%7C%20Anthropic-orange.svg)](https://camo.githubusercontent.com/cf0938e4acec0cd17c14dcf61a72734ffd03e8fff8eb44e359994f6ea773bfad/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f50726f7669646572732d4f70656e526f757465722532302537432532304f70656e4149253230253743253230416e7468726f7069632d6f72616e67652e737667) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
----
+-----
+
+Hermes Agent runs autonomously — across sessions, platforms, and cron jobs — which 
+means it can keep spending even when you're not watching.  
+**hermes-telemetry lives inside the runtime** and enforces hard budget limits before 
+the next LLM call is made.
+
+> This plugin addresses [NousResearch/hermes-agent#6642](https://github.com/NousResearch/hermes-agent/issues/6642) — 
+> the open feature request for a first-class telemetry and budget subsystem for Hermes Agent.
+
+
+```
+Your Hermes session
+  ↓ every API call
+hermes-telemetry (native plugin)
+  → tracks tokens + cost in real time
+  → enforces budget limits mid-session
+  → logs to SQLite with WAL mode
+  → syncs OpenRouter pricing automatically
+  ↓ if budget OK
+LLM provider
+```
+
+> **Not a log reader.** TokenTelemetry and similar tools read what already happened.
+> hermes-telemetry hooks into the Hermes runtime and can *stop* what’s about to happen.
+
+-----
 
 **Design principle:** observability is invisible to the model. Everything goes through hooks. The only user-facing surface is `/stats` and `/budget`.
 
----
+-----
 
 ## Table of Contents
 
@@ -50,6 +78,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
   - [Budget Enforcement Test](#budget-enforcement-test)
   - [Cron Job Cost Comparison](#cron-job-cost-comparison)
   - [Results Summary](#results-summary)
+- [Comparison](#comparison)
 - [Running Tests](#running-tests)
 - [Data Location](#data-location)
 - [Known Limitations](#known-limitations)
@@ -57,7 +86,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 - [License](#license)
 - [Hermes Agent Challenge](#hermes-agent-challenge)
 
----
+-----
 
 ## Screenshots
 
@@ -65,46 +94,50 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 A standalone HTML dashboard for users who prefer a visual interface over slash commands. Served locally, reads directly from the telemetry SQLite database.
 
-![Dashboard overview](docs/screenshots/dashboard-overview.png)
+[![Dashboard overview](https://github.com/nujovich/hermes-telemetry/raw/main/docs/screenshots/dashboard-overview.png)](https://github.com/nujovich/hermes-telemetry/blob/main/docs/screenshots/dashboard-overview.png)
 
 *The dashboard auto-refreshes every 30 seconds. Shows sessions, API calls, tokens, cost, budget status, daily cost trends, top tools, cost by cron job, provider distribution, and recent sessions.*
 
 ### Slash Commands
 
 #### `/stats` — Session analytics
-![Stats output](docs/screenshots/stats-output.png)
 
-#### `/budget` — Current spending vs limits  
-![Budget output](docs/screenshots/budget-output.png)
+[![Stats output](https://github.com/nujovich/hermes-telemetry/raw/main/docs/screenshots/stats-output.png)](https://github.com/nujovich/hermes-telemetry/blob/main/docs/screenshots/stats-output.png)
+
+#### `/budget` — Current spending vs limits
+
+[![Budget output](https://github.com/nujovich/hermes-telemetry/raw/main/docs/screenshots/budget-output.png)](https://github.com/nujovich/hermes-telemetry/blob/main/docs/screenshots/budget-output.png)
 
 #### `/stats cron week` — Cron job cost breakdown
-![Cron output](docs/screenshots/cron-output.png)
+
+[![Cron output](https://github.com/nujovich/hermes-telemetry/raw/main/docs/screenshots/cron-output.png)](https://github.com/nujovich/hermes-telemetry/blob/main/docs/screenshots/cron-output.png)
 
 #### `/stats providers` — Real vs estimated usage + estimated-price warning
-![Providers output](docs/screenshots/providers-output.png)
 
----
+[![Providers output](https://github.com/nujovich/hermes-telemetry/raw/main/docs/screenshots/providers-output.png)](https://github.com/nujovich/hermes-telemetry/blob/main/docs/screenshots/providers-output.png)
+
+-----
 
 ## What It Measures
 
-| Metric | Source | Real or Estimated |
-|--------|--------|-------------------|
-| Tokens in / out per API call | `post_api_request.usage` | ✅ Real (from provider) |
-| Cache read / write tokens | `post_api_request.usage` | ✅ Real (from provider) |
-| Reasoning tokens | `post_api_request.usage` | ✅ Real (from provider) |
-| API call latency | `post_api_request.api_duration` | ✅ Real (ms) |
-| Tool call latency & success/failure | `post_tool_call` | ✅ Real |
-| Session / cron job wall time | `started_at` → `ended_at` | ✅ Real |
-| Model & provider name | `post_api_request` | ✅ Real |
-| Platform (cli / cron / telegram / …) | `on_session_start.platform` | ✅ Real |
-| Cron job ID | Parsed from `session_id` | ✅ Real |
-| Subagent invocation count | `subagent_stop` hook | ✅ Real (proxy) |
-| **Cost (USD)** | Local pricing table × tokens | ⚠️ **Estimated** |
-| Tokens when provider returns `usage=None` | Fallback approximation | ⚠️ **Estimated, flagged** |
+|Metric                                   |Source                         |Real or Estimated       |
+|-----------------------------------------|-------------------------------|------------------------|
+|Tokens in / out per API call             |`post_api_request.usage`       |✅ Real (from provider)  |
+|Cache read / write tokens                |`post_api_request.usage`       |✅ Real (from provider)  |
+|Reasoning tokens                         |`post_api_request.usage`       |✅ Real (from provider)  |
+|API call latency                         |`post_api_request.api_duration`|✅ Real (ms)             |
+|Tool call latency & success/failure      |`post_tool_call`               |✅ Real                  |
+|Session / cron job wall time             |`started_at` → `ended_at`      |✅ Real                  |
+|Model & provider name                    |`post_api_request`             |✅ Real                  |
+|Platform (cli / cron / telegram / …)     |`on_session_start.platform`    |✅ Real                  |
+|Cron job ID                              |Parsed from `session_id`       |✅ Real                  |
+|Subagent invocation count                |`subagent_stop` hook           |✅ Real (proxy)          |
+|**Cost (USD)**                           |Local pricing table × tokens   |⚠️ **Estimated**         |
+|Tokens when provider returns `usage=None`|Fallback approximation         |⚠️ **Estimated, flagged**|
 
-Cost is always an **estimate** computed locally: a pricing table (USD per 1M tokens) multiplied by the token counts from each API call. The pricing table is refreshed periodically from the OpenRouter public API (`https://openrouter.ai/api/v1/models`, no auth required); this fetch downloads **only** model prices — no user usage data is sent. User overrides in `pricing.yaml` are always preserved over auto-fetched values. When the provider returns no usage data, tokens are estimated from a pre-request approximation + response length and the row is flagged as `estimated=1`, so `/stats` and `/budget` show a `~` prefix and an "estimated data" percentage.
+Cost is always an **estimate** computed from a locally-maintained pricing table. No external pricing API is called. When the provider returns no usage data, tokens are estimated from a pre-request approximation + response length and the row is flagged as `estimated=1`, so `/stats` and `/budget` show a `~` prefix and an “estimated data” percentage.
 
----
+-----
 
 ## Installation
 
@@ -112,92 +145,40 @@ Hermes plugins are **opt-in** — you must both install and enable the plugin.
 
 ### Option A: Install from GitHub
 
-```bash
+```
 hermes plugins install nujovich/hermes-telemetry
 hermes plugins enable hermes-telemetry
 ```
 
 ### Option B: Manual install
 
-```bash
+```
 git clone https://github.com/nujovich/hermes-telemetry ~/.hermes/plugins/hermes-telemetry
 hermes plugins enable hermes-telemetry
 ```
 
 **Important:** restart the Hermes gateway after enabling:
 
-```bash
+```
 hermes gateway restart
 ```
 
-> **Note:** Plugin changes only take effect after a gateway restart. The gateway loads the plugin registry at startup. If you enable a plugin and cron jobs don't appear in `/stats cron week`, this is the most likely cause.
+> **Note:** Plugin changes only take effect after a gateway restart. The gateway loads the plugin registry at startup. If you enable a plugin and cron jobs don’t appear in `/stats cron week`, this is the most likely cause.
 
----
+-----
 
 ## Quick Start
 
 1. Install and enable the plugin (see above)
-2. Restart the gateway
-3. On first load, the plugin auto-generates `pricing.yaml` and `budget.yaml`
-   with sensible defaults (30+ built-in models + OpenRouter fetch, $5/day budget)
-4. Run any session, then type `/stats` to see captured data
+1. Restart the gateway
+1. Run any session, then type `/stats` to see captured data
+1. Optionally configure `pricing.yaml` and `budget.yaml` (see below)
 
-### Customizing the defaults
+That’s it. The plugin captures data automatically — no agent action required.
 
-```bash
-# View what's configured and what options exist
-/setup
-
-# Reconfigure pricing (auto-fetch from OpenRouter)
-/setup pricing auto
-
-# Reconfigure pricing (built-in defaults only)
-/setup pricing minimal
-
-# Reconfigure budget (recommended defaults)
-/setup budget default
-
-# Set custom budget
-/budget set global daily 10.00
-```
-
-That's it. The plugin captures data automatically — no agent action required.
-
----
+-----
 
 ## Slash Commands
-
-### `/setup`
-
-```bash
-/setup                          → show current status + available options
-/setup pricing auto             → auto-generate pricing (built-in + OpenRouter fetch)
-/setup pricing minimal          → built-in defaults only (~30 models, no network)
-/setup pricing skip             → don't configure pricing
-/setup budget default           → recommended global budget ($5/day, $100/month)
-/setup budget custom            → set your own limits (shows instructions)
-/setup budget skip              → no budgets (costs tracked, no enforcement)
-```
-
-The setup wizard runs automatically on first plugin load. It creates `pricing.yaml`
-and `budget.yaml` with sensible defaults so you don't have to. You can re-run
-`/setup` anytime to reconfigure.
-
-**Pricing auto-fetch:** When you run `/setup pricing auto`, the plugin fetches all
-models with fixed pricing from the OpenRouter API (~300+ models) and merges them
-with the built-in defaults. Models already in the built-in table (e.g. `claude-opus-4`,
-`gpt-4o`, `owl-alpha`) keep their built-in prices. New models from OpenRouter are
-added with their API-reported prices.
-
-> **No restart needed:** `/setup pricing auto` (and `pricing minimal`) hot-reload
-> the in-process pricing cache after writing `pricing.yaml`, so new prices take
-> effect on the very next API call — same pattern as `/budget set`. The 24h
-> background auto-refresh does the same when it detects changes. (Editing
-> `pricing.yaml` by hand is still picked up on the next gateway restart, since
-> nothing signals the running process to reload.)
-
-**Budget defaults:** The recommended budget is `$5.00/day` and `$100.00/month` global.
-Adjust anytime with `/budget set global daily <amount>`.
 
 ### `/stats`
 
@@ -212,9 +193,6 @@ Adjust anytime with `/budget set global daily <amount>`.
 /stats cron today       → cron breakdown, last 24 hours
 /stats providers        → per-provider: real vs estimated calls + cost (last 24h)
 /stats providers week   → provider breakdown, last 7 days
-/stats models           → per-model breakdown within each provider (last 24h)
-/stats models week      → per-model breakdown, last 7 days
-/stats models month     → per-model breakdown, last 30 days
 /stats raw [N]          → last N raw run records (default 20, max 200)
 ```
 
@@ -237,7 +215,7 @@ hermes-telemetry — last 24 h
   Tool                            Calls  Failures   Avg ms
   --------------------------------------------------------
   read_file                          92         0      12ms
-  terminal                            51         3     340ms
+  terminal                           51         3     340ms
   write_file                         28         0      18ms
 ```
 
@@ -267,32 +245,6 @@ hermes-telemetry — providers (last 24 h)
   degraded to soft under on_estimated.mode: warn_only.
 ```
 
-> **Note on the provider label:** the provider shown by `/stats providers` is
-> whatever the Hermes gateway reports for each API call (`post_api_request`
-> hook), stored verbatim and grouped — it is **not** derived from the model
-> name. Everything the gateway routes through OpenRouter therefore appears under
-> its `openrouter` label regardless of the model's own `google/`, `openai/`,
-> `anthropic/`, … prefix. `(unknown)` means the gateway reported no provider.
-
-**Example output (`/stats models`):**
-
-`/stats models` breaks each provider down by model. It's the quickest way to
-spot a model billing at `$0.00` — usually a model the gateway records with a
-date suffix (e.g. `google/gemini-3-flash-preview-20251217`) whose price entry
-in `pricing.yaml` is the date-less key. (As of the latest pricing matcher,
-date-less keys cover their dated variants by prefix, so most of these now cost
-correctly — this view confirms it.)
-
-```
-hermes-telemetry — models (last 24 h)
-================================================================================================
-  Provider             Model                                           Calls   Real   Est         Cost
-  ----------------------------------------------------------------------------------------------
-  anthropic            claude-opus-4-8                                    31     31     0    $0.892100
-  openrouter           google/gemini-3-flash-preview-20251217             22     22     0    $0.021455
-  openrouter           openai/gpt-5.5-20260423                             13     13     0    $0.003217
-```
-
 ### `/budget`
 
 ```
@@ -315,14 +267,14 @@ hermes-telemetry — budget status
 
 **Status flags:**
 
-| Flag | Meaning |
-|------|---------|
-| (blank) | Within budget (`< 80%`) |
-| `!` | Soft warning (≥ 80%) — notice injected into conversation |
-| `█` | Hard breach (≥ 100%) — tool calls blocked, cron jobs paused |
-| `~est` | Verdict based partly on estimated (usage=None) data |
+|Flag   |Meaning                                                    |
+|-------|-----------------------------------------------------------|
+|(blank)|Within budget (`< 80%`)                                    |
+|`!`    |Soft warning (≥ 80%) — notice injected into conversation   |
+|`█`    |Hard breach (≥ 100%) — tool calls blocked, cron jobs paused|
+|`~est` |Verdict based partly on estimated (usage=None) data        |
 
----
+-----
 
 ## Dashboard (Web UI)
 
@@ -346,7 +298,7 @@ The dashboard auto-refreshes every 30 seconds. No manual reload needed.
 
 ### Usage
 
-```bash
+```
 cd ~/.hermes/plugins/hermes-telemetry/dashboard
 python3 serve.py        # serves on http://localhost:8765
 python3 serve.py 9090   # custom port
@@ -354,7 +306,7 @@ python3 serve.py 9090   # custom port
 
 Then open `http://localhost:8765` in your browser.
 
----
+-----
 
 ## Configuration
 
@@ -364,13 +316,11 @@ Configuration lives in `~/.hermes/telemetry/`:
 ~/.hermes/telemetry/
 ├── telemetry.db      ← SQLite database (WAL mode)
 ├── telemetry.log     ← plugin log (errors / debug)
-├── pricing.yaml      ← model prices (auto-generated on first load)
-└── budget.yaml       ← spend guardrails (auto-generated on first load)
+├── pricing.yaml      ← optional pricing overrides
+└── budget.yaml       ← optional spend budgets
 ```
 
-Both `pricing.yaml` and `budget.yaml` are auto-generated on first plugin load.
-If you delete either file, the wizard will offer to re-create it on the next
-gateway restart. You can also re-run `/setup` at any time.
+If these files don’t exist, the plugin still works — it just uses defaults (all models at $0.00, budgets disabled).
 
 ### `pricing.yaml`
 
@@ -406,15 +356,9 @@ defaults:
 **Matching rules (in order):**
 
 1. Exact match (case-insensitive) against `models:` keys in your YAML
-2. Exact match against the built-in pricing table (~35 models)
-3. Longest-prefix match across **all** known keys — your YAML models
-   (including auto-refreshed OpenRouter keys), the built-in table, **and** the
-   curated family-prefix table. The longest matching prefix wins, with the more
-   authoritative source preferred on ties (YAML > built-in > family table).
-   This is why a date-less key like `google/gemini-3-flash-preview` covers the
-   dated variant the gateway actually sends (`google/gemini-3-flash-preview-20251217`),
-   and why `claude-sonnet` still matches `claude-sonnet-4-6-future`.
-4. Unknown → `$0.00` with a one-time warning in `telemetry.log`
+1. Exact match against the built-in pricing table (~35 models)
+1. Longest-prefix match (e.g. `claude-sonnet` matches `claude-sonnet-4-6-future`)
+1. Unknown → `$0.00` with a one-time warning in `telemetry.log`
 
 The built-in table covers: Anthropic (Claude 3/4 family), OpenAI (GPT-4o, GPT-4, o1, o3, o4), DeepSeek, Gemini, Llama, and Hermes models. Prices sourced from official provider pages (May 2026).
 
@@ -450,19 +394,19 @@ on_estimated:
 
 **Scope resolution:**
 
-| Scope | How spend is calculated |
-|-------|------------------------|
-| `global` | All sessions + all cron jobs combined |
-| `per_cron_job` | Sessions where `cron_job_id` matches (excludes subagent cost) |
-| `per_sender` | Sessions from a specific sender (multi-user gateways) |
+|Scope         |How spend is calculated                                      |
+|--------------|-------------------------------------------------------------|
+|`global`      |All sessions + all cron jobs combined                        |
+|`per_cron_job`|Sessions where `cron_job_id` matches (excludes subagent cost)|
+|`per_sender`  |Sessions from a specific sender (multi-user gateways)        |
 
-**Window math:** daily and monthly windows are computed in the user's local timezone. A cron job that runs at 11:59 PM and another at 12:01 AM count against different daily windows.
+**Window math:** daily and monthly windows are computed in the user’s local timezone. A cron job that runs at 11:59 PM and another at 12:01 AM count against different daily windows.
 
----
+-----
 
 ## Pricing Auto-Refresh
 
-The plugin can automatically fetch model pricing from OpenRouter's public API, eliminating the need to manually maintain `pricing.yaml` for hundreds of models.
+The plugin can automatically fetch model pricing from OpenRouter’s public API, eliminating the need to manually maintain `pricing.yaml` for hundreds of models.
 
 ### How It Works
 
@@ -481,40 +425,66 @@ Some OpenRouter models have no fixed pricing (e.g. `auto` routing, experimental 
 
 The plugin handles these safely:
 
-- Prices are normalized to `$0.00` (they don't inflate cost calculations)
+- Prices are normalized to `$0.00` (they don’t inflate cost calculations)
 - Flagged with `_estimated_price: true` in `pricing.yaml`
 - The budget engine detects when spend uses these models
 
 **Budget degradation logic:**
 
-| Condition | Effect |
-|-----------|--------|
-| `on_estimated.mode: warn_only` (default) | If >0% of calls use estimated-price models, **hard verdicts are degraded to soft** — the user gets a warning but tools aren't blocked |
-| `on_estimated.mode: enforce` | Hard verdicts take effect regardless |
+|Condition                               |Effect                                                                                                                               |
+|----------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------|
+|`on_estimated.mode: warn_only` (default)|If >0% of calls use estimated-price models, **hard verdicts are degraded to soft** — the user gets a warning but tools aren’t blocked|
+|`on_estimated.mode: enforce`            |Hard verdicts take effect regardless                                                                                                 |
 
-This ensures budgets are reliable even when some models lack fixed pricing.
-
-
-**Example output (`/setup pricing auto`):**
+### CLI Usage
 
 ```
-⚙️  /setup pricing auto
-Pricing configured: 345 models written to ~/.hermes/telemetry/pricing.yaml
-  (34 built-in + 313 from OpenRouter)
-  New prices are live now — no gateway restart needed.
+# Dry run — see what would change
+python -m hermes_telemetry.pricing_refresh --check
+
+# Apply changes
+python -m hermes_telemetry.pricing_refresh
+
+# Verbose output
+python -m hermes_telemetry.pricing_refresh --verbose
 ```
 
-### Updating the plugin
+**Example output:**
 
-To pull a new version of the plugin:
+```
+INFO OpenRouterSource: fetched 320 models
+Updated 3 model(s):
 
-```bash
-hermes plugins update hermes-telemetry
+  ~ stepfun/step-3.7-flash  (openrouter)
+      input: 0.9999 → 0.2000
+      output: 9.9999 → 1.1500
+
+  + anthropic/claude-opus-4.8  (openrouter)
+      input=5.0000 output=25.0000
+
+  ⚠  Model(s) with estimated pricing: openrouter/auto, openrouter/bodybuilder, openrouter/pareto-code
 ```
 
-Then **exit your current session and start a new one** so the updated plugin code is loaded. (Unlike a pricing refresh — which is hot-reloaded with no restart — a plugin **code** update is only picked up when the plugin is reloaded.)
+### Extending with New Sources
 
----
+Add new pricing providers by subclassing `PricingSource`:
+
+```python
+from hermes_telemetry.pricing_refresh import PricingSource, register_source
+
+class AnthropicSource(PricingSource):
+    name = "anthropic"
+
+    def fetch(self) -> dict[str, dict]:
+        # Fetch from Anthropic's pricing page or API
+        ...
+
+register_source(AnthropicSource)
+```
+
+Sources are registered in `pricing_refresh.py` and fetched in parallel on each refresh cycle.
+
+-----
 
 ## Architecture
 
@@ -547,22 +517,22 @@ SQLite with WAL mode, per-thread connections, schema v3:
 
 **`runs`** — one row per session (CLI session or cron job execution):
 
-| Column | Description |
-|--------|-------------|
-| `session_id` | Primary key (`{YYYYMMDD_HHMMSS}_{uuid6}` for CLI, `cron_{job_id}_{ts}` for cron) |
-| `platform` | `cli`, `cron`, `telegram`, `discord`, etc. |
-| `cron_job_id` | Extracted from session_id when platform=cron |
-| `model` | Model name (updated from last API call) |
-| `provider` | Provider name (e.g. `openrouter`, `anthropic`) |
-| `started_at` / `ended_at` | ISO-8601 UTC timestamps |
-| `status` | `running`, `ok`, `error`, `interrupted` |
-| `tokens_in` / `tokens_out` | Accumulated across all API calls in the session |
-| `cost_usd` | Accumulated estimated cost |
-| `duration_ms` | Wall time (ms) via `julianday()` |
-| `api_calls` / `tool_calls` | Counters |
-| `parent_session_id` | Reserved for future parent-child linking (not populated in v0.2) |
-| `estimated_llm_calls` | Count of calls where provider returned `usage=None` |
-| `sender_id` | For per-sender budgets (set via `pre_llm_call`) |
+|Column                    |Description                                                                     |
+|--------------------------|--------------------------------------------------------------------------------|
+|`session_id`              |Primary key (`{YYYYMMDD_HHMMSS}_{uuid6}` for CLI, `cron_{job_id}_{ts}` for cron)|
+|`platform`                |`cli`, `cron`, `telegram`, `discord`, etc.                                      |
+|`cron_job_id`             |Extracted from session_id when platform=cron                                    |
+|`model`                   |Model name (updated from last API call)                                         |
+|`provider`                |Provider name (e.g. `openrouter`, `anthropic`)                                  |
+|`started_at` / `ended_at` |ISO-8601 UTC timestamps                                                         |
+|`status`                  |`running`, `ok`, `error`, `interrupted`                                         |
+|`tokens_in` / `tokens_out`|Accumulated across all API calls in the session                                 |
+|`cost_usd`                |Accumulated estimated cost                                                      |
+|`duration_ms`             |Wall time (ms) via `julianday()`                                                |
+|`api_calls` / `tool_calls`|Counters                                                                        |
+|`parent_session_id`       |Reserved for future parent-child linking (not populated in v0.2)                |
+|`estimated_llm_calls`     |Count of calls where provider returned `usage=None`                             |
+|`sender_id`               |For per-sender budgets (set via `pre_llm_call`)                                 |
 
 **`llm_calls`** — one row per individual API call:
 
@@ -580,11 +550,11 @@ All of `runs` token/cost columns, plus `cache_read_tokens`, `cache_write_tokens`
 
 Cron jobs run in a `ThreadPoolExecutor` (Hermes `cron/scheduler.py`). Multiple jobs can write to the DB simultaneously from different threads.
 
-**Design:** per-thread SQLite connections via `threading.local()`. Each thread opens its own connection to the same WAL-mode DB file. A serializable `_schema_lock` protects DDL migrations on first connect (WAL mode switch requires a brief lock that `busy_timeout` alone doesn't handle).
+**Design:** per-thread SQLite connections via `threading.local()`. Each thread opens its own connection to the same WAL-mode DB file. A serializable `_schema_lock` protects DDL migrations on first connect (WAL mode switch requires a brief lock that `busy_timeout` alone doesn’t handle).
 
 `busy_timeout=5000` ensures write collisions retry for 5 seconds before raising. `synchronous=NORMAL` balances durability with write performance (safe for WAL mode).
 
----
+-----
 
 ## Budget Enforcement
 
@@ -592,49 +562,47 @@ Cron jobs run in a `ThreadPoolExecutor` (Hermes `cron/scheduler.py`). Multiple j
 
 Every time the agent is about to do work, the plugin checks:
 
-1. **`pre_llm_call`** (fires once per turn): evaluates all applicable budget scopes. If any has a `soft` or `hard` verdict that hasn't been alerted yet this window, injects a one-time notice into the conversation context (anti-spam via `budget_alerts` table). Captures `sender_id`.
-
-2. **`pre_tool_call`** (fires before every tool): re-evaluates budgets. If any scope is in `hard` breach, returns `{"action":"block","message":...}` which aborts the tool call.
-
-3. **For cron jobs with `hard` breach:** additionally calls `cron.jobs.pause_job` to pause future runs.
+1. **`pre_llm_call`** (fires once per turn): evaluates all applicable budget scopes. If any has a `soft` or `hard` verdict that hasn’t been alerted yet this window, injects a one-time notice into the conversation context (anti-spam via `budget_alerts` table). Captures `sender_id`.
+1. **`pre_tool_call`** (fires before every tool): re-evaluates budgets. If any scope is in `hard` breach, returns `{"action":"block","message":...}` which aborts the tool call.
+1. **For cron jobs with `hard` breach:** additionally calls `cron.jobs.pause_job` to pause future runs.
 
 ### Enforcement Levels
 
-Hermes does **not** expose a way to abort an in-flight model call from a plugin. `pre_llm_call` / `pre_api_request` returns can't cancel a call. So enforcement is honest about its reach:
+Hermes does **not** expose a way to abort an in-flight model call from a plugin. `pre_llm_call` / `pre_api_request` returns can’t cancel a call. So enforcement is honest about its reach:
 
-| Level | Trigger | Effect | Repeat? |
-|-------|---------|--------|---------|
-| **Soft** (≥ `soft_pct`) | Spend reaches 80% of limit (configurable) | One-time notice injected into conversation | Once per window per scope |
-| **Hard** (≥ `hard_pct`) | Spend reaches 100% of limit | Every subsequent tool call is blocked | Every tool call until window resets |
-| **Cron pause** | Any hard `cron_job` verdict | Job is paused for future runs | Once per window per scope |
+|Level                  |Trigger                                  |Effect                                    |Repeat?                            |
+|-----------------------|-----------------------------------------|------------------------------------------|-----------------------------------|
+|**Soft** (≥ `soft_pct`)|Spend reaches 80% of limit (configurable)|One-time notice injected into conversation|Once per window per scope          |
+|**Hard** (≥ `hard_pct`)|Spend reaches 100% of limit              |Every subsequent tool call is blocked     |Every tool call until window resets|
+|**Cron pause**         |Any hard `cron_job` verdict              |Job is paused for future runs             |Once per window per scope          |
 
-The model response already in flight still completes and is billed. What's prevented is *further* tool-driven work.
+The model response already in flight still completes and is billed. What’s prevented is *further* tool-driven work.
 
 ### Estimated Data and Budget Degradation
 
 When the provider returns `usage=None`, the plugin estimates tokens and flags the row as `estimated=1`. Since these estimates may be inaccurate, the budget engine offers a safety valve:
 
-**`on_estimated.mode: warn_only` (default):** If a hard verdict rests partly on estimated rows, it is **degraded to soft** — the user gets a warning but tools aren't blocked. Rationale: a budget built on estimates shouldn't hard-stop work.
+**`on_estimated.mode: warn_only` (default):** If a hard verdict rests partly on estimated rows, it is **degraded to soft** — the user gets a warning but tools aren’t blocked. Rationale: a budget built on estimates shouldn’t hard-stop work.
 
-**`on_estimated.mode: enforce`:** Hard verdicts take effect regardless of estimate quality. Use this when you trust your provider's usage data (Est% = 0) or when estimates are acceptable.
+**`on_estimated.mode: enforce`:** Hard verdicts take effect regardless of estimate quality. Use this when you trust your provider’s usage data (Est% = 0) or when estimates are acceptable.
 
 The `/stats providers` command shows the `Est%` column so you can see at a glance whether your provider returns real usage data.
 
 **Estimated-price models:** Some models (e.g. OpenRouter `auto` routing) have no fixed pricing. These are flagged with `_estimated_price: true` in `pricing.yaml` and normalized to `$0.00`. If >0% of calls use these models, budget hard-verdicts are also degraded to soft under `warn_only` mode. See [Pricing Auto-Refresh](#pricing-auto-refresh) for details.
 
----
+-----
 
 ## Provider Probe: Verifying Your Provider Returns Real Usage
 
 Run this **once** after enabling the plugin:
 
 1. Run one short session (any minimal task works)
-2. Execute `/stats providers`
-3. Look at the `Est%` column for your provider:
-   - **`0%`** → provider returns real usage data. Budget verdicts are based on real numbers. Set `on_estimated.mode: enforce` for strict enforcement. ✅
-   - **`> 0%`** → provider omits usage in some responses. Those calls are estimated and flagged. Budget hard-verdicts will be degraded to soft under `warn_only`. The `telemetry.log` will have a **one-time WARNING** per provider. ⚠️
+1. Execute `/stats providers`
+1. Look at the `Est%` column for your provider:
+- **`0%`** → provider returns real usage data. Budget verdicts are based on real numbers. Set `on_estimated.mode: enforce` for strict enforcement. ✅
+- **`> 0%`** → provider omits usage in some responses. Those calls are estimated and flagged. Budget hard-verdicts will be degraded to soft under `warn_only`. The `telemetry.log` will have a **one-time WARNING** per provider. ⚠️
 
----
+-----
 
 ## Proof of Concept
 
@@ -647,11 +615,26 @@ The following PoC was executed live to validate the plugin end-to-end.
 - **DB:** `/home/nujovich/.hermes/telemetry/telemetry.db` (schema v3, WAL mode)
 - **6 cron jobs** configured, 2 used for this PoC
 
-### Initial Configuration
+### Pricing Capture
 
-On first load, the plugin auto-generated `pricing.yaml` with 30+ built-in models
-(including `owl-alpha` for Nous Portal and `openrouter/*` models) and `budget.yaml`
-with the default `$5/day, $100/month` global budget. No manual YAML editing needed.
+Added models to `~/.hermes/telemetry/pricing.yaml`:
+
+```yaml
+models:
+  "openrouter/owl-alpha":
+    input: 0.00
+    output: 0.00
+  "openrouter/anthropic/claude-sonnet-4-6":
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write: 3.75
+  "openrouter/anthropic/claude-opus-4-7":
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write: 6.25
+```
 
 Set `on_estimated.mode: enforce` for deterministic enforcement.
 
@@ -674,12 +657,10 @@ Set `on_estimated.mode: enforce` for deterministic enforcement.
 /budget set global daily 2.00
 ```
 
-This hot-reloads the budget config (value was previously cached at $0.001 in memory — edits to `budget.yaml` alone don't take effect without `/budget set` or gateway restart).
-
 Result after `/budget set`:
 
 ```
-  global    $0.1812 / $2.00    9%  [daily]
+global    $0.1812 / $2.00    9%  [daily]
 ```
 
 **Step 3 — Verify job runs normally:**
@@ -689,65 +670,73 @@ Result after `/budget set`:
 
 ### Cron Job Cost Comparison
 
-Poisoned two jobs with different priced models:
-
-| Job | Model | Price (input/output) |
-|-----|-------|---------------------|
-| MCP Lead Gen | `claude-sonnet-4-6` | $3.00 / $15.00 per 1M |
-| Marketing Highlights | `claude-opus-4-7` | $5.00 / $25.00 per 1M |
-| Base sessions (CLI) | `owl-alpha` | $0.00 / $0.00 (free) |
+|Job                 |Model              |Price (input/output) |
+|--------------------|-------------------|---------------------|
+|MCP Lead Gen        |`claude-sonnet-4-6`|$3.00 / $15.00 per 1M|
+|Marketing Highlights|`claude-opus-4-7`  |$5.00 / $25.00 per 1M|
+|Base sessions (CLI) |`owl-alpha`        |$0.00 / $0.00 (free) |
 
 **Results from SQLite (`/stats` after all runs):**
 
 - **CLI sessions** (owl-alpha, free): ~1M tokens in → **$0.00**
 - **MCP Lead Gen** (claude-sonnet-4-6): ~892K tokens in → **$0.314**
-- **Marketing Highlights** (claude-opus-4-7): ~445K tokens in → **~$2.23** (opus is ~5-8x more expensive per token)
-
-This demonstrates the core value proposition: **you can see exactly how much each cron job costs and compare models.**
+- **Marketing Highlights** (claude-opus-4-7): ~445K tokens in → **$2.23** (opus is ~5-8x more expensive per token)
 
 ### Results Summary
 
-| Component | Status |
-||-----------|--------|
-|| Token capture from provider | ✅ Real usage (`estimated=0`) |
-|| Cost estimation with pricing table | ✅ Accurate to pricing YAML |
-|| Cron job session tracking | ✅ Captured via `session_id` regex |
-|| Budget soft alerts | ✅ One-time context injection |
-|| Budget hard enforcement | ✅ Paused job at $0.001/day |
-|| Budget hot-reload via `/budget set` | ✅ Cache cleared, new limit active |
-|| Multi-model cost comparison | ✅ Sonnet vs Opus vs Free |
-|| Pricing auto-refresh (OpenRouter API) | ✅ 320 models fetched, manual overrides preserved |
-|| Estimated-price model handling | ✅ Negative prices → $0.00, budget degradation |
-|| Dashboard (HTML, auto-refresh 30s) | ✅ Charts, tables, budget bar, provider distribution |
-|| 130 tests pass | ✅ |
+|Component                            |Status                                             |
+|-------------------------------------|---------------------------------------------------|
+|Token capture from provider          |✅ Real usage (`estimated=0`)                       |
+|Cost estimation with pricing table   |✅ Accurate to pricing YAML                         |
+|Cron job session tracking            |✅ Captured via `session_id` regex                  |
+|Budget soft alerts                   |✅ One-time context injection                       |
+|Budget hard enforcement              |✅ Paused job at $0.001/day                         |
+|Budget hot-reload via `/budget set`  |✅ Cache cleared, new limit active                  |
+|Multi-model cost comparison          |✅ Sonnet vs Opus vs Free                           |
+|Pricing auto-refresh (OpenRouter API)|✅ 320 models fetched, manual overrides preserved   |
+|Estimated-price model handling       |✅ Negative prices → $0.00, budget degradation      |
+|Dashboard (HTML, auto-refresh 30s)   |✅ Charts, tables, budget bar, provider distribution|
+|94 tests pass                        |✅                                                  |
 
----
+-----
+
+## Comparison
+
+|                  |hermes-telemetry|TokenTelemetry       |Martin Loop         |
+|------------------|----------------|---------------------|--------------------|
+|Hermes-native     |✅ Native plugin |❌ Reads external logs|❌ No Hermes support |
+|Budget enforcement|✅ Stops the run |❌ Observe only       |✅ But not for Hermes|
+|Real-time         |✅ Pre-call      |❌ Post-hoc           |✅ Pre-attempt       |
+|Requires Hermes   |✅ Hermes only   |Any agent            |Claude Code / Codex |
+|Local dashboard   |✅               |✅ (more complete)    |❌                   |
+|Open source       |✅ MIT           |✅ MIT                |✅ MIT               |
+
+**When to use TokenTelemetry instead:** if you need a multi-agent dashboard (Claude Code + Codex + Hermes in one place), TokenTelemetry is the right choice. hermes-telemetry is purpose-built for Hermes operators who need budget enforcement, not just visibility.
+
+-----
 
 ## Running Tests
 
-```bash
+```
 cd hermes-telemetry
 pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (130 tests):**
+**Test suite (94 tests):**
 
-| File | Tests | Coverage |
-|------|-------|----------|
-| `test_db.py` | 24 | Schema v1→v3 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes) |
-| `test_pricing.py` | 27 | Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching (incl. date-less keys covering dated variants), unknown model handling |
-| `test_pricing_hot_reload.py` | 3 | `/setup pricing auto`/`minimal` hot-reload the in-process pricing cache — new prices live without a gateway restart |
-| `test_init.py` | 9 | Cron session ID regex, tool success/failure parsing |
-| `test_budget.py` | 20 | ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload |
-| `test_subagent_reconciliation.py` | 4 | Parent + child hook sequence, token reconciliation, no double-counting |
-| `test_stats_providers.py` | 14 | Real vs estimated per provider, `/stats providers` output format, Nous warning dedup |
-| `test_stats_models.py` | 8 | Per-model aggregation within each provider, ordering, `/stats models` output format |
-| `test_setup.py` | 21 | Setup wizard: auto/minimal/skip pricing, default/custom/skip budget, command handler, idempotency, owl-alpha in defaults |
+|File                             |Tests|Coverage                                                                                                                       |
+|---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
+|`test_db.py`                     |15   |Schema v1→v3 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes)                                     |
+|`test_pricing.py`                |17   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, unknown model handling          |
+|`test_init.py`                   |6    |Cron session ID regex, tool success/failure parsing                                                                            |
+|`test_budget.py`                 |17   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload|
+|`test_stats_providers.py`        |8    |Real vs estimated per provider, `/stats providers` output format, Nous warning dedup                                           |
+|`test_subagent_reconciliation.py`|4    |Parent + child hook sequence, token reconciliation, no double-counting                                                         |
 
 No live Hermes is required — all tests are self-contained with in-memory SQLite.
 
----
+-----
 
 ## Data Location
 
@@ -761,75 +750,43 @@ No live Hermes is required — all tests are self-contained with in-memory SQLit
 
 The DB grows over time. For high-frequency cron jobs, consider periodic cleanup of old rows (not yet automated — see [Known Limitations](#known-limitations)).
 
----
+-----
 
 ## Known Limitations
 
 **Enforcement gaps:**
 
-- **No true mid-call abort.** `pre_llm_call` / `pre_api_request` cannot cancel an
-  in-flight model call. The response already generating will complete and be billed.
-  The tool-gate (`pre_tool_call`) stops *subsequent* work at the next tool boundary.
-- **Runaway text-only sessions.** A session that generates text without calling any
-  tools never hits the tool-gate. Budget hard limits won't trigger until the next
-  tool call — which may never come.
-- **Estimated-price models bypass hard limits.** Models with no fixed pricing on
-  OpenRouter (e.g. `auto` routing, experimental models) are flagged
-  `_estimated_price: true` and recorded as `$0.00`. If >0% of calls use these
-  models, hard budget verdicts degrade to soft under `on_estimated.mode: warn_only`
-  (the default). Set `mode: enforce` to override this if you accept the risk.
+- **No true mid-call abort.** `pre_llm_call` / `pre_api_request` cannot cancel an in-flight model call. The response that’s already generating will complete and be billed. The tool-gate (`pre_tool_call`) stops *subsequent* work at the next tool boundary.
+- **Runaway text-only sessions.** A session that generates text without calling any tools never hits the tool-gate. If this becomes a problem, a pre-flight check in `on_session_start` for cron jobs could abort before the first LLM call.
 
 **Subagent attribution:**
 
-- Child agents (`delegate_task`) run as their own sessions. Their tokens are captured
-  independently and included in **global** totals — but only if the child agent also
-  has the plugin loaded. If the child runs without it, those tokens are silently
-  undercounted.
-- There is no parent→child link in any hook, so `per_cron_job` budgets **exclude**
-  subagent cost. Use the `global` budget scope to cap total spend including
-  delegated work.
+- Child agents (`delegate_task`) run as their own sessions. Their tokens are captured independently and included in **global** totals. But there is no parent→child link in any hook — so `per_cron_job` budgets **exclude** subagent cost. Use the `global` budget for a cap that captures delegated work.
 
-**Pricing coverage:**
+**Pricing refresh only for OpenRouter models:**
 
-- The built-in pricing table covers ~30 major models (Anthropic, OpenAI, DeepSeek,
-  Gemini, Meta, Nous Research including `owl-alpha`).
-- On first load (and every 24h), the plugin auto-fetches additional models from the
-  **OpenRouter** public API. User overrides in `pricing.yaml` are always preserved.
-- Models routed **through OpenRouter** are covered by the auto-refresh. Models accessed
-  **directly** through other providers (e.g. Gemini direct via Google AI Studio,
-  Anthropic direct, OpenAI direct) are **not** auto-refreshed — they rely on the
-  built-in table or manual overrides in `pricing.yaml`.
-- Any model not found in either the built-in table or the auto-fetched data falls
-  back to `$0.00` with a one-time warning in `telemetry.log`.
-
-**Dashboard:**
-
-- The web dashboard (`serve.py`) is read-only — it visualizes data but cannot
-  modify budgets or trigger pricing refreshes. Use `/budget set` or the CLI for
-  those operations.
-- `serve.py` has no authentication. Do not expose it on a public or shared network
-  interface without adding your own auth layer.
+- `pricing.yaml` is updated with OpenRouter models via OpenRouter API, preserving those entered manually by the user.
 
 **DB retention:**
 
-- `telemetry.db` grows without bound. No automatic purge of old rows. For
-  high-frequency cron jobs with >100K rows, consider periodic manual cleanup
-  (not yet automated).
+- `telemetry.db` grows without bound. No automatic purge of old rows. For >100K rows, consider manual cleanup or a retention policy (not yet implemented).
 
 **Gateway restart required:**
 
-- Enabling or updating the plugin takes effect only after a gateway restart. Cron
-  runs that started before the restart won't have telemetry data.
----
+- Enabling the plugin takes effect only after gateway restart. Cron runs that started before the restart won’t have telemetry.
+
+-----
 
 ## Troubleshooting
 
-**`/stats cron week` shows "No cron runs in the last 7 days":**
+**`/stats cron week` shows “No cron runs in the last 7 days”:**
 
 The gateway loaded before the plugin was enabled. Restart the gateway:
-```bash
+
+```
 hermes gateway restart
 ```
+
 Then re-run a cron job.
 
 **`/budget` shows `$0.00` as the limit:**
@@ -838,19 +795,13 @@ The limit is cached in memory at gateway start. If you edited `budget.yaml` dire
 
 **Cost is $0.00 for all sessions:**
 
-Your model isn't in the pricing table. The plugin auto-generates `pricing.yaml`
-on first load with 30+ built-in models plus an auto-fetch from the **OpenRouter**
-public API. If you're using a model that's not covered by either:
+Your model isn’t in the pricing table. Check `telemetry.log` for a one-time warning like:
 
-```bash
-# Re-run the auto-fetch to pick up the latest OpenRouter models
-/setup pricing auto
-
-# Or manually add your model to ~/.hermes/telemetry/pricing.yaml
+```
+hermes-telemetry: unknown model 'openrouter/some-model' — cost recorded as $0.00
 ```
 
-Models accessed directly (not through OpenRouter) that aren't in the built-in
-table need manual entries — the auto-refresh only covers OpenRouter-routed models.
+Add it to `pricing.yaml`.
 
 **Provider Est% > 0:**
 
@@ -859,17 +810,18 @@ Your provider returns `usage=None` for some/all calls. Tokens are estimated. Che
 **Plugin not loading at all:**
 
 Check `telemetry.log` for errors. Common causes:
-- Missing `pyyaml` in the gateway's venv: `pip install pyyaml`
+
+- Missing `pyyaml` in the gateway’s venv: `pip install pyyaml`
 - Plugin not in `plugins.enabled` in config.yaml
 - Syntax error in `pricing.yaml` or `budget.yaml`
 
----
+-----
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/nujovich/hermes-telemetry/blob/main/LICENSE).
 
----
+-----
 
 ## Hermes Agent Challenge
 
@@ -881,6 +833,6 @@ This plugin was built for the [**Hermes Agent Challenge**](https://dev.to/devtea
 
 **💡 Why this plugin:** Every AI system needs observability and cost control. This plugin gives Hermes Agent users the visibility to optimize their workflows and the guardrails to prevent bill shock — essential for production deployments and automated cron jobs.
 
----
+-----
 
 *Made with ☕ for the Hermes Agent ecosystem*
