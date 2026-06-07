@@ -226,6 +226,26 @@ def _run_hours_ago_expr(hours: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _ensure_run_row(session_id: str, ts: str) -> None:
+    """Idempotently ensure a `runs` row exists for ``session_id``.
+
+    `INSERT OR IGNORE` so any existing row (created by `start_run` on the
+    happy path) is preserved untouched. The row is opened in `running`
+    status with `ts` as `started_at`; subsequent UPDATEs in
+    `record_llm_call` / `end_run` populate the rest.
+
+    Called by `record_llm_call` and `end_run` so the `UPDATE WHERE
+    session_id = ?` paths never silently no-op for sessions whose
+    `on_session_start` hook didn't reach the plugin — see
+    hermes-agent `agent/conversation_loop.py:296` (the start hook fires
+    "once when a brand-new session is created (not on continuation)").
+    """
+    _get_conn().execute(
+        "INSERT OR IGNORE INTO runs (session_id, started_at, status) VALUES (?, ?, 'running')",
+        (session_id, ts),
+    )
+
+
 def start_run(
     session_id: str,
     model: str,
@@ -246,6 +266,7 @@ def start_run(
 
 def end_run(session_id: str, status: str, ended_at: str | None = None) -> None:
     now = ended_at or _utcnow()
+    _ensure_run_row(session_id, now)
     conn = _get_conn()
     conn.execute(
         """
@@ -298,6 +319,7 @@ def record_llm_call(
             1 if estimated else 0,
         ),
     )
+    _ensure_run_row(session_id, ts)
     conn.execute(
         """
         UPDATE runs
