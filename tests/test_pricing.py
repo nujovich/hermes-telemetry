@@ -365,3 +365,79 @@ def test_cache_multiplier_fallback(caplog):
     # Expected: 1M * (2.50 * 0.10) / 1M = $0.25
     expected = 2.50 * 0.10
     assert abs(cost - expected) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Gemini direct-provider lookups
+#
+# Hermes hooks fire with model=gemini-3-flash-preview, provider=gemini when
+# calling Google AI Studio directly (not via OpenRouter). Verify the bare
+# Gemini family names resolve to the correct entries, including the
+# previously-buggy fallthrough where Gemini 3 was priced as Gemini 1.5 Flash.
+# ---------------------------------------------------------------------------
+
+
+def test_gemini_3_flash_preview_direct():
+    """gemini-3-flash-preview (no google/ prefix) resolves to its real price."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 0}, "gemini-3-flash-preview"
+    )
+    assert abs(cost - 0.50) < 1e-6  # not 0.075 (legacy Flash 1.5 fallback)
+
+
+def test_gemini_3_flash_preview_cache_read_explicit():
+    cost = pricing.estimate_cost({"cache_read_tokens": 1_000_000}, "gemini-3-flash-preview")
+    assert abs(cost - 0.05) < 1e-6  # 10% of input — also matches Google's published price
+
+
+def test_gemini_2_5_flash_direct():
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000}, "gemini-2.5-flash"
+    )
+    expected = 0.30 + 2.50
+    assert abs(cost - expected) < 1e-6
+
+
+def test_gemini_2_5_flash_lite_direct():
+    cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "gemini-2.5-flash-lite")
+    assert abs(cost - 0.10) < 1e-6
+
+
+def test_gemini_3_5_flash_direct():
+    cost = pricing.estimate_cost({"output_tokens": 1_000_000}, "gemini-3.5-flash")
+    assert abs(cost - 9.00) < 1e-6
+
+
+def test_gemini_dated_variant_resolves_by_prefix():
+    """gemini-3-flash-preview-20251217 (dated) hits the gemini-3-flash prefix."""
+    cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "gemini-3-flash-preview-20251217")
+    assert abs(cost - 0.50) < 1e-6
+
+
+def test_gemini_1_5_no_longer_resident(caplog):
+    """gemini-1.5-flash was removed from the default table (deprecated 2026-Q2).
+
+    Without the legacy 'gemini' catch-all prefix, an unknown 1.5 variant now
+    surfaces as a warning instead of being silently priced. This is the desired
+    behavior — a deprecated entry shouldn't be the silent default.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
+        cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "gemini-1.5-flash-tuned")
+    # 1.5-flash prefix is gone — falls through to unknown
+    assert cost == 0.0
+
+
+def test_gemini_no_generic_catchall_regression(caplog):
+    """A bare 'gemini-anything' must NOT silently match the old generic 'gemini' prefix.
+
+    Regression guard: previously the bare 'gemini' prefix swept any unknown
+    variant into Flash 1.5 pricing ($0.075/$0.30), underestimating Gemini 3
+    direct-Google calls by ~6.5x. After the cleanup, the catch-all is removed.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
+        cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "gemini-future-foo")
+    assert cost == 0.0  # not 0.075
