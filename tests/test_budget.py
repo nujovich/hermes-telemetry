@@ -14,9 +14,12 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolated(tmp_path, monkeypatch):
-    """Fresh DB + fresh budget config + cleared caches for every test."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+def isolated():
+    """Fresh DB + fresh budget config + cleared caches for every test.
+
+    HERMES_HOME isolation is provided by the project-level autouse fixture in
+    conftest.py; this only resets the DB connection and budget caches.
+    """
     db._local.conn = None
     budget.reload_config()  # clears config + verdict caches
     yield

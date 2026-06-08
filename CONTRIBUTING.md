@@ -139,19 +139,67 @@ pytest tests/ -v --cov=. --cov-report=term-missing
 | `test_init.py` | Plugin initialization, hook registration, config generation |
 | `test_db.py` | Database schema, migrations, CRUD operations |
 | `test_pricing.py` | Pricing table loading, cost calculation, auto-refresh |
+| `test_pricing_hot_reload.py` | Pricing cache hot-reload after `/setup pricing auto` |
 | `test_budget.py` | Budget enforcement (soft/hard limits, degradation) |
-| `test_stats_providers.py` | `/stats` command output, provider breakdown |
+| `test_stats_providers.py` | `/stats providers` output, provider breakdown |
+| `test_stats_models.py` | `/stats models` output, per-model breakdown |
 | `test_subagent_reconciliation.py` | Subagent session tracking and cost attribution |
 | `test_setup.py` | `/setup` command, PoC flow |
+| `test_isolation.py` | Isolation contract — guards that no test reads the real `~/.hermes` |
+| `test_dashboard.py` | Dashboard CLI arg parsing (`dashboard/serve.py`) |
+
+### Test isolation
+
+**Tests never read or write your real `~/.hermes`.** A project-level autouse
+fixture in [`conftest.py`](conftest.py) (`isolate_hermes_home`) redirects
+`HERMES_HOME` to a fresh per-test temp directory, so every test gets a clean,
+empty Hermes home. `HOME`/`USERPROFILE` are pinned to the same temp dir as a
+safety net, so even a stray `Path.home()` fallback can only ever reach the temp
+dir — never your real files.
+
+- **Pricing tests use a committed fixture** ([`tests/fixtures/pricing.yaml`](tests/fixtures/pricing.yaml))
+  instead of your machine's auto-refreshed `~/.hermes/telemetry/pricing.yaml`, so
+  results are deterministic and don't depend on local state.
+- **The isolation guarantee is enforced**, not just convention:
+  [`tests/test_isolation.py`](tests/test_isolation.py) is fail-closed — it plants
+  a poisoned file in a decoy home and asserts no code path reads it. New code
+  **must** locate Hermes files via `HERMES_HOME` (e.g. the `_budget_path()` /
+  `_pricing_path()` helpers), never `Path.home()` directly.
+- **Practical implication:** you can run the suite safely with a live gateway and
+  real data — it won't touch them. To verify isolation, point `HERMES_HOME` at a
+  temp dir; **never `mv`/`rm` your real `~/.hermes`** to "prove" it (a running
+  gateway will fight you, and you risk your real data).
+
+#### Where do tests actually read/write?
+
+Each test gets a unique, throwaway directory that **pytest** creates on the OS
+temp filesystem — it is *not* your `~/.hermes`, *not* a path in the repo or a
+venv, and *not* a permanent environment variable:
+
+```
+/tmp/pytest-of-<user>/pytest-<N>/<test_name><i>/telemetry/{telemetry.db,pricing.yaml,budget.yaml}
+```
+
+This path comes from pytest's built-in [`tmp_path`](https://docs.pytest.org/en/stable/how-to/tmp_path.html)
+fixture — we don't configure it. pytest mints a fresh dir per test function,
+keeps only the last few runs (`pytest-11/12/13/…`), and cleans up older ones.
+The `isolate_hermes_home` fixture just reads that path and points
+`HERMES_HOME`/`HOME` at it; `test_pricing.py` uses its own
+`tmp_path_factory.mktemp("pricing_home")` dir seeded with the committed fixture.
+Override the base dir with `pytest --basetemp=DIR` (default: `/tmp/pytest-of-<user>/`).
 
 ### Writing tests
 
 - Use `pytest` (no `unittest` boilerplate needed)
 - Test file names: `test_*.py`
 - Test function names: `test_*`
-- Use fixtures from `conftest.py` for shared setup (DB paths, temp dirs)
+- Use fixtures from `conftest.py` for shared setup — the autouse
+  `isolate_hermes_home` already gives you a clean `HERMES_HOME`; module fixtures
+  add domain-specific setup (DB connection reset, cache clears) on top
 - Mock external HTTP calls (OpenRouter API, pricing fetch) — never hit real APIs in tests
-- Keep tests fast and isolated — each test gets a fresh in-memory or temp DB
+- Keep tests fast and isolated — each test gets a fresh temp DB under its own
+  `HERMES_HOME`; if you need custom pricing/budget data, write it into that temp
+  dir (or copy a committed fixture), never the real home
 
 ## Architecture
 

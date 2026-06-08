@@ -16,8 +16,8 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def reset_pricing(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+def reset_pricing(tmp_path):
+    # HERMES_HOME is pointed at this same tmp_path by the conftest baseline.
     (tmp_path / "telemetry").mkdir(parents=True, exist_ok=True)
     pricing._custom_pricing = None
     pricing._warned_unknown.clear()

@@ -42,8 +42,8 @@ class _MockCtx:
 
 
 @pytest.fixture(autouse=True)
-def isolated_db(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+def isolated_db():
+    # HERMES_HOME is isolated by the conftest baseline; reset the DB conn here.
     db._local.conn = None
     _init_mod._nous_estimated_warned.clear()
     yield

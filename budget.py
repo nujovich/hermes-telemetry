@@ -61,6 +61,11 @@ def _budget_path() -> Path:
     return hermes_home / "telemetry" / "budget.yaml"
 
 
+def _pricing_path() -> Path:
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    return hermes_home / "telemetry" / "pricing.yaml"
+
+
 def load_config() -> dict:
     """Load and cache budget.yaml. Returns a normalized config dict. A missing
     or malformed file yields an empty (disabled) budget — never raises."""
@@ -392,7 +397,7 @@ def _status_block() -> str:
     try:
         import yaml
 
-        pricing_file = Path.home() / ".hermes" / "telemetry" / "pricing.yaml"
+        pricing_file = _pricing_path()
         if pricing_file.exists():
             cfg = yaml.safe_load(pricing_file.read_text()) or {}
             est_models = cfg.get("_meta", {}).get("estimated_price_models", [])
