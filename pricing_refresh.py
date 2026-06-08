@@ -122,10 +122,53 @@ class OpenRouterSource(PricingSource):
 
 
 # ---------------------------------------------------------------------------
+# Google AI Studio source
+# ---------------------------------------------------------------------------
+class GoogleAISource(PricingSource):
+    """Google AI Studio direct-provider pricing.
+
+    Google does not expose a structured pricing API, so this source ships a
+    constant table mirroring https://ai.google.dev/gemini-api/docs/pricing.
+    Refresh manually on each release cycle: update _PRICES, bump LAST_VERIFIED,
+    run tests, ship.
+
+    Keys are the bare model IDs Hermes reports when provider=google (no
+    "google/" prefix — that's what OpenRouterSource handles).
+
+    Tiered-pricing models (gemini-2.5-pro, gemini-3.1-pro-preview) use the
+    <=200k context tier; the >200k tier is out of scope until the pricing
+    schema supports tiering.
+    """
+
+    name = "google-ai"
+    LAST_VERIFIED = "2026-06-05"
+
+    _PRICES: dict[str, dict] = {
+        "gemini-3.5-flash": {"input": 1.50, "output": 9.00, "cache_read": 0.15},
+        "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00, "cache_read": 0.20},
+        "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.50, "cache_read": 0.025},
+        "gemini-3-flash-preview": {"input": 0.50, "output": 3.00, "cache_read": 0.05},
+        "gemini-2.5-pro": {"input": 1.25, "output": 10.00, "cache_read": 0.125},
+        "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "cache_read": 0.03},
+        "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40, "cache_read": 0.01},
+    }
+
+    def fetch(self) -> dict[str, dict]:
+        result = {model: dict(pricing) for model, pricing in self._PRICES.items()}
+        logger.info(
+            "GoogleAISource: returned %d models (last verified %s)",
+            len(result),
+            self.LAST_VERIFIED,
+        )
+        return result
+
+
+# ---------------------------------------------------------------------------
 # Source registry -- add new sources here
 # ---------------------------------------------------------------------------
 _SOURCES: list[type[PricingSource]] = [
     OpenRouterSource,
+    GoogleAISource,
     # Future: AnthropicSource, OpenAISource, etc.
 ]
 

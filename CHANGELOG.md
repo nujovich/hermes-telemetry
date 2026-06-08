@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `GoogleAISource` in `pricing_refresh.py` — direct Google AI Studio pricing
+  for `provider=google` calls (bare `gemini-*` model ids, no `google/`
+  prefix). Ships a constant table mirroring
+  https://ai.google.dev/gemini-api/docs/pricing with a `LAST_VERIFIED`
+  date for manual quarterly refresh. Registered alongside
+  `OpenRouterSource`, so the same auto-refresh cycle now populates
+  pricing for both routing paths. Addresses #9.
+
 ## [0.3.1] - 2026-06-06
 
 ### Added
