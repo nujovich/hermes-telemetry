@@ -1,0 +1,69 @@
+# Test fixture — a committed, deterministic stand-in for the user's
+# ~/.hermes/telemetry/pricing.yaml. Tests load THIS file (via the autouse
+# reset_pricing fixture) so they never depend on the developer's live,
+# auto-refreshed pricing data.
+#
+# Prices mirror the shipped defaults so the default-table assertions hold.
+# Deprecated models (gemini-1.5-*, gemini-2.0-*) are intentionally ABSENT —
+# the whole point of this fixture is a clean, current pricing table.
+models:
+  # ── Anthropic ──────────────────────────────────────────────────────────
+  claude-opus-4-8:
+    input: 5.0
+    output: 25.0
+    cache_read: 0.5
+    cache_write: 6.25
+  claude-sonnet-4-6:
+    input: 3.0
+    output: 15.0
+    cache_read: 0.3
+    cache_write: 3.75
+  claude-haiku-4-5:
+    input: 0.8
+    output: 4.0
+    cache_read: 0.08
+    cache_write: 1.0
+  # ── OpenAI ─────────────────────────────────────────────────────────────
+  gpt-4o:
+    input: 2.5
+    output: 10.0
+  openai/gpt-3.5-turbo:
+    input: 0.5
+    output: 1.5
+  # ── DeepSeek ───────────────────────────────────────────────────────────
+  deepseek-chat:
+    input: 0.27
+    output: 1.10
+  # ── Free / local ───────────────────────────────────────────────────────
+  owl-alpha:
+    input: 0.0
+    output: 0.0
+  openrouter/owl-alpha:
+    input: 0.0
+    output: 0.0
+  # ── Estimated-price (auto-routed, no fixed price) ──────────────────────
+  openrouter/auto:
+    input: 0.0
+    output: 0.0
+    _estimated_price: true
+    _auto: true
+    _source: openrouter
+  openrouter/fusion:
+    input: 0.0
+    output: 0.0
+    _estimated_price: true
+    _auto: true
+    _source: openrouter
+defaults:
+  cache_read_multiplier: 0.1
+  cache_write_multiplier: 1.25
+_meta:
+  auto_models:
+  - openrouter/auto
+  - openrouter/fusion
+  estimated_price_models:
+  - openrouter/auto
+  - openrouter/fusion
+  last_refresh: '2026-01-01T00:00:00Z'
+  sources:
+  - openrouter

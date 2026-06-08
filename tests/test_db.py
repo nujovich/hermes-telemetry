@@ -12,10 +12,13 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolated_db(tmp_path, monkeypatch):
-    """Point HERMES_HOME at a temp dir so every test gets a clean DB."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Force the per-thread connection to be reset between tests
+def isolated_db():
+    """Give every test a clean DB connection.
+
+    HERMES_HOME (and thus the DB path) is isolated to a per-test tmp dir by the
+    project-level autouse fixture in conftest.py; here we just reset the
+    per-thread connection between tests.
+    """
     import hermes_telemetry.db as db_mod
 
     db_mod._local.conn = None

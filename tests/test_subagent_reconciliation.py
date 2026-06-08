@@ -67,8 +67,8 @@ class MockPluginContext:
 
 
 @pytest.fixture(autouse=True)
-def isolated_db(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+def isolated_db():
+    # HERMES_HOME is isolated by the conftest baseline; reset the DB conn here.
     import hermes_telemetry.db as db_mod
 
     db_mod._local.conn = None

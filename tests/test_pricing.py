@@ -2,15 +2,34 @@
 
 from __future__ import annotations
 
+import shutil
 import textwrap
+from pathlib import Path
 
 import hermes_telemetry.pricing as pricing
 import pytest
 
+FIXTURES = Path(__file__).parent / "fixtures"
+
 
 @pytest.fixture(autouse=True)
-def reset_pricing():
-    """Reset cached state before each test."""
+def reset_pricing(tmp_path_factory, monkeypatch):
+    """Isolate pricing from the developer's live ~/.hermes file.
+
+    Point HERMES_HOME at a throwaway dir seeded with the committed, deterministic
+    tests/fixtures/pricing.yaml — so tests run against known data, never the
+    machine's auto-refreshed file. Uses tmp_path_factory (not tmp_path) so this
+    dir never collides with tests that point HERMES_HOME at their own tmp_path.
+
+    Tests that need a different custom file override HERMES_HOME themselves (a
+    later monkeypatch.setenv wins) and reset the cache after writing.
+    """
+    home = tmp_path_factory.mktemp("pricing_home")
+    tele = home / "telemetry"
+    tele.mkdir()
+    shutil.copy(FIXTURES / "pricing.yaml", tele / "pricing.yaml")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
     pricing._custom_pricing = None
     pricing._warned_unknown.clear()
     yield

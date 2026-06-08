@@ -37,9 +37,9 @@ from hermes_telemetry import setup  # noqa: E402
 # Fixtures
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
-def tmp_telemetry(tmp_path, monkeypatch):
-    """Redirect HERMES_HOME to tmp_path so we don't touch real files."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+def tmp_telemetry(tmp_path):
+    """Reload setup against the isolated HERMES_HOME (pointed at this tmp_path
+    by the conftest baseline) and expose that path to tests."""
     importlib.reload(setup)
     yield tmp_path
     # Reload again after test so state is clean
