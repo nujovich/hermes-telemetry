@@ -193,6 +193,8 @@ That’s it. The plugin captures data automatically — no agent action required
 /stats cron today       → cron breakdown, last 24 hours
 /stats providers        → per-provider: real vs estimated calls + cost (last 24h)
 /stats providers week   → provider breakdown, last 7 days
+/stats models           → per-model breakdown within each provider (last 24h)
+/stats models week      → per-model breakdown, last 7 days
 /stats raw [N]          → last N raw run records (default 20, max 200)
 ```
 
@@ -244,6 +246,23 @@ hermes-telemetry — providers (last 24 h)
   If Est% > 0 for your main provider, budget hard-verdicts may be
   degraded to soft under on_estimated.mode: warn_only.
 ```
+
+**Example output (`/stats models`):**
+
+```
+hermes-telemetry — models (last 24 h)
+================================================================================================
+  Provider             Model                                           Calls   Real   Est         Cost
+  ----------------------------------------------------------------------------------------------
+  openrouter           owl-alpha                                          66     66     0    $0.000000
+  openrouter           anthropic/claude-sonnet-4-6                        42     42     0    $0.314378
+  openrouter           anthropic/claude-opus-4-7                           8      8     0    $2.225595
+
+  Rows are grouped by provider, then by calls (desc). A model showing $0.00 has no price entry
+  in pricing.yaml — run /setup pricing auto to refresh, or add it manually.
+```
+
+Breaks each provider's spend down to individual models. Rows are grouped by provider (ascending), then ordered by call count within each provider; the `Model` column is kept wide so dated model keys stay readable. Columns: `Calls` (total), `Real` (calls with provider-reported usage), `Est` (calls with locally estimated tokens), and `Cost`. A model showing `$0.000000` has no price entry in `pricing.yaml`.
 
 ### `/budget`
 
@@ -593,6 +612,10 @@ Cron jobs run in a `ThreadPoolExecutor` (Hermes `cron/scheduler.py`). Multiple j
 -----
 
 ## Budget Enforcement
+
+![Budget enforcement demo: setting a $0.001 daily global cap that current spend already exceeds, then a marketing cron run blocked by the resulting hard breach](docs/budget_enforcement.gif)
+
+*`/budget set global daily 0.001` writes the cap to `budget.yaml`; because current spend ($0.0102) is already over it, `/budget` re-renders at 1020% `[daily]` — a hard breach. The next marketing cron run is then blocked by the budget.*
 
 ### How It Works
 
