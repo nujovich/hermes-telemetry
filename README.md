@@ -6,6 +6,12 @@
 
 A comprehensive telemetry plugin that captures real usage data, enforces budget limits, and provides detailed cost analysis for AI agent operations. Built for the [Hermes Agent Challenge](https://dev.to/devteam/join-the-hermes-agent-challenge-1000-in-prizes-13cd) by [Nadia Ujovich](https://nadiaujovich.dev).
 
+**The differentiator: it can _stop_ work that's about to overspend — not just report it after the fact.** Set a daily cap below current spend, and the next cron run is blocked by the budget:
+
+![Budget enforcement demo: a $0.001 daily global cap is set, current spend already exceeds it, and the next marketing cron run is blocked by the resulting hard breach](docs/budget_enforcement.gif)
+
+*`/budget set global daily 0.001` writes the cap to `budget.yaml`; current spend ($0.0102) already exceeds it, so `/budget` re-renders at 1020% `[daily]` — a hard breach — and the next marketing cron run is blocked by the budget.*
+
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 94 passing](https://img.shields.io/badge/Tests-94%20passing-green.svg)](https://camo.githubusercontent.com/89bc4bc6079d0e919e0c1363852fe900e05cb49429800097aa3ca83908c5cd59/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f54657374732d393425323070617373696e672d677265656e2e737667) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter%20%7C%20OpenAI%20%7C%20Anthropic-orange.svg)](https://camo.githubusercontent.com/cf0938e4acec0cd17c14dcf61a72734ffd03e8fff8eb44e359994f6ea773bfad/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f50726f7669646572732d4f70656e526f757465722532302537432532304f70656e4149253230253743253230416e7468726f7069632d6f72616e67652e737667) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
@@ -613,9 +619,7 @@ Cron jobs run in a `ThreadPoolExecutor` (Hermes `cron/scheduler.py`). Multiple j
 
 ## Budget Enforcement
 
-![Budget enforcement demo: setting a $0.001 daily global cap that current spend already exceeds, then a marketing cron run blocked by the resulting hard breach](docs/budget_enforcement.gif)
-
-*`/budget set global daily 0.001` writes the cap to `budget.yaml`; because current spend ($0.0102) is already over it, `/budget` re-renders at 1020% `[daily]` — a hard breach. The next marketing cron run is then blocked by the budget.*
+> See the budget enforcement demo at the top of this README for an end-to-end walkthrough.
 
 ### How It Works
 
