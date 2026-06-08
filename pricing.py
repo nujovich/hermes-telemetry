@@ -169,12 +169,33 @@ def _load_custom_pricing() -> dict:
     return _custom_pricing
 
 
-def _lookup_base(model: str) -> dict | None:
-    """Return the raw pricing dict for a model (no cache derivation yet)."""
-    model_lc = model.lower()
+def _google_alt_form(model_lc: str) -> str | None:
+    """Return the alternate Google-AI form for symmetric lookup, or None.
+
+    Maps the pair `gemini-X` ↔ `google/gemini-X` so a single canonical price
+    table answers both direct-Google and OpenRouter-routed lookups. This is
+    deliberately google-specific: other provider prefixes (`anthropic/`,
+    `meta-llama/`, `openrouter/`) carry distinct pricing semantics and must
+    never be stripped naively.
+    """
+    if model_lc.startswith("google/"):
+        bare = model_lc[len("google/") :]
+        return bare if bare.startswith("gemini-") else None
+    if model_lc.startswith("gemini-"):
+        return "google/" + model_lc
+    return None
+
+
+def _lookup_form(model_lc: str) -> dict | None:
+    """Exact-then-prefix lookup against custom + defaults + prefix tables.
+
+    Custom wins over defaults wins over the curated prefix table (matching
+    the precedence in `_lookup_base`'s callers). Among equal-length prefixes,
+    the stable sort preserves source order so the higher-precedence source
+    still wins.
+    """
     custom = _load_custom_pricing()
     custom_models = custom.get("models", {})
-    # Exact match wins, custom overrides defaults.
     if model_lc in custom_models:
         return custom_models[model_lc]
     if model_lc in _DEFAULT_PRICING:
@@ -183,18 +204,34 @@ def _lookup_base(model: str) -> dict | None:
     # default exact keys, plus the curated family-prefix table — longest prefix
     # wins. This lets an auto-refreshed key like 'google/gemini-3-flash-preview'
     # cover the dated variants the gateway actually sends, e.g.
-    # 'google/gemini-3-flash-preview-20251217'. Among equal-length prefixes the
-    # more authoritative source is preferred (custom > default > prefix table),
-    # mirroring the exact-match precedence above.
+    # 'google/gemini-3-flash-preview-20251217'.
     candidates: list[tuple[str, dict]] = [
         *custom_models.items(),
         *_DEFAULT_PRICING.items(),
         *_PREFIX_PRICING,
     ]
-    # Stable sort by descending prefix length keeps the source order for ties.
     for prefix, prices in sorted(candidates, key=lambda x: -len(x[0])):
         if model_lc.startswith(prefix):
             return prices
+    return None
+
+
+def _lookup_base(model: str) -> dict | None:
+    """Return the raw pricing dict for a model (no cache derivation yet).
+
+    Two-pass strategy: first try the model id as-is. If that misses, try the
+    Google-AI alternate form (`gemini-X` ↔ `google/gemini-X`) so direct-Google
+    and OpenRouter-routed callers get identical pricing without requiring
+    both entries to coexist in the pricing data. Non-Google prefixes never
+    get this treatment — see `_google_alt_form`.
+    """
+    model_lc = model.lower()
+    result = _lookup_form(model_lc)
+    if result is not None:
+        return result
+    alt = _google_alt_form(model_lc)
+    if alt is not None:
+        return _lookup_form(alt)
     return None
 
 

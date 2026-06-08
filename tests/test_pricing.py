@@ -460,3 +460,88 @@ def test_gemini_no_generic_catchall_regression(caplog):
     with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
         cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "gemini-future-foo")
     assert cost == 0.0  # not 0.075
+
+
+# ---------------------------------------------------------------------------
+# Google name normalization — issue #2 follow-up (PR 2)
+#
+# The same Gemini model can reach the gateway under two forms:
+#   - direct Google AI Studio  → bare "gemini-3-flash-preview"
+#   - OpenRouter routing       → "google/gemini-3-flash-preview"
+#
+# Both forms must resolve to the same price entry, regardless of which form
+# the pricing data carries. The normalization is google-specific — other
+# provider prefixes (anthropic/, meta-llama/, openrouter/) must never be
+# stripped naively, since they have distinct pricing semantics.
+# ---------------------------------------------------------------------------
+
+
+def test_google_prefix_and_bare_form_resolve_to_same_price():
+    """gemini-3-flash-preview ↔ google/gemini-3-flash-preview return the same entry.
+
+    The bare form lives in _DEFAULT_PRICING. The google/-prefixed form must
+    resolve via the alt-form fallback to the same dict — same input/output/
+    cache_read across the board.
+    """
+    bare = pricing._lookup_base("gemini-3-flash-preview")
+    prefixed = pricing._lookup_base("google/gemini-3-flash-preview")
+    assert bare is not None, "bare gemini-3-flash-preview missing from _DEFAULT_PRICING"
+    assert prefixed is not None, "google/gemini-3-flash-preview should normalize to bare"
+    for field in ("input", "output", "cache_read"):
+        assert bare.get(field) == prefixed.get(field), (
+            f"{field}: bare={bare.get(field)} prefixed={prefixed.get(field)}"
+        )
+
+    # End-to-end cost check — both forms must produce identical dollar amounts.
+    usage = {"input_tokens": 1_000_000, "output_tokens": 500_000}
+    cost_bare = pricing.estimate_cost(usage, "gemini-3-flash-preview")
+    cost_prefixed = pricing.estimate_cost(usage, "google/gemini-3-flash-preview")
+    assert abs(cost_bare - cost_prefixed) < 1e-9
+
+
+def test_non_google_provider_prefix_resolves_to_its_own_entry():
+    """meta-llama/llama-3.1-405b-instruct must keep resolving to its exact entry.
+
+    Regression guard: a naive "strip any provider/ prefix" implementation
+    would let meta-llama/* be re-interpreted as bare llama-*, potentially
+    masking the dedicated meta-llama/* entries in _DEFAULT_PRICING. The
+    google/ normalization is opt-in and must leave every other provider
+    prefix untouched.
+    """
+    # The exact meta-llama/* entry stays authoritative — same dict before and
+    # after this PR.
+    prefixed = pricing._lookup_base("meta-llama/llama-3.1-405b-instruct")
+    assert prefixed == {"input": 2.70, "output": 2.70}
+
+    # A meta-llama/* variant that is NOT an exact key must NOT fall back to
+    # the bare llama-3.1-405 prefix via naive stripping. It must stay None
+    # so the unknown-model warning surfaces — exactly the failure mode the
+    # google/ normalization is scoped to avoid recreating elsewhere.
+    assert pricing._lookup_base("meta-llama/llama-99-imaginary") is None
+
+    # And the alt-form helper must refuse to normalize meta-llama/*.
+    assert pricing._google_alt_form("meta-llama/llama-3.1-405b-instruct") is None
+
+
+def test_unprefixed_non_gemini_model_unaffected_by_normalization():
+    """claude-sonnet-4-6 (no provider prefix, not Gemini) resolves identically before/after.
+
+    The normalization triggers only when the model id starts with "google/"
+    or "gemini-". Anything else must take the original lookup path and
+    produce its existing price. Catches the failure mode where the alt-form
+    branch is reached for models that shouldn't be normalized at all.
+    """
+    base = pricing._lookup_base("claude-sonnet-4-6")
+    assert base is not None
+    # Direct cost via estimate_cost should match the fixture's claude-sonnet-4-6 entry
+    # (input=3.0, output=15.0).
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "claude-sonnet-4-6",
+    )
+    assert abs(cost - (3.0 + 15.0)) < 1e-9
+
+    # And the alt-form helper must return None for non-Gemini, non-google/* ids.
+    assert pricing._google_alt_form("claude-sonnet-4-6") is None
+    assert pricing._google_alt_form("anthropic/claude-sonnet-4-6") is None
+    assert pricing._google_alt_form("meta-llama/llama-3.1-405b-instruct") is None
