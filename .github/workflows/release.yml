@@ -17,22 +17,15 @@ jobs:
       - name: Verify version matches tag
         run: |
           TAG="${GITHUB_REF#refs/tags/}"; TAG="${TAG#v}"
-          PYVER=$(grep -m1 -E '^version[[:space:]]*=' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          PYVER=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           echo "tag=$TAG  pyproject=$PYVER"
           if [ "$TAG" != "$PYVER" ]; then
             echo "::error::tag $TAG ≠ pyproject $PYVER"
             exit 1
           fi
           echo "Version OK: $PYVER"
-      - name: Install build tools
-        run: pip install build twine
-      - name: Build sdist + wheel
-        run: python -m build
-      - name: Check metadata
-        run: twine check dist/*
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: false
           draft: false
-          files: dist/*
