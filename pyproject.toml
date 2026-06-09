@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-telemetry"
-version = "0.3.1"
+version = "0.4.0"
 description = "Observability + budget guardrails for Hermes Agent — tokens, cost, latency, tool calls per session and cron job."
 readme = "README.md"
 license = {text = "MIT"}

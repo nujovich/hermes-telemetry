@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-09
+
 ### Added
 - `GoogleAISource` in `pricing_refresh.py` — direct Google AI Studio pricing
   for `provider=google` calls (bare `gemini-*` model ids, no `google/`
@@ -100,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MIT License
 - README with architecture, usage, screenshots
 
+[0.4.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.3.1...v0.4.0
 [0.3.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/nujovich/hermes-telemetry/releases/tag/v0.1.0
