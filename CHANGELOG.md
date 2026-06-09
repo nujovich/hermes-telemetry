@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GoogleAISource` in `pricing_refresh.py` — direct Google AI Studio pricing
+  for `provider=google` calls (bare `gemini-*` model ids, no `google/`
+  prefix). Ships a constant table mirroring
+  https://ai.google.dev/gemini-api/docs/pricing with a `LAST_VERIFIED`
+  date for manual quarterly refresh. Registered alongside
+  `OpenRouterSource`, so the same auto-refresh cycle now populates
+  pricing for both routing paths. Addresses #9.
+
 ### Changed
 - `pricing._lookup_base` now resolves `gemini-X` and `google/gemini-X` to
   the same entry symmetrically (issue #2 follow-up). Direct-Google and

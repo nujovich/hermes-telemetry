@@ -545,3 +545,63 @@ def test_unprefixed_non_gemini_model_unaffected_by_normalization():
     assert pricing._google_alt_form("claude-sonnet-4-6") is None
     assert pricing._google_alt_form("anthropic/claude-sonnet-4-6") is None
     assert pricing._google_alt_form("meta-llama/llama-3.1-405b-instruct") is None
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups requested on PR #15 — pin invariants the alt-form lookup
+# depends on but doesn't currently exercise.
+# ---------------------------------------------------------------------------
+
+
+def test_equal_length_prefix_tie_break_prefers_custom_over_default(monkeypatch):
+    """At equal prefix length, the higher-precedence source wins (custom > default).
+
+    The prefix scan combines custom + defaults + prefix table and sorts by
+    descending prefix length. Among equal-length prefixes, Python's stable sort
+    preserves insertion order, so the custom source (inserted first) must win.
+    Pins the invariant documented in _lookup_form's docstring.
+    """
+    shared_prefix = "tie-break-model-"
+    custom_price = {"input": 1.0, "output": 2.0}
+    default_price = {"input": 9.0, "output": 9.0}
+
+    monkeypatch.setattr(
+        pricing,
+        "_load_custom_pricing",
+        lambda: {"models": {shared_prefix: custom_price}},
+    )
+    monkeypatch.setattr(pricing, "_DEFAULT_PRICING", {shared_prefix: default_price})
+    monkeypatch.setattr(pricing, "_PREFIX_PRICING", [])
+
+    # Not an exact key -> forces the prefix scan; both sources carry the same
+    # prefix at equal length, so the stable-sort tie-break decides the winner.
+    result = pricing._lookup_base(shared_prefix + "20251217")
+    assert result == custom_price, f"expected custom to win the tie, got {result}"
+
+
+def test_google_alt_form_resolves_dated_variant_via_longest_prefix(monkeypatch):
+    """google/gemini-3-flash-preview-<date> resolves via alt-form + longest-prefix.
+
+    A dated OpenRouter-routed id has no exact key and its google/ prefix blocks
+    the bare-gemini entries on the first pass. The alt-form fallback strips
+    google/ and the longest-prefix scan then matches the longest applicable key:
+    the exact "gemini-3-flash-preview" entry in _DEFAULT_PRICING (len 22) wins
+    over the shorter "gemini-3-flash" family prefix in _PREFIX_PRICING (len 14).
+    Exercises the intersection of name normalization and the longest-prefix matcher.
+    """
+    monkeypatch.setattr(pricing, "_load_custom_pricing", lambda: {"models": {}})
+
+    dated_prefixed = "google/gemini-3-flash-preview-20251217"
+    dated_bare = "gemini-3-flash-preview-20251217"
+
+    resolved = pricing._lookup_base(dated_prefixed)
+    assert resolved is not None, (
+        "google/-prefixed dated variant should resolve via alt-form + prefix scan"
+    )
+    assert resolved == pricing._lookup_base(dated_bare)
+
+    usage = {"input_tokens": 1_000_000, "output_tokens": 500_000}
+    assert (
+        abs(pricing.estimate_cost(usage, dated_prefixed) - pricing.estimate_cost(usage, dated_bare))
+        < 1e-9
+    )
