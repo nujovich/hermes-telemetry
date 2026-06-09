@@ -460,3 +460,148 @@ def test_gemini_no_generic_catchall_regression(caplog):
     with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
         cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "gemini-future-foo")
     assert cost == 0.0  # not 0.075
+
+
+# ---------------------------------------------------------------------------
+# Google name normalization — issue #2 follow-up (PR 2)
+#
+# The same Gemini model can reach the gateway under two forms:
+#   - direct Google AI Studio  → bare "gemini-3-flash-preview"
+#   - OpenRouter routing       → "google/gemini-3-flash-preview"
+#
+# Both forms must resolve to the same price entry, regardless of which form
+# the pricing data carries. The normalization is google-specific — other
+# provider prefixes (anthropic/, meta-llama/, openrouter/) must never be
+# stripped naively, since they have distinct pricing semantics.
+# ---------------------------------------------------------------------------
+
+
+def test_google_prefix_and_bare_form_resolve_to_same_price():
+    """gemini-3-flash-preview ↔ google/gemini-3-flash-preview return the same entry.
+
+    The bare form lives in _DEFAULT_PRICING. The google/-prefixed form must
+    resolve via the alt-form fallback to the same dict — same input/output/
+    cache_read across the board.
+    """
+    bare = pricing._lookup_base("gemini-3-flash-preview")
+    prefixed = pricing._lookup_base("google/gemini-3-flash-preview")
+    assert bare is not None, "bare gemini-3-flash-preview missing from _DEFAULT_PRICING"
+    assert prefixed is not None, "google/gemini-3-flash-preview should normalize to bare"
+    for field in ("input", "output", "cache_read"):
+        assert bare.get(field) == prefixed.get(field), (
+            f"{field}: bare={bare.get(field)} prefixed={prefixed.get(field)}"
+        )
+
+    # End-to-end cost check — both forms must produce identical dollar amounts.
+    usage = {"input_tokens": 1_000_000, "output_tokens": 500_000}
+    cost_bare = pricing.estimate_cost(usage, "gemini-3-flash-preview")
+    cost_prefixed = pricing.estimate_cost(usage, "google/gemini-3-flash-preview")
+    assert abs(cost_bare - cost_prefixed) < 1e-9
+
+
+def test_non_google_provider_prefix_resolves_to_its_own_entry():
+    """meta-llama/llama-3.1-405b-instruct must keep resolving to its exact entry.
+
+    Regression guard: a naive "strip any provider/ prefix" implementation
+    would let meta-llama/* be re-interpreted as bare llama-*, potentially
+    masking the dedicated meta-llama/* entries in _DEFAULT_PRICING. The
+    google/ normalization is opt-in and must leave every other provider
+    prefix untouched.
+    """
+    # The exact meta-llama/* entry stays authoritative — same dict before and
+    # after this PR.
+    prefixed = pricing._lookup_base("meta-llama/llama-3.1-405b-instruct")
+    assert prefixed == {"input": 2.70, "output": 2.70}
+
+    # A meta-llama/* variant that is NOT an exact key must NOT fall back to
+    # the bare llama-3.1-405 prefix via naive stripping. It must stay None
+    # so the unknown-model warning surfaces — exactly the failure mode the
+    # google/ normalization is scoped to avoid recreating elsewhere.
+    assert pricing._lookup_base("meta-llama/llama-99-imaginary") is None
+
+    # And the alt-form helper must refuse to normalize meta-llama/*.
+    assert pricing._google_alt_form("meta-llama/llama-3.1-405b-instruct") is None
+
+
+def test_unprefixed_non_gemini_model_unaffected_by_normalization():
+    """claude-sonnet-4-6 (no provider prefix, not Gemini) resolves identically before/after.
+
+    The normalization triggers only when the model id starts with "google/"
+    or "gemini-". Anything else must take the original lookup path and
+    produce its existing price. Catches the failure mode where the alt-form
+    branch is reached for models that shouldn't be normalized at all.
+    """
+    base = pricing._lookup_base("claude-sonnet-4-6")
+    assert base is not None
+    # Direct cost via estimate_cost should match the fixture's claude-sonnet-4-6 entry
+    # (input=3.0, output=15.0).
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "claude-sonnet-4-6",
+    )
+    assert abs(cost - (3.0 + 15.0)) < 1e-9
+
+    # And the alt-form helper must return None for non-Gemini, non-google/* ids.
+    assert pricing._google_alt_form("claude-sonnet-4-6") is None
+    assert pricing._google_alt_form("anthropic/claude-sonnet-4-6") is None
+    assert pricing._google_alt_form("meta-llama/llama-3.1-405b-instruct") is None
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups requested on PR #15 — pin invariants the alt-form lookup
+# depends on but doesn't currently exercise.
+# ---------------------------------------------------------------------------
+
+
+def test_equal_length_prefix_tie_break_prefers_custom_over_default(monkeypatch):
+    """At equal prefix length, the higher-precedence source wins (custom > default).
+
+    The prefix scan combines custom + defaults + prefix table and sorts by
+    descending prefix length. Among equal-length prefixes, Python's stable sort
+    preserves insertion order, so the custom source (inserted first) must win.
+    Pins the invariant documented in _lookup_form's docstring.
+    """
+    shared_prefix = "tie-break-model-"
+    custom_price = {"input": 1.0, "output": 2.0}
+    default_price = {"input": 9.0, "output": 9.0}
+
+    monkeypatch.setattr(
+        pricing,
+        "_load_custom_pricing",
+        lambda: {"models": {shared_prefix: custom_price}},
+    )
+    monkeypatch.setattr(pricing, "_DEFAULT_PRICING", {shared_prefix: default_price})
+    monkeypatch.setattr(pricing, "_PREFIX_PRICING", [])
+
+    # Not an exact key -> forces the prefix scan; both sources carry the same
+    # prefix at equal length, so the stable-sort tie-break decides the winner.
+    result = pricing._lookup_base(shared_prefix + "20251217")
+    assert result == custom_price, f"expected custom to win the tie, got {result}"
+
+
+def test_google_alt_form_resolves_dated_variant_via_longest_prefix(monkeypatch):
+    """google/gemini-3-flash-preview-<date> resolves via alt-form + longest-prefix.
+
+    A dated OpenRouter-routed id has no exact key and its google/ prefix blocks
+    the bare-gemini entries on the first pass. The alt-form fallback strips
+    google/ and the longest-prefix scan then matches the longest applicable key:
+    the exact "gemini-3-flash-preview" entry in _DEFAULT_PRICING (len 22) wins
+    over the shorter "gemini-3-flash" family prefix in _PREFIX_PRICING (len 14).
+    Exercises the intersection of name normalization and the longest-prefix matcher.
+    """
+    monkeypatch.setattr(pricing, "_load_custom_pricing", lambda: {"models": {}})
+
+    dated_prefixed = "google/gemini-3-flash-preview-20251217"
+    dated_bare = "gemini-3-flash-preview-20251217"
+
+    resolved = pricing._lookup_base(dated_prefixed)
+    assert resolved is not None, (
+        "google/-prefixed dated variant should resolve via alt-form + prefix scan"
+    )
+    assert resolved == pricing._lookup_base(dated_bare)
+
+    usage = {"input_tokens": 1_000_000, "output_tokens": 500_000}
+    assert (
+        abs(pricing.estimate_cost(usage, dated_prefixed) - pricing.estimate_cost(usage, dated_bare))
+        < 1e-9
+    )

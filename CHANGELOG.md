@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `OpenRouterSource`, so the same auto-refresh cycle now populates
   pricing for both routing paths. Addresses #9.
 
+### Changed
+- `pricing._lookup_base` now resolves `gemini-X` and `google/gemini-X` to
+  the same entry symmetrically (issue #2 follow-up). Direct-Google and
+  OpenRouter-routed callers no longer need both forms present in the
+  pricing data to get a hit. Normalization is google-specific — other
+  provider prefixes (`anthropic/`, `meta-llama/`, `openrouter/`) keep
+  their existing semantics and are never stripped.
+
 ## [0.3.1] - 2026-06-06
 
 ### Added
