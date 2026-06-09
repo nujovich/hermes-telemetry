@@ -56,6 +56,7 @@ LLM provider
 - [What It Measures](#what-it-measures)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Setup Wizard](#setup-wizard)
 - [Dashboard (Web UI)](#dashboard-web-ui-1)
   - [Auto-Refresh](#auto-refresh)
   - [Features](#features)
@@ -181,6 +182,71 @@ hermes gateway restart
 1. Optionally configure `pricing.yaml` and `budget.yaml` (see below)
 
 That’s it. The plugin captures data automatically — no agent action required.
+
+-----
+
+## Setup Wizard
+
+hermes-telemetry includes a first-time setup wizard that runs automatically on first
+plugin load when `pricing.yaml` and/or `budget.yaml` are missing. It can also be
+triggered manually at any time with the `/setup` slash command.
+
+### Auto-setup (first load)
+
+On first load, if either config file is missing, the plugin auto-generates defaults:
+
+- **Pricing:** fetches all models with fixed pricing from the OpenRouter API and merges
+  them with ~30 built-in defaults (Anthropic, OpenAI, DeepSeek, Google, Meta, Nous).
+  New prices take effect immediately — no gateway restart needed.
+- **Budget:** writes a conservative global budget (`$5.00/day`, `$100.00/month`) with
+  an 80% soft warning and 100% hard cap.
+
+### `/setup` slash command
+
+Use `/setup` to check configuration status or reconfigure individual files.
+
+```
+/setup                     → show current status (which files exist)
+/setup pricing auto        → built-in defaults + fetch from OpenRouter API
+/setup pricing minimal     → built-in defaults only (~30 models, no network)
+/setup pricing skip        → skip (unrecognized models will record $0.00 cost)
+/setup budget default      → recommended global budget ($5/day, $100/month)
+/setup budget custom       → instructions for setting your own limits manually
+/setup budget skip         → no enforcement (costs still tracked)
+```
+
+#### Pricing options
+
+| Option | Models | Network |
+|--------|--------|---------|
+| `auto` | ~30 built-in + all OpenRouter fixed-price models | Yes (OpenRouter API) |
+| `minimal` | ~30 built-in only | No |
+| `skip` | None — models will record `$0.00` cost | No |
+
+#### Budget options
+
+| Option | Behavior |
+|--------|----------|
+| `default` | Global: `$5.00/day`, `$100.00/month`. Soft warning at 80%, hard block at 100% |
+| `custom` | Prints the `/budget set` commands for manual configuration |
+| `skip` | Costs tracked but never enforced |
+
+### Re-running setup
+
+Setup skips files that already exist. To reconfigure:
+
+```bash
+# Reprice from scratch
+rm ~/.hermes/telemetry/pricing.yaml
+/setup pricing auto
+
+# Reset budget
+rm ~/.hermes/telemetry/budget.yaml
+/setup budget default
+```
+
+> **Note:** Pricing changes take effect immediately without a gateway restart. Budget
+> changes require a restart.
 
 -----
 
