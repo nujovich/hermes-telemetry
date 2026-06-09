@@ -1,47 +1,38 @@
 name: Release
-
 on:
   push:
     tags:
       - "v*.*.*"
-
 permissions:
   contents: write
-
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@v5
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Verify version matches tag
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          TAG="${TAG#v}"
-          PYVER=$(python -c "from hermes_telemetry import __version__; print(__version__)")
+          TAG="${GITHUB_REF#refs/tags/}"; TAG="${TAG#v}"
+          PYVER=$(grep -m1 -E '^version[[:space:]]*=' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag=$TAG  pyproject=$PYVER"
           if [ "$TAG" != "$PYVER" ]; then
-            echo "::error::Tag $TAG ≠ __version__ $PYVER — update __init__.py"
+            echo "::error::tag $TAG ≠ pyproject $PYVER"
             exit 1
           fi
           echo "Version OK: $PYVER"
-
       - name: Install build tools
         run: pip install build twine
-
       - name: Build sdist + wheel
         run: python -m build
-
       - name: Check metadata
         run: twine check dist/*
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          draft: true
+          generate_release_notes: false
+          draft: false
           files: dist/*
