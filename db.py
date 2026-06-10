@@ -1,7 +1,7 @@
 """SQLite persistence layer for hermes-telemetry.
 
 Per-thread connections (threading.local) + WAL mode for safe concurrent writes
-from parallel cron jobs. See NOTES.md for the concurrency rationale.
+from parallel cron jobs. See ONBOARDING.md for the concurrency rationale.
 
 Public API used by __init__.py (hooks) and stats.py (/stats command):
   start_run(session_id, model, platform, cron_job_id=None, parent_session_id=None)
@@ -437,7 +437,7 @@ def stats_summary(window_hours: int = 24) -> dict[str, Any]:
     result.update(dict(llm_row))
     result["top_tools"] = [dict(t) for t in top_tools]
     result["window_hours"] = window_hours
-    # Parent-child attribution is not yet populated (see NOTES.md R3)
+    # Parent-child attribution is not yet populated (see ONBOARDING.md)
     result["parent_links_available"] = False
     return result
 

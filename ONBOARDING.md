@@ -1,0 +1,850 @@
+# hermes-telemetry — Design & Implementation Notes
+
+> **Onboarding document for new contributors.** This file captures every
+> non-obvious design decision made from v0.1 through v0.4.0. Reading the code
+> without this context risks re-learning hard-won findings from the Hermes Agent
+> source. Start here.
+
+---
+
+## Table of Contents
+
+1. [What This Plugin Does](#what-this-plugin-does)
+2. [Module Map](#module-map)
+3. [The Hermes Plugin Model (what we can and can't do)](#the-hermes-plugin-model)
+4. [Hook Pipeline](#hook-pipeline)
+5. [Hook kwargs Reference](#hook-kwargs-reference)
+6. [Database Layer](#database-layer)
+7. [Pricing Engine](#pricing-engine)
+8. [Budget Engine](#budget-engine)
+9. [Pricing Auto-Refresh](#pricing-auto-refresh)
+10. [Subagent Architecture](#subagent-architecture)
+11. [Test Isolation Contract](#test-isolation-contract)
+12. [Design Decisions by Version](#design-decisions-by-version)
+13. [Metrics: Real vs Estimated](#metrics-real-vs-estimated)
+14. [CI/CD Pipeline](#cicd-pipeline)
+15. [Known Limitations](#known-limitations)
+16. [PluginContext API](#plugincontext-api)
+17. [Valid Hooks Reference](#valid-hooks-reference)
+
+---
+
+## What This Plugin Does
+
+Hermes Agent runs autonomously — across sessions, platforms (CLI, cron, Telegram,
+Discord), and subagents — which means it can keep spending even when you're not
+watching. `hermes-telemetry` lives **inside the runtime** as a Hermes plugin and
+does two things:
+
+1. **Captures telemetry** (tokens, cost, latency, tool calls, session metadata)
+   and persists it to a local SQLite database.
+2. **Enforces budget guardrails** before the next tool call is made — soft alerts
+   injected into the conversation, hard blocks that abort tool calls when limits
+   are exceeded, and cron-job pausing for future runs.
+
+**Design principle:** observability is invisible to the model. Everything goes
+through hooks. The only user-facing surface is `/stats`, `/budget`, and `/setup`.
+Errors are swallowed in every hook — the plugin must never take down a session.
+
+This plugin was built for the [Hermes Agent Challenge](https://dev.to/devteam/join-the-hermes-agent-challenge-1000-in-prizes-13cd)
+and addresses [NousResearch/hermes-agent#6642](https://github.com/NousResearch/hermes-agent/issues/6642).
+
+---
+
+## Module Map
+
+```
+hermes-telemetry/
+├── __init__.py          ← Plugin entry point. Registers all 10 hooks + 3 slash
+│                          commands. Contains the cron regex, approx-token store,
+│                          and the fallback estimation logic for usage=None.
+├── db.py                ← SQLite persistence layer. Schema v1→v3 migrations,
+│                          per-thread connections, WAL mode, write API and
+│                          read/budget query API.
+├── pricing.py           ← Cost estimation engine. Priority-chain lookup
+│                          (custom YAML → built-in → prefix match). All 5 token
+│                          components. Google-symmetric normalization.
+├── pricing_refresh.py   ← Auto-refresh from remote pricing APIs. PricingSource
+│                          ABC, OpenRouterSource, GoogleAISource. Merge strategy
+│                          preserves manual overrides.
+├── budget.py            ← Budget verdict engine. Window math in local tz,
+│                          verdict cache, anti-spam ledger, tool-gate helpers,
+│                          /budget command.
+├── stats.py             ← /stats command implementation. All subcommands:
+│                          summary, cron, providers, models, raw.
+├── setup.py             ← /setup command + auto-setup on first load. Generates
+│                          pricing.yaml and budget.yaml with defaults.
+├── plugin.yaml          ← Plugin metadata: name, version, hooks.
+├── dashboard/
+│   ├── index.html       ← Standalone SPA. Chart.js, no build step, no auth.
+│   └── serve.py         ← stdlib HTTP server, port 8765, --host flag.
+├── tests/
+│   ├── conftest.py      ← Autouse HERMES_HOME isolation (see Test Isolation).
+│   └── test_*.py        ← 115 tests. All in-memory SQLite, no live gateway.
+├── config.example.yaml  ← Annotated pricing.yaml example.
+└── budget.example.yaml  ← Annotated budget.yaml example.
+```
+
+---
+
+## The Hermes Plugin Model
+
+Before reading the hook logic, understand the constraint space that was
+discovered by auditing the Hermes Agent source:
+
+### What a plugin CAN do
+
+| Mechanism | Effect |
+|-----------|--------|
+| `pre_tool_call` returning `{"action":"block","message":...}` | Aborts the tool call. Returns error to model instead. The current in-flight model response is already complete and will be billed. |
+| `cron.jobs.pause_job(job_id, reason)` | Prevents the cron job from running again. Does not stop the current run. |
+| `pre_llm_call` returning `{"context": "..."}` | Injects text into the conversation context before the API call. Used for soft budget alerts. |
+| Any read from the DB | Fully available in any hook via `db.py`. |
+
+### What a plugin CANNOT do
+
+| Attempted action | Why it doesn't work |
+|-----------------|---------------------|
+| Abort an in-flight model API call | No hook fires after the call starts and before it ends. `pre_api_request` and `pre_llm_call` both fire BEFORE; their return value cannot abort. |
+| Get token data from `pre_llm_call` | This hook fires once per turn but before any API call. No token data is available here. |
+| Get token data from `post_llm_call` | This hook fires after the tool loop. No token data. Wrong hook for cost capture. |
+| Link a subagent's tokens back to its parent cron job | `subagent_stop` has no child `session_id`. `on_session_start` has no `parent_session_id`. The link is unrecoverable from hooks. |
+
+**Source references** (verified against hermes-agent source):
+- `pre_llm_call` return: `agent/conversation_loop.py:687-722` (context injection only)
+- `pre_api_request` return: `agent/conversation_loop.py:1235-1255` (return discarded)
+- `pre_tool_call` block: `hermes_cli/plugins.py:1666-1707` ✅
+- `cron.jobs.pause_job`: `cron/scheduler.py` ✅
+- `subagent_stop` no child id: `tools/delegate_tool.py:2269-2277`
+
+---
+
+## Hook Pipeline
+
+The plugin registers 10 of the 16 available Hermes hooks. Here is what each
+one does and why it was chosen:
+
+```
+Hook                    Purpose
+────────────────────────────────────────────────────────────────────────────
+on_session_start        Create runs row, extract cron_job_id from session_id.
+                        Fired ONCE per new session (not per turn).
+
+pre_api_request         Stash approx_input_tokens keyed by (session_id, call_count)
+                        for the fallback estimator when usage=None.
+
+post_api_request        PRIMARY TOKEN SOURCE. One call per individual API call
+                        within a turn. Carries the usage dict with real token
+                        counts. Calculates cost, records llm_calls row, updates
+                        runs totals.
+
+post_tool_call          Records tool name, success/failure, latency. Also records
+                        a proxy row for delegate_task/subagent calls (no token
+                        data there, just a count).
+
+post_llm_call           Fires once per turn after the tool loop. NO token data.
+                        Used only to keep runs.ended_at current during multi-turn
+                        interactive sessions.
+
+subagent_stop           Records a synthetic tool_call row ("delegate_task/subagent")
+                        for proxy count of subagent invocations. NO token data
+                        available in this hook.
+
+on_session_end          Fires at the end of every run_conversation() call. Sets
+                        final status: ok / error / interrupted.
+
+on_session_finalize     Safety net for true session teardown (CLI atexit, gateway
+                        expiry). Ensures status is "ok" if not already set.
+
+pre_llm_call            (1) Attaches sender_id to the run for per-sender budgets.
+                        (2) Injects one-time-per-window soft budget alert into
+                        the conversation context.
+
+pre_tool_call           Hard budget enforcement. Returns {"action":"block",...}
+                        if any scope is in hard breach. Also triggers cron pause.
+```
+
+**Why `post_api_request` is the primary token hook:** Hermes can make multiple
+API calls per turn (retries, tool-call rounds, reasoning). Only `post_api_request`
+fires per individual API call and carries the `usage` dict. The `pre_/post_llm_call`
+hooks fire once per turn and have no token data. This design was discovered from
+the source (not guessable from the hook names alone).
+
+**Why not capture budget in `post_api_request`:** Token counts have just been
+recorded but verdict cache is stale. The tool-gate in `pre_tool_call` is the
+right place — it fires synchronously before the next tool and has a fresh view
+of accumulated spend.
+
+---
+
+## Hook kwargs Reference
+
+These are the actual kwargs confirmed from the Hermes Agent source. Only the
+ones used by this plugin are listed; unknown kwargs are absorbed by `**_kw`.
+
+### `on_session_start`
+Source: `agent/conversation_loop.py:295-300`
+```python
+session_id: str      # unique; cron format: "cron_{job_id}_{YYYYMMDD_HHMMSS}"
+model: str           # active model name
+platform: str        # "cli" | "cron" | "telegram" | "discord" | ...
+```
+Fired **once** at the start of a brand-new session (not on each turn of an
+interactive session, not on session continuation).
+
+### `pre_llm_call`
+Source: `agent/conversation_loop.py:702-711`
+```python
+session_id: str
+user_message: str
+conversation_history: list
+is_first_turn: bool
+model: str
+platform: str
+sender_id: str
+```
+Fires once per turn (before the API call loop). Return value used for context
+injection only. **NO token data.**
+
+### `pre_api_request`
+Source: `agent/conversation_loop.py:1235-1253`
+```python
+task_id: str
+session_id: str
+api_call_count: int       # 0-indexed within this turn
+approx_input_tokens: int  # APPROXIMATE (character-based estimate)
+request_messages: list
+model: str
+provider: str
+base_url: str
+...
+```
+Fires before each individual API call. `approx_input_tokens` is used only as a
+fallback estimator when `usage=None` in `post_api_request`.
+
+### `post_api_request`  ← PRIMARY hook for tokens/cost/latency
+Source: `agent/conversation_loop.py:3463-3482`
+```python
+task_id: str
+session_id: str
+platform: str
+model: str
+provider: str             # verbatim from gateway — NOT normalized
+api_call_count: int
+api_duration: float       # seconds; multiply by 1000 for ms
+finish_reason: str
+response_model: str       # model name as reported by the provider response
+usage: dict | None        # CanonicalUsage (see below) or None when unavailable
+assistant_content_chars: int
+assistant_tool_call_count: int
+```
+
+`usage` dict (from `agent/usage_pricing.py::CanonicalUsage`):
+```python
+{
+  "input_tokens": int,        # non-cached input tokens
+  "output_tokens": int,
+  "cache_read_tokens": int,
+  "cache_write_tokens": int,
+  "reasoning_tokens": int,
+  "request_count": int,
+  "prompt_tokens": int,       # = input + cache_read + cache_write
+  "total_tokens": int,        # = prompt + output
+}
+```
+`usage` is **None** when the provider returns no usage info (some streaming
+providers, ACP mode). The fallback estimator in `__init__.py` kicks in,
+tokens are estimated from `approx_input_tokens + assistant_content_chars/4`,
+and the row is flagged `estimated=1`.
+
+**IMPORTANT:** `prompt_tokens` is intentionally **ignored** in cost calculation
+to avoid double-counting. `prompt_tokens = input + cache_read + cache_write`, so
+using it plus the individual components would count them twice.
+
+### `post_tool_call`
+Source: `model_tools.py:994-1005`
+```python
+tool_name: str
+args: dict
+result: str        # JSON string (or plain text) returned by the tool
+task_id: str
+session_id: str
+tool_call_id: str
+duration_ms: int
+```
+Success/failure detection: attempt `json.loads(result)` and check for an
+`"error"` key. If that fails (not valid JSON), fall back to
+`result.startswith('{"error"')`. This is robust to tools that return plain text.
+
+### `on_session_end`
+Source: `agent/conversation_loop.py:4692-4700`
+```python
+session_id: str
+completed: bool
+interrupted: bool
+model: str
+platform: str
+```
+Fires at the end of every `run_conversation()` call — once per turn in
+interactive CLI sessions, once per cron job execution. Status derivation:
+`interrupted` → `"interrupted"`, `completed` → `"ok"`, else → `"error"`.
+
+### `on_session_finalize`
+Source: `cli.py:955`, `gateway/run.py:9646`
+```python
+session_id: str | None
+platform: str
+```
+Fires on true session teardown. Safety net: sets status to `"ok"` if not already
+set (the `on_session_end` → `on_session_finalize` sequence ensures at least one
+of them fires).
+
+### `subagent_stop`
+Source: `tools/delegate_tool.py:2269-2277`
+```python
+parent_session_id: str
+child_role: str
+child_summary: str
+child_status: str    # "ok" | "error" | other
+duration_ms: int
+```
+**NO token or cost data.** We record a synthetic `tool_calls` row with
+`tool_name="delegate_task/subagent"` for proxy count only.
+
+---
+
+## Database Layer
+
+### Design choices
+
+**SQLite, not Postgres/external:** The plugin runs inside the gateway process
+with no server setup. SQLite is the only zero-dependency option that survives
+gateway restarts and has ACID guarantees. No network hop.
+
+**WAL mode:** Hermes cron jobs run in a `ThreadPoolExecutor`, so multiple jobs
+write concurrently from different threads. WAL allows one writer + concurrent
+readers simultaneously. This is the standard SQLite high-concurrency pattern.
+
+**Per-thread connections:** `threading.local()` — each thread opens its own
+connection to the same WAL DB file. The alternative (a single connection
+protected by a `threading.Lock`) would serialize all writes and bottleneck
+parallel cron jobs.
+
+**`_schema_lock` DDL guard:** Even with per-thread connections, SQLite DDL
+(`CREATE TABLE`, `ALTER TABLE`) raises `SQLITE_LOCKED` if two threads try to
+migrate simultaneously on a fresh DB. `busy_timeout` does NOT retry `SQLITE_LOCKED`
+errors. Holding a Python `threading.Lock()` while running `_ensure_schema` is
+cheap and eliminates the race.
+
+**`busy_timeout=30000` before `PRAGMA journal_mode=WAL`:** Switching an empty
+(or freshly opened) DB to WAL requires a brief exclusive lock. If `busy_timeout`
+is not set first and another thread connects at the same time, the WAL switch
+fails immediately with "database is locked". The 30s timeout covers CI
+environments with slow or network-backed filesystems.
+
+**`synchronous=NORMAL`:** Safe for WAL mode (SQLite docs confirm this). Faster
+than `FULL` while maintaining durability on unclean shutdown at the WAL
+checkpoint level.
+
+### Schema evolution
+
+Migrations run on first connect per thread. Idempotent: check `schema_version`
+table before applying.
+
+| Version | What was added |
+|---------|---------------|
+| v1 | Base tables: `runs`, `llm_calls`, `tool_calls`, `schema_version` |
+| v2 | `llm_calls`: `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `estimated`. `runs`: `parent_session_id`, `estimated_llm_calls` |
+| v3 | `runs.sender_id`. New table: `budget_alerts` (anti-spam ledger) |
+
+### `_ensure_run_row` — lazy insert (added v0.3.1)
+
+**Problem:** For sessions that start on a running gateway BEFORE the plugin is
+enabled (or on session continuation where `on_session_start` doesn't fire), the
+`UPDATE runs WHERE session_id = ?` calls in `record_llm_call` and `end_run` were
+silent no-ops — no row existed. `/stats` and `/budget` under-reported.
+
+**Solution:** `_ensure_run_row(session_id, ts)` does `INSERT OR IGNORE INTO runs
+(session_id, started_at, status) VALUES (?, ?, 'running')` before every UPDATE.
+If the row already exists (happy path from `on_session_start`), it's a no-op.
+
+**Called by:** `record_llm_call` and `end_run`. Not needed in `start_run` (it
+already uses `INSERT OR IGNORE`).
+
+### `runs` table key columns
+
+| Column | Notes |
+|--------|-------|
+| `session_id` | PK. CLI: `{YYYYMMDD_HHMMSS}_{uuid6}`. Cron: `cron_{job_id}_{YYYYMMDD_HHMMSS}`. |
+| `cron_job_id` | Extracted from `session_id` via anchored regex (see Cron regex below). NULL for non-cron. |
+| `estimated_llm_calls` | Count of calls where provider returned `usage=None`. Used for budget degradation. |
+| `parent_session_id` | Schema column reserved for future parent-child attribution. **Never populated** — the Hermes hooks do not expose the link. |
+| `sender_id` | Set from `pre_llm_call.sender_id`. First non-null wins (`COALESCE(sender_id, ?)`). |
+| `model` / `provider` | Set from first `record_llm_call`. `COALESCE(model, ?)` so they're never overwritten. |
+
+---
+
+## Pricing Engine
+
+### Lookup priority chain
+
+`estimate_cost(usage, model)` resolves a price by trying these in order:
+
+1. **Custom YAML** (`~/.hermes/telemetry/pricing.yaml`, `models:` section) — exact match, case-insensitive
+2. **Built-in table** (`_DEFAULT_PRICING`) — exact match
+3. **Prefix fallback** — scans all of the above plus `_PREFIX_PRICING`, **longest prefix wins**
+4. **Google symmetric form** — if the above misses, tries `gemini-X` ↔ `google/gemini-X`
+5. **Unknown** → returns `$0.00`, logs a one-time WARNING
+
+**Why longest-prefix-wins:** `gpt-4o-mini` must not be matched by `gpt-4o` or
+`gpt-4`. `o1-mini` must not be matched by `o1`. The sorted-by-length approach
+(candidates sorted by `-len(prefix)`) ensures specific prefixes take precedence.
+
+### Google-symmetric normalization (added v0.4.0)
+
+**Problem:** The gateway reports model IDs differently depending on routing path:
+- Direct Google AI: `gemini-3.5-flash` (no prefix)
+- Via OpenRouter: `google/gemini-3.5-flash`
+
+A single pricing YAML entry would only cover one form. Having the user maintain
+both was error-prone.
+
+**Solution:** `_google_alt_form(model_lc)` maps the pair symmetrically:
+- `gemini-X` → try also `google/gemini-X`
+- `google/gemini-X` → try also `gemini-X`
+
+**Deliberately google-specific:** `anthropic/`, `meta-llama/`, `openrouter/` are
+NOT normalized. On OpenRouter, `anthropic/claude-sonnet-4-6` costs differently
+than direct Anthropic — stripping the prefix would give wrong prices.
+
+### Per-component cost split (R1)
+
+Cost is computed as:
+```
+(input_tokens × input_price
+ + output_tokens × output_price
+ + cache_read_tokens × cache_read_price
+ + cache_write_tokens × cache_write_price
+ + reasoning_tokens × reasoning_price) / 1_000_000
+```
+
+`prompt_tokens` is **intentionally ignored** — it equals `input + cache_read + cache_write`
+in the Hermes canonical usage dict, so using it would double-count those components.
+
+Cache prices are derived from multipliers when not explicit:
+- `cache_read = input × 0.10` (configurable in YAML `defaults:`)
+- `cache_write = input × 1.25`
+- `reasoning` defaults to `output` price
+
+### Cache-invalidation on hot-reload
+
+`_custom_pricing` is a module-level `None`-initialized cache. `reload_custom_pricing()`
+sets it back to `None`, forcing the next read to re-parse the YAML. This is
+called by the auto-refresh cycle and by the `/setup` command, so new prices
+take effect immediately without a gateway restart.
+
+---
+
+## Budget Engine
+
+### The enforcement reality (A4 audit finding)
+
+The budget engine was designed AFTER auditing what Hermes hooks can actually do.
+The audit classified every enforcement primitive:
+
+| Primitive | Blocks? | Mechanism |
+|-----------|---------|-----------|
+| `pre_llm_call` return | ❌ No | Context injection only |
+| `pre_api_request` return | ❌ No | Return discarded |
+| `pre_approval_request` / `post_approval_response` | ❌ No | "observers only" |
+| `pre_tool_call` return `{"action":"block",…}` | ✅ Yes | Aborts tool, sends error to model |
+| `cron.jobs.pause_job(job_id, reason)` | ✅ Yes (future runs) | Pauses cron job |
+
+**Consequence:** there is NO true mid-call abort. When a hard breach is detected:
+1. The current in-flight model response completes (and is billed).
+2. The next tool call is blocked by `pre_tool_call`.
+3. The agent loop eventually terminates because it can't execute tools.
+4. For cron: the job is paused for future runs.
+
+**Soft alert** (once per window): context injected via `pre_llm_call`.  
+**Hard gate** (every tool call): `pre_tool_call` returns `{"action":"block",…}`.
+
+### Verdict cache (TTL = 5s)
+
+`pre_tool_call` fires on **every** tool call — potentially dozens per turn.
+Re-querying SQLite on each call would be expensive. A 5-second TTL cache is
+safe because spend only changes when a new `post_api_request` is recorded
+(which can't happen while a tool call is running synchronously).
+
+The cache is keyed by `(scope, scope_id)`. A `reload_config()` call clears it
+(e.g., after `/budget set`).
+
+### Anti-spam ledger (`budget_alerts` table)
+
+Soft alerts fire **once per window per scope** — not on every `pre_llm_call`.
+`try_budget_alert()` does `INSERT OR IGNORE` into `budget_alerts` and returns
+`True` only on first insert (checked via `rowcount > 0`). The UNIQUE constraint
+on `(scope, scope_id, window, period_key, level)` is the database-level guarantee.
+
+### Verdict degradation
+
+When spend rests on estimated rows (`estimated=1` or `_estimated_price: true`
+models), a hard verdict **degrades to soft** under `on_estimated.mode: warn_only`
+(the default). Rationale: you shouldn't block work based on numbers that might
+be significantly wrong.
+
+`on_estimated.mode: enforce` opts into strict enforcement regardless.
+
+### Window math: local timezone
+
+Daily/monthly windows are computed in the user's local timezone. A cron job at
+11:59 PM and another at 12:01 AM count against different daily windows. The start
+timestamp is converted back to UTC ISO before querying the DB (the DB stores UTC).
+
+### Scope resolution
+
+| Scope | How spend is aggregated |
+|-------|------------------------|
+| `global` | All `runs` rows in the window |
+| `per_cron_job` | `runs WHERE cron_job_id = ?` — excludes subagent spend |
+| `per_sender` | `runs WHERE sender_id = ?` |
+
+`per_cron_job` deliberately excludes subagent spend — there's no way to
+attribute it. Document this to users: use `global` for a cap that captures
+delegated work.
+
+---
+
+## Pricing Auto-Refresh
+
+### Architecture
+
+`PricingSource` is an ABC with a single `fetch() -> dict[str, dict]` method.
+Two concrete sources ship:
+
+| Source | Mechanism | Frequency |
+|--------|-----------|-----------|
+| `OpenRouterSource` | HTTP GET to `openrouter.ai/api/v1/models` (no auth) | Every 24h |
+| `GoogleAISource` | Constant table in code (`LAST_VERIFIED = "2026-06-05"`) | Manual quarterly |
+
+`GoogleAISource` is a constant because Google has no structured pricing API.
+The `LAST_VERIFIED` date is an explicit reminder to bump it quarterly.
+
+### Merge strategy
+
+The `refresh_pricing()` function:
+1. Loads existing `pricing.yaml`
+2. Fetches all sources
+3. **Never overwrites manual entries** — detects them via `_meta.auto_models`
+   (a set of model IDs that were auto-fetched in a previous cycle)
+4. Updates auto-fetched models when prices change
+5. Writes `_meta.auto_models`, `_meta.estimated_price_models`, `_meta.last_refresh`
+
+**Manual entry detection:** if a model is in `models:` but NOT in
+`_meta.auto_models`, it's considered manual — preserved and logged as an
+override warning if the remote price differs.
+
+### Estimated-price models
+
+OpenRouter represents models without fixed pricing (auto-routing, experimental)
+with **negative prices** in their API. The plugin normalizes these to `$0.00`
+and flags them with `_estimated_price: true`. The budget engine checks for these
+models via `estimated_price_share()` and degrades hard verdicts under `warn_only`.
+
+### Sentinel file
+
+The 24h refresh cadence is tracked via a sentinel file at
+`~/.hermes/telemetry/.pricing_refresh`. Touch it to force a refresh on next
+plugin load. Delete it to trigger auto-refresh.
+
+---
+
+## Subagent Architecture
+
+Hermes creates child `AIAgent` instances for `delegate_task`. Each child:
+- Auto-generates its own `session_id` (format: `{YYYYMMDD_HHMMSS}_{uuid6}`)
+- Calls `run_conversation()` which fires the full hook lifecycle
+- Records its own `runs` row independently
+
+**Verified finding (A3):** `delegate_task` result in `model_tools.py:999`
+contains `{results:[{tokens, model, api_calls, status, ...}], total_duration_seconds}` —
+**no child `session_id`**. `subagent_stop` also doesn't carry a child id.
+
+**Consequence:** `/stats` global totals already include subagent tokens (they
+appear as separate `runs` rows). But parent-child attribution is impossible from
+hooks alone. `runs.parent_session_id` was added as a schema column for future
+use, but it is **never populated** in any version through v0.4.0.
+
+**Practical implication for budgets:** `per_cron_job` scope undercounts
+delegated spend. Use `global` scope to cap total cost including subagents.
+
+---
+
+## Cron Job Identification
+
+There is **no `cron_job_id` kwarg** in any hook.
+
+The extraction strategy: when `platform == "cron"`, the `session_id` follows
+the format `cron_{job_id}_{YYYYMMDD_HHMMSS}` (confirmed in
+`cron/scheduler.py:1392`).
+
+**Anchored regex (R4):** `^cron_(?P<job_id>.+)_\d{8}_\d{6}$`
+
+A naive `split("_")[1]` would break on job IDs that contain underscores
+(e.g., `cron_my_job_2_20260101_120000` → `job_id` would be `my` instead of `my_job_2`).
+The regex captures everything between the leading `cron_` and the trailing
+`_{8digits}_{6digits}`.
+
+On mismatch, a WARNING is logged and `cron_job_id` is set to NULL — surfaced
+loudly rather than silently wrong. The comment `# If this test breaks...` is an
+intentional canary.
+
+---
+
+## Test Isolation Contract
+
+**Tests never read or write the real `~/.hermes`.** This is enforced, not just convention.
+
+### The `isolate_hermes_home` fixture
+
+An autouse pytest fixture in `conftest.py` redirects `HERMES_HOME` to a fresh
+per-test temp directory. `HOME` and `USERPROFILE` are also pinned to the same
+temp dir as a safety net for any `Path.home()` fallback.
+
+### The poison-file test (`test_isolation.py`)
+
+`test_isolation.py` plants a poisoned sentinel file in a decoy home directory and
+asserts that no code path reads it. This is a fail-closed check: any new code that
+reaches outside `HERMES_HOME` will break this test before it breaks production data.
+
+**Rule for new code:** always locate Hermes files via `os.environ.get("HERMES_HOME",
+Path.home() / ".hermes")`, never via `Path.home()` directly.
+
+### Pricing fixture
+
+`tests/fixtures/pricing.yaml` is a committed fixture used by pricing tests.
+This prevents test results from depending on whatever `~/.hermes/telemetry/pricing.yaml`
+your machine happens to have. New tests that need specific pricing data should
+seed it in the per-test temp dir, not rely on real files.
+
+### Where do tests write?
+
+```
+/tmp/pytest-of-<user>/pytest-<N>/<test_name><i>/telemetry/{telemetry.db,pricing.yaml,...}
+```
+
+pytest's built-in `tmp_path` fixture mints this per test. Override the base dir
+with `pytest --basetemp=DIR`.
+
+---
+
+## Design Decisions by Version
+
+### v0.1.0 — Initial scaffold
+
+- 9 hooks registered (no `subagent_stop` yet).
+- SQLite schema v1: `runs`, `llm_calls`, `tool_calls`.
+- `post_api_request` identified as the primary token hook (not `post_llm_call`).
+- Cron ID anchored-regex extraction (R4) decided upfront.
+
+### v0.2.0 — Budget + Dashboard
+
+- **Budget engine** added. The A1-A4 audit (see [The Hermes Plugin Model](#the-hermes-plugin-model) above) drove the design:
+  tool-gate is the only real enforcement mechanism.
+- **Schema v2 migration:** added `cache_read_tokens`, `cache_write_tokens`,
+  `reasoning_tokens`, `estimated` on `llm_calls`; `parent_session_id`,
+  `estimated_llm_calls` on `runs`.
+- **Subagent stop** hook added. Decision: record proxy `tool_call` row only,
+  never attempt to attribute tokens (would double-count).
+- **`budget_alerts` table** (schema v3 migration): anti-spam ledger for
+  one-time-per-window alerts.
+- **Dashboard:** stdlib HTTP server, zero external deps. `--host 0.0.0.0` flag
+  for headless deployments, with explicit warning on non-loopback binding.
+- **Provider label = verbatim:** stored as-is from `post_api_request.provider`.
+  NOT normalized. Everything routed through OpenRouter shows as "openrouter".
+  This was a deliberate decision — the routing path is meaningful observability data.
+
+### v0.3.0 — Setup wizard
+
+- **Auto-setup on first load:** if `pricing.yaml` or `budget.yaml` are missing,
+  the plugin generates defaults non-interactively. Guarded by
+  `HERMES_TELEMETRY_NO_SETUP=1` for CI/tests.
+- **`/setup` slash command:** three modes — `auto` (fetches OpenRouter), `minimal`
+  (built-in defaults only), `skip`.
+- **Pricing auto-refresh** from OpenRouter API. `PricingSource` ABC for
+  extensibility. `_meta.auto_models` to detect and preserve manual overrides.
+
+### v0.3.1 — Gemini pricing + orphan-run fix
+
+- **Gemini 3.x/2.5 family added** to `_DEFAULT_PRICING` and `_PREFIX_PRICING`.
+- **Deprecated Gemini entries removed**: `gemini-1.5-*`, `gemini-2.0-*` (sunset).
+- **Generic `gemini` prefix removed** from `_PREFIX_PRICING` (was Flash 1.5
+  pricing for any unknown Gemini variant — silently mis-priced new models by
+  ~6.5×). Unknown Gemini variants now surface as `unknown-model` warnings.
+- **`_ensure_run_row` lazy insert (orphan-run fix):** sessions that join a
+  running gateway after the plugin loads never receive `on_session_start`.
+  All subsequent UPDATE calls were silent no-ops. Fix: `INSERT OR IGNORE`
+  stub row before every UPDATE in `record_llm_call` and `end_run`.
+
+### v0.4.0 — Google AI pricing source + symmetric lookup
+
+- **`GoogleAISource`** in `pricing_refresh.py`: direct Google AI Studio pricing
+  as a constant table (no structured API). `LAST_VERIFIED` date for manual
+  quarterly refresh. Registered alongside `OpenRouterSource`.
+- **Symmetric Google lookup** in `pricing._lookup_base`: `gemini-X` and
+  `google/gemini-X` resolve to the same entry. Two-pass: try the literal ID
+  first, then `_google_alt_form(model_lc)`. This is deliberately Google-specific
+  — other provider prefixes carry distinct pricing semantics and must not be stripped.
+
+---
+
+## Metrics: Real vs Estimated
+
+| Metric | Status | Source |
+|--------|--------|--------|
+| Tokens in (non-cached) | ✅ Real | `post_api_request.usage.input_tokens` |
+| Tokens out | ✅ Real | `post_api_request.usage.output_tokens` |
+| Cache read tokens | ✅ Real | `post_api_request.usage.cache_read_tokens` |
+| Cache write tokens | ✅ Real | `post_api_request.usage.cache_write_tokens` |
+| Reasoning tokens | ✅ Real | `post_api_request.usage.reasoning_tokens` |
+| API call latency | ✅ Real | `post_api_request.api_duration` (seconds → ms) |
+| Tool call latency | ✅ Real | `post_tool_call.duration_ms` |
+| Model name | ✅ Real | `post_api_request.response_model or model` |
+| Provider name | ✅ Real (verbatim) | `post_api_request.provider` |
+| Platform | ✅ Real | `on_session_start.platform` |
+| Cron job ID | ✅ Real (parsed) | `session_id` regex extraction |
+| Session duration | ✅ Real (wall time) | `started_at` → `ended_at` (last turn) |
+| Tool success/failure | ✅ Real | Parse `result` JSON for `"error"` key |
+| Subagent count | ✅ Real (proxy) | `subagent_stop` hook count |
+| Cost (USD) | ⚠️ Estimated | Local pricing table × token counts |
+| Tokens when `usage=None` | ⚠️ Estimated, flagged | `approx_input_tokens + chars/4`, row marked `estimated=1` |
+| Subagent cost (global) | ✅ Real | Child runs fire own hooks → independent `runs` rows |
+| Subagent cost (per-cron-job) | ❌ Not available | No parent→child link in any hook |
+
+**Cost is always an estimate** — computed from a local pricing table, not from
+a provider billing API. Users can override prices via `~/.hermes/telemetry/pricing.yaml`.
+
+---
+
+## CI/CD Pipeline
+
+### CI (`.github/workflows/ci.yml`)
+
+Runs on push and PR to `main`. Jobs:
+
+1. **`lint`** — `ruff format --check .` then `ruff check .` (Python 3.12)
+2. **`test`** — `pytest tests/ -v --tb=short`, matrix Python 3.8–3.12.
+   `needs: lint` so a format miss fails the whole matrix.
+
+Local equivalent (matches CI exactly):
+```bash
+ruff format --check . && ruff check . && pytest tests/ -v
+```
+
+### Release (`.github/workflows/release.yml`)
+
+Triggered on push of a `v*.*.*` tag. Steps:
+1. Verify that the tag version matches `pyproject.toml` `[project].version`.
+   If they differ, the release fails. Both `__init__.py.__version__` and
+   `plugin.yaml.version` must also be bumped (this check only covers `pyproject.toml`
+   vs the tag — see RELEASING.md for the full checklist).
+2. Create GitHub Release (no build artifact — Hermes installs directly from the repo).
+
+### Pre-commit hook
+
+`.githooks/pre-commit` runs the same three checks (format + lint + tests).
+Enable with `git config core.hooksPath .githooks`.
+
+---
+
+## Known Limitations
+
+### Enforcement gaps
+
+- **No true mid-call abort.** The in-flight response completes and is billed.
+  The tool-gate stops *further* work, not the current call.
+- **Text-only sessions.** A session generating only text (no tool calls) never
+  hits `pre_tool_call`. No enforcement possible. A `pre_llm_call` abort for
+  cron jobs would require Hermes to honor it (it currently doesn't).
+- **`on_estimated.mode: warn_only` is the default.** Hard verdicts based on
+  estimated data degrade to soft. Users with reliable providers should set
+  `mode: enforce`.
+
+### Subagent attribution
+
+- `per_cron_job` budgets undercount delegated spend. The `global` budget is the
+  only reliable cap for total cost including subagents.
+- `runs.parent_session_id` is in the schema but never populated. If Hermes adds
+  a `parent_session_id` kwarg to `on_session_start` in the future, the column
+  is ready.
+
+### Pricing
+
+- Auto-refresh covers OpenRouter models (via API) and Google AI Studio (static
+  table). Anthropic, OpenAI direct-API pricing requires manual `pricing.yaml`
+  entries or a new `PricingSource` subclass.
+- `GoogleAISource` is a constant table. It will drift without manual quarterly
+  updates. See `LAST_VERIFIED` in `pricing_refresh.py::GoogleAISource`.
+- Gemini tiered-pricing models (`gemini-2.5-pro`, `gemini-3.1-pro-preview`) use
+  the ≤200k context tier. Usage above 200k is undercounted.
+
+### DB retention
+
+`telemetry.db` grows without bound. No automatic purge. For >100K rows, consider
+manual cleanup.
+
+---
+
+## User Config Files
+
+```
+~/.hermes/telemetry/
+├── telemetry.db          ← SQLite (WAL, schema v3)
+├── telemetry.log         ← Plugin log (DEBUG+, includes one-time warnings)
+├── pricing.yaml          ← User price overrides + auto-refreshed models
+├── budget.yaml           ← Guardrails config
+└── .pricing_refresh      ← Sentinel: mtime = last successful refresh
+```
+
+All paths derived from `os.environ.get("HERMES_HOME", Path.home() / ".hermes")`.
+**Never use `Path.home()` directly** — breaks test isolation.
+
+---
+
+## PluginContext API
+
+```python
+ctx.register_hook(hook_name: str, callback: Callable) -> None
+ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "") -> None
+ctx.register_cli_command(name: str, help: str, setup_fn: Callable, handler_fn: Callable | None = None) -> None
+ctx.register_tool(name, toolset, schema, handler, ...) -> None
+```
+
+Handler signature for slash commands: `fn(raw_args: str) -> str | None`
+(sync or async — both supported).
+
+---
+
+## Valid Hooks Reference
+
+All 16 hooks available in `VALID_HOOKS` (`hermes_cli/plugins.py`):
+
+```
+pre_tool_call, post_tool_call, transform_terminal_output, transform_tool_result,
+transform_llm_output, pre_llm_call, post_llm_call, pre_api_request, post_api_request,
+on_session_start, on_session_end, on_session_finalize, on_session_reset,
+subagent_stop, pre_gateway_dispatch, pre_approval_request, post_approval_response
+```
+
+This plugin uses 10 of these. Hooks not used (and why):
+- `transform_*` — output mutation, not needed for telemetry
+- `on_session_reset` — fired by `/reset`; would be useful for clearing session
+  state without restart, but not yet wired
+- `pre_gateway_dispatch` / `pre_approval_request` / `post_approval_response` —
+  documented as "observers only"; cannot block or modify
+
+---
+
+*Source references verified against `git clone --depth=1 https://github.com/NousResearch/hermes-agent`.*  
+*Inspected: `hermes_cli/plugins.py`, `agent/conversation_loop.py`, `model_tools.py`,*
+*`cron/scheduler.py`, `tools/delegate_tool.py`, `agent/usage_pricing.py`.*

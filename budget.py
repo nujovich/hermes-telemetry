@@ -5,7 +5,7 @@ network calls. Decides whether a scope (global / per-cron-job / per-sender) is
 within budget, in a soft-warning band, or over the hard limit, for daily and
 monthly windows computed in the user's LOCAL timezone.
 
-Enforcement reality (verified against Hermes Agent source, see NOTES.md):
+Enforcement reality (verified against Hermes Agent source, see ONBOARDING.md):
   * pre_llm_call / pre_api_request CANNOT abort a model call — their return is
     used only for context injection (pre_llm_call) or ignored (pre_api_request).
   * pre_tool_call CAN block a tool by returning {"action":"block","message":..}.

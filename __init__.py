@@ -388,7 +388,7 @@ def register(ctx) -> None:  # noqa: ANN001
     # ------------------------------------------------------------------
     # pre_llm_call  — budget SOFT alerting + sender capture
     # This hook CANNOT abort a call (Hermes uses its return only for context
-    # injection — see budget.py / NOTES.md). We use it to (a) attach sender_id
+    # injection — see budget.py / ONBOARDING.md). We use it to (a) attach sender_id
     # to the run for per-sender budgets, and (b) inject a one-time-per-window
     # budget notice into the conversation. The hard tool-gate lives in
     # pre_tool_call below.

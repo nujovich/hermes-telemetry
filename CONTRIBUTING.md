@@ -20,6 +20,8 @@ Thanks for your interest in contributing! This document explains how to set up t
 
 `hermes-telemetry` is a [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that captures real usage data (tokens, cost, latency, tool calls) and enforces budget guardrails. It consists of:
 
+> **New contributor?** Read [ONBOARDING.md](ONBOARDING.md) first — it documents every non-obvious design decision from v0.1 through v0.4.0, including Hermes hook constraints, the concurrency model, and why the budget enforcement works the way it does.
+
 - **Hook pipeline** — captures telemetry via Hermes lifecycle hooks (`on_session_start`, `post_api_request`, `post_tool_call`, etc.)
 - **SQLite database** — stores all telemetry data locally
 - **Pricing engine** — local pricing table × tokens = estimated cost
