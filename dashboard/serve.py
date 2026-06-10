@@ -64,12 +64,26 @@ def _one(sql, params=()):
     return dict(r) if r else {}
 
 
+def _since_clause(window_hours):
+    """Return SQL WHERE clause for time window. 0 = all time (no filter)."""
+    wh = int(window_hours)
+    if wh == 0:
+        return "1=1"
+    return f"started_at >= datetime('now', '-{wh} hours')"
+
+def _since_clause_ts(window_hours):
+    """Return SQL WHERE clause for llm_calls.ts column. 0 = all time (no filter)."""
+    wh = int(window_hours)
+    if wh == 0:
+        return "1=1"
+    return f"ts >= datetime('now', '-{wh} hours')"
+
 # ---------------------------------------------------------------------------
 # API handlers
 # ---------------------------------------------------------------------------
 def api_summary(window_hours=24):
-    wh = int(window_hours)
-    since = f"datetime('now', '-{wh} hours')"
+    since_clause = _since_clause(window_hours)
+    since_clause_ts = _since_clause_ts(window_hours)
 
     runs = _one(f"""
         SELECT
@@ -82,12 +96,12 @@ def api_summary(window_hours=24):
             AVG(duration_ms) AS avg_duration_ms,
             SUM(tool_calls) AS tool_calls,
             SUM(estimated_llm_calls) AS estimated_llm_calls
-        FROM runs WHERE started_at >= {since}
+        FROM runs WHERE {since_clause}
     """)
 
     llm = _one(f"""
         SELECT COUNT(*) AS api_calls, AVG(latency_ms) AS avg_latency_ms
-        FROM llm_calls WHERE ts >= {since}
+        FROM llm_calls WHERE {since_clause_ts}
     """)
 
     top_tools = _rows(f"""
@@ -96,23 +110,26 @@ def api_summary(window_hours=24):
                AVG(latency_ms) AS avg_ms
         FROM tool_calls tc
         JOIN runs r ON tc.session_id = r.session_id
-        WHERE r.started_at >= {since}
+        WHERE {since_clause.replace("started_at", "r.started_at")}
         GROUP BY tool_name ORDER BY calls DESC LIMIT 10
     """)
 
-    # daily cost chart data (last 7 days)
-    daily_cost = _rows("""
+    # daily cost chart data (last 7 days for 24h/7d windows, last 30 days for 30d, last 90 days for 90d)
+    daily_window = int(window_hours)
+    if daily_window == 0:
+        daily_window = 2160  # 90 days default for all-time
+    daily_cost = _rows(f"""
         SELECT DATE(started_at) AS day,
                ROUND(SUM(cost_usd), 4) AS cost,
                COUNT(*) AS runs
         FROM runs
-        WHERE started_at >= datetime('now', '-7 days')
+        WHERE started_at >= datetime('now', '-{int(daily_window/24)} days')
         GROUP BY DATE(started_at)
         ORDER BY day
     """)
 
     return {
-        "window_hours": wh,
+        "window_hours": int(window_hours),
         "runs": runs,
         "llm": llm,
         "top_tools": top_tools,
@@ -121,6 +138,7 @@ def api_summary(window_hours=24):
 
 
 def api_cron(window_hours=168):
+    since_clause = _since_clause(window_hours)
     return _rows(f"""
         SELECT cron_job_id,
                COUNT(*) AS runs,
@@ -133,13 +151,14 @@ def api_cron(window_hours=168):
                MAX(started_at) AS last_run
         FROM runs
         WHERE cron_job_id IS NOT NULL
-          AND started_at >= datetime('now', '-{int(window_hours)} hours')
+          AND {since_clause}
         GROUP BY cron_job_id
         ORDER BY cost_usd DESC
     """)
 
 
 def api_providers(window_hours=24):
+    since_clause_ts = _since_clause_ts(window_hours)
     return _rows(f"""
         SELECT provider,
                COUNT(*) AS total_calls,
@@ -147,7 +166,7 @@ def api_providers(window_hours=24):
                SUM(CASE WHEN estimated=1 THEN 1 ELSE 0 END) AS estimated_calls,
                ROUND(SUM(cost_usd), 6) AS cost_usd
         FROM llm_calls
-        WHERE ts >= datetime('now', '-{int(window_hours)} hours')
+        WHERE {since_clause_ts}
         GROUP BY provider
         ORDER BY total_calls DESC
     """)
