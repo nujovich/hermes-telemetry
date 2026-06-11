@@ -152,3 +152,45 @@ def test_stats_models_json(capsys):
     data = _json.loads(out)
     assert data[0]["model"] == "claude-sonnet-4-6"
     m.assert_called_once_with(24)
+
+
+@pytest.mark.parametrize(
+    "argv,expected_hours",
+    [
+        (["stats", "cron-week", "--json"], 168),
+        (["stats", "cron-month", "--json"], 720),
+    ],
+)
+def test_stats_cron_json_windowed(argv, expected_hours, capsys):
+    fake = [{"job_id": "j", "cost_usd": 0.01}]
+    with patch("hermes_telemetry.telemetry_cli.db.cost_by_job", return_value=fake) as m:
+        main(argv)
+    m.assert_called_once_with(expected_hours)
+
+
+@pytest.mark.parametrize(
+    "argv,expected_hours",
+    [
+        (["stats", "providers-week", "--json"], 168),
+        (["stats", "providers-month", "--json"], 720),
+    ],
+)
+def test_stats_providers_json_windowed(argv, expected_hours, capsys):
+    fake = [{"provider": "x", "cost_usd": 0.01}]
+    with patch("hermes_telemetry.telemetry_cli.db.stats_by_provider", return_value=fake) as m:
+        main(argv)
+    m.assert_called_once_with(expected_hours)
+
+
+@pytest.mark.parametrize(
+    "argv,expected_hours",
+    [
+        (["stats", "models-week", "--json"], 168),
+        (["stats", "models-month", "--json"], 720),
+    ],
+)
+def test_stats_models_json_windowed(argv, expected_hours, capsys):
+    fake = [{"model": "x", "cost_usd": 0.01}]
+    with patch("hermes_telemetry.telemetry_cli.db.stats_by_model", return_value=fake) as m:
+        main(argv)
+    m.assert_called_once_with(expected_hours)
