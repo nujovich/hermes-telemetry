@@ -216,7 +216,7 @@ async function loadAll() {
     const [summary, cron, providers, runs, budget] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
-      fetchJSON('/api/providers'),
+      fetchJSON(`/api/providers?hours=${hours}`),
       fetchJSON('/api/runs?limit=30'),
       fetchJSON('/api/budget'),
     ]);

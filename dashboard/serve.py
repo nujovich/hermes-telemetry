@@ -64,26 +64,24 @@ def _one(sql, params=()):
     return dict(r) if r else {}
 
 
-def _since_clause(window_hours):
-    """Return SQL WHERE clause for time window. 0 = all time (no filter)."""
+def _since_clause(window_hours, col="started_at"):
+    """Return SQL WHERE clause for time window. 0 = all time (no filter).
+    Args:
+        window_hours: 0 = all time (no filter), otherwise hours back
+        col: column name (default 'started_at', use 'ts' for llm_calls)
+    """
     wh = int(window_hours)
     if wh == 0:
         return "1=1"
-    return f"started_at >= datetime('now', '-{wh} hours')"
+    return f"{col} >= datetime('now', '-{wh} hours')"
 
-def _since_clause_ts(window_hours):
-    """Return SQL WHERE clause for llm_calls.ts column. 0 = all time (no filter)."""
-    wh = int(window_hours)
-    if wh == 0:
-        return "1=1"
-    return f"ts >= datetime('now', '-{wh} hours')"
 
 # ---------------------------------------------------------------------------
 # API handlers
 # ---------------------------------------------------------------------------
 def api_summary(window_hours=24):
-    since_clause = _since_clause(window_hours)
-    since_clause_ts = _since_clause_ts(window_hours)
+    since_clause = _since_clause(window_hours, "started_at")
+    since_clause_ts = _since_clause(window_hours, "ts")
 
     runs = _one(f"""
         SELECT
@@ -110,7 +108,7 @@ def api_summary(window_hours=24):
                AVG(latency_ms) AS avg_ms
         FROM tool_calls tc
         JOIN runs r ON tc.session_id = r.session_id
-        WHERE {since_clause.replace("started_at", "r.started_at")}
+        WHERE {_since_clause(window_hours, "r.started_at")}
         GROUP BY tool_name ORDER BY calls DESC LIMIT 10
     """)
 
@@ -123,7 +121,7 @@ def api_summary(window_hours=24):
                ROUND(SUM(cost_usd), 4) AS cost,
                COUNT(*) AS runs
         FROM runs
-        WHERE started_at >= datetime('now', '-{int(daily_window/24)} days')
+        WHERE started_at >= datetime('now', '-{daily_window // 24} days')
         GROUP BY DATE(started_at)
         ORDER BY day
     """)
@@ -158,7 +156,7 @@ def api_cron(window_hours=168):
 
 
 def api_providers(window_hours=24):
-    since_clause_ts = _since_clause_ts(window_hours)
+    since_clause_ts = _since_clause(window_hours, "ts")
     return _rows(f"""
         SELECT provider,
                COUNT(*) AS total_calls,
@@ -271,7 +269,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(api_cron(qs.get("hours", [168])[0]))
 
         if path == "/api/providers":
-            return self._json(api_providers())
+            qs = parse_qs(parsed.query)
+            return self._json(api_providers(int(qs.get("hours", [24])[0])))
 
         if path == "/api/runs":
             qs = parse_qs(parsed.query)
