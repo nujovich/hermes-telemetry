@@ -816,12 +816,35 @@ All paths derived from `os.environ.get("HERMES_HOME", Path.home() / ".hermes")`.
 ```python
 ctx.register_hook(hook_name: str, callback: Callable) -> None
 ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "") -> None
-ctx.register_cli_command(name: str, help: str, setup_fn: Callable, handler_fn: Callable | None = None) -> None
+ctx.register_cli_command(
+    name: str,
+    help: str,
+    setup_fn: Callable,
+    handler_fn: Callable | None = None,
+    description: str = "",
+) -> None
 ctx.register_tool(name, toolset, schema, handler, ...) -> None
 ```
 
 Handler signature for slash commands: `fn(raw_args: str) -> str | None`
 (sync or async — both supported).
+
+### `register_cli_command` details (verified against `hermes_cli/plugins.py`)
+
+Creates a `hermes <name> ...` terminal subcommand (distinct from in-session slash
+commands, which use `register_command`).
+
+- **`setup_fn`** — receives an `argparse` subparser (the `ArgumentParser` object added
+  by `add_subparsers().add_parser(name, ...)`). Use it to call `.add_argument()` or
+  add further sub-subparsers. Return value is ignored.
+- **`handler_fn`** — if provided, registered via `subparser.set_defaults(func=handler_fn)`.
+  When Hermes dispatches the command it calls `args.func(args)`, so `handler_fn`
+  receives the parsed `argparse.Namespace`. If `None`, the caller is expected to wire
+  `set_defaults(func=...)` itself inside `setup_fn`.
+- **`description`** — optional long description stored in the command registry; not
+  passed to argparse automatically.
+- **Return value** — `None`. Registers metadata in `_manager._cli_commands[name]`;
+  does not immediately add to the live parser (the manager wires parsers at startup).
 
 ---
 
