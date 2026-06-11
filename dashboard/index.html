@@ -50,9 +50,9 @@
   .budget-edit-btn:hover { background: #30363d; }
 
   /* Budget modal */
-  .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 1000; }
-  .modal-overlay.open { display: flex; }
-  .modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; width: 100%; max-width: 400px; margin: 16px; }
+  .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 99999; }
+  .modal-overlay.open { display: flex !important; }
+  .modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; width: 100%; max-width: 400px; margin: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
   .modal h3 { color: #e6edf3; margin-bottom: 16px; font-size: 16px; }
   .modal .form-group { margin-bottom: 16px; }
   .modal label { display: block; color: #8b949e; font-size: 12px; margin-bottom: 4px; }
@@ -207,38 +207,35 @@ let currentBudgetScope = 'global';
 let currentBudgetWindow = 'daily';
 
 async function openBudgetModal(scope) {
-  currentBudgetScope = scope;
-  $('#budgetScope').value = scope;
+  // Parse "global/daily" -> scope="global", window="daily"
+  const [parsedScope, parsedWindow] = scope.split('/');
+  const actualScope = parsedScope || scope;
+  const actualWindow = parsedWindow || 'daily';
+
+  currentBudgetScope = actualScope;
+  currentBudgetWindow = actualWindow;
+
+  // Open modal FIRST (synchronous, works even if fetch fails)
+  $('#budgetModal').classList.add('open');
+
+  $('#budgetScope').value = actualScope;
+  $('#budgetWindow').value = actualWindow;  // set window before fetch
   $('#budgetModalError').classList.remove('show');
   $('#budgetModalError').textContent = '';
 
-  // Fetch current budget details for pre-fill
+  // Then fetch details for pre-fill (async, non-blocking)
   try {
-    const res = await fetch(`/api/budget/detail?scope=${encodeURIComponent(scope)}&window=${encodeURIComponent($('#budgetWindow').value)}`);
+    const res = await fetch(`/api/budget/detail?scope=${encodeURIComponent(actualScope)}&window=${encodeURIComponent(actualWindow)}`);
     const data = await res.json();
     if (!data.error) {
       $('#budgetLimit').value = data.limit_usd !== null && data.limit_usd !== undefined ? data.limit_usd : '';
       $('#budgetSoftPct').value = data.soft_pct !== undefined ? data.soft_pct : '';
       $('#budgetHardPct').value = data.hard_pct !== undefined ? data.hard_pct : '';
       $('#budgetOnEstimated').value = data.on_estimated_mode || 'warn_only';
-    } else {
-      // Fallback to defaults on error
-      $('#budgetWindow').value = 'daily';
-      $('#budgetLimit').value = '';
-      $('#budgetSoftPct').value = '';
-      $('#budgetHardPct').value = '';
-      $('#budgetOnEstimated').value = 'warn_only';
     }
   } catch {
-    // Fallback to defaults on network error
-    $('#budgetWindow').value = 'daily';
-    $('#budgetLimit').value = '';
-    $('#budgetSoftPct').value = '';
-    $('#budgetHardPct').value = '';
-    $('#budgetOnEstimated').value = 'warn_only';
+    // Keep defaults on network error - modal already open
   }
-
-  $('#budgetModal').classList.add('open');
 }
 
 function closeBudgetModal() {
@@ -299,10 +296,10 @@ function renderBudget(data) {
   let html = '<div class="budget-bar"><h3>Budgets</h3>';
   for (const s of items) {
     const cls = s.level;
-    // Escape scope for safe JS string context in onclick attribute
-    const safeScope = JSON.stringify(s.scope);
+    // Use single quotes in onclick to avoid JSON.stringify double-quote escaping issues
+    const safeScope = s.scope.replace(/'/g, "\\'");
     html += `<div class="budget-item">
-      <div class="info"><span>${s.scope}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal(${safeScope})">Edit</button></div>
+      <div class="info"><span>${s.scope}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal('${safeScope}')">Edit</button></div>
       <div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(s.pct, 100)}%"></div></div>
     </div>`;
   }
