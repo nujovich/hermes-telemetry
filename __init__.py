@@ -317,7 +317,7 @@ def register(ctx) -> None:  # noqa: ANN001
         **_kw,
     ) -> None:
         try:
-            ok = child_status in ("ok", "success", "complete", "")
+            ok = child_status not in ("failed", "error", "interrupted", "timeout")
             db.record_tool_call(
                 session_id=parent_session_id,
                 ts=_utcnow(),

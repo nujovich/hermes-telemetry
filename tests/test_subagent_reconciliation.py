@@ -424,3 +424,68 @@ def test_subagent_cron_parent_costs_exclude_child():
     # Per-cron-job scope sees only the parent's llm_call (not the child's)
     j = db.spend_by_scope("cron_job", "nightly", past)
     assert j["total_calls"] == 1
+
+
+# ---------------------------------------------------------------------------
+# subagent_stop canonical child_status → ok mapping
+# Canonical values from delegate_tool.py (NousResearch/hermes-agent, 2026-06-11):
+#   success: "completed"
+#   failure: "failed", "error", "interrupted", "timeout"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", ["completed"])
+def test_subagent_stop_success_statuses(status):
+    """'completed' is the only canonical success value — must record ok=True."""
+    import hermes_telemetry.db as db
+
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+
+    SID = f"parent_status_{status}_001"
+    ctx.fire("on_session_start", session_id=SID, model="m", platform="cli")
+    ctx.fire(
+        "subagent_stop",
+        parent_session_id=SID,
+        child_role="assistant",
+        child_status=status,
+        duration_ms=500,
+    )
+
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT ok FROM tool_calls WHERE session_id = ? AND tool_name = 'delegate_task/subagent'",
+        (SID,),
+    ).fetchone()
+    assert row is not None, f"No tool_calls row recorded for child_status={status!r}"
+    assert row[0] == 1, (
+        f"child_status={status!r} should record ok=True but got ok={row[0]}. "
+        "This means successful subagents are being counted as failures in /stats."
+    )
+
+
+@pytest.mark.parametrize("status", ["failed", "error", "interrupted", "timeout"])
+def test_subagent_stop_failure_statuses(status):
+    """Canonical Hermes failure statuses must record ok=False."""
+    import hermes_telemetry.db as db
+
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+
+    SID = f"parent_status_{status}_001"
+    ctx.fire("on_session_start", session_id=SID, model="m", platform="cli")
+    ctx.fire(
+        "subagent_stop",
+        parent_session_id=SID,
+        child_role="assistant",
+        child_status=status,
+        duration_ms=500,
+    )
+
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT ok FROM tool_calls WHERE session_id = ? AND tool_name = 'delegate_task/subagent'",
+        (SID,),
+    ).fetchone()
+    assert row is not None, f"No tool_calls row recorded for child_status={status!r}"
+    assert row[0] == 0, f"child_status={status!r} should record ok=False but got ok={row[0]}."

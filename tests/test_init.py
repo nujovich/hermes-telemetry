@@ -8,6 +8,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import yaml
+
 # Load __init__.py as a module directly — the conftest stub does not execute it.
 # We need the module-level constants (CRON_SESSION_RE) and functions.
 _ROOT = Path(__file__).parent.parent
@@ -84,3 +86,22 @@ def test_is_tool_ok_nested_error():
 def test_is_tool_ok_none():
     """None result is treated as ok (not a string)."""
     assert _init_mod._is_tool_ok(None) is True
+
+
+# ---------------------------------------------------------------------------
+# plugin.yaml manifest schema
+# ---------------------------------------------------------------------------
+
+
+def test_plugin_yaml_uses_provides_hooks():
+    """plugin.yaml must use provides_hooks: (official manifest schema), not hooks:."""
+    manifest_path = _ROOT / "plugin.yaml"
+    assert manifest_path.exists(), "plugin.yaml not found at repo root"
+    data = yaml.safe_load(manifest_path.read_text())
+    assert "provides_hooks" in data, (
+        "plugin.yaml must use 'provides_hooks:' key (official manifest schema). "
+        "Found keys: " + str(list(data.keys()))
+    )
+    assert "hooks" not in data, (
+        "plugin.yaml must not use legacy 'hooks:' key — rename to 'provides_hooks:'"
+    )

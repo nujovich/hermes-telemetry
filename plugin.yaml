@@ -6,7 +6,7 @@ description: >-
   and /budget slash commands.
 author: nujovich
 kind: standalone
-hooks:
+provides_hooks:
   - on_session_start
   - pre_api_request
   - post_api_request
