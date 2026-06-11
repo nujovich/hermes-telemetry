@@ -1,4 +1,5 @@
 # tests/test_telemetry_cli.py
+import json as _json
 from unittest.mock import patch
 
 import pytest
@@ -101,3 +102,53 @@ def test_budget_set_text(capsys):
 def test_budget_set_invalid_amount_exits():
     with pytest.raises(SystemExit):
         main(["budget", "set", "global", "daily", "notanumber"])
+
+
+def test_stats_today_json(capsys):
+    fake = {"total_runs": 3, "cost_usd": 0.42, "tokens_in": 1000}
+    with patch("hermes_telemetry.db.stats_summary", return_value=fake) as m:
+        main(["stats", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert data["total_runs"] == 3
+    m.assert_called_once_with(24)
+
+
+def test_stats_week_json(capsys):
+    fake = {"total_runs": 20, "cost_usd": 2.10}
+    with patch("hermes_telemetry.db.stats_summary", return_value=fake) as m:
+        main(["stats", "week", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert data["total_runs"] == 20
+    m.assert_called_once_with(168)
+
+
+def test_stats_cron_json(capsys):
+    fake = [{"job_id": "backup", "cost_usd": 0.10, "runs": 5}]
+    with patch("hermes_telemetry.db.cost_by_job", return_value=fake) as m:
+        main(["stats", "cron", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert data[0]["job_id"] == "backup"
+    m.assert_called_once_with(168)
+
+
+def test_stats_providers_json(capsys):
+    fake = [{"provider": "anthropic", "cost_usd": 1.00}]
+    with patch("hermes_telemetry.db.stats_by_provider", return_value=fake) as m:
+        main(["stats", "providers", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert data[0]["provider"] == "anthropic"
+    m.assert_called_once_with(24)
+
+
+def test_stats_models_json(capsys):
+    fake = [{"model": "claude-sonnet-4-6", "cost_usd": 0.80}]
+    with patch("hermes_telemetry.db.stats_by_model", return_value=fake) as m:
+        main(["stats", "models", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert data[0]["model"] == "claude-sonnet-4-6"
+    m.assert_called_once_with(24)

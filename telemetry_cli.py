@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
-from . import stats
+from . import db, stats
 
 _STATS_WINDOW_HOURS: dict[str, int] = {
     "today": 24,
@@ -98,7 +99,18 @@ def _stats_text(subcommand: str) -> None:
 
 
 def _stats_json(subcommand: str) -> None:
-    pass  # implemented in Task 5
+    hours = _STATS_WINDOW_HOURS.get(subcommand, 24)
+    if subcommand in ("today", "week", "month"):
+        data = db.stats_summary(hours)
+    elif subcommand.startswith("cron"):
+        data = db.cost_by_job(hours)
+    elif subcommand.startswith("providers"):
+        data = db.stats_by_provider(hours)
+    elif subcommand.startswith("models"):
+        data = db.stats_by_model(hours)
+    else:
+        data = db.stats_summary(24)
+    print(json.dumps(data, default=str))
 
 
 def _handle_budget(args: argparse.Namespace) -> None:
