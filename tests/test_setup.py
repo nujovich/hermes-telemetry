@@ -13,7 +13,6 @@ from __future__ import annotations
 import importlib
 import json
 import sys
-import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,12 +22,6 @@ import pytest
 ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-_pkg = types.ModuleType("hermes_telemetry")
-_pkg.__path__ = [str(ROOT)]
-_pkg.__package__ = "hermes_telemetry"
-_pkg.__file__ = str(ROOT / "__init__.py")
-sys.modules["hermes_telemetry"] = _pkg
 
 from hermes_telemetry import setup  # noqa: E402
 
