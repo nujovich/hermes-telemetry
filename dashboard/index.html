@@ -42,6 +42,29 @@
   .bar-fill.hard { background: #f85149; }
   .budget-disabled { color: #8b949e; font-size: 13px; }
 
+  .budget-edit-btn { background: #21262d; color: #58a6ff; border: 1px solid #30363d; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; margin-left: 8px; }
+  .budget-edit-btn:hover { background: #30363d; }
+
+  /* Budget modal */
+  .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 1000; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; width: 100%; max-width: 400px; margin: 16px; }
+  .modal h3 { color: #e6edf3; margin-bottom: 16px; font-size: 16px; }
+  .modal .form-group { margin-bottom: 16px; }
+  .modal label { display: block; color: #8b949e; font-size: 12px; margin-bottom: 4px; }
+  .modal select, .modal input { width: 100%; background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; font-size: 13px; box-sizing: border-box; }
+  .modal select:focus, .modal input:focus { outline: none; border-color: #58a6ff; }
+  .modal .form-row { display: flex; gap: 8px; }
+  .modal .form-row .form-group { flex: 1; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+  .modal-btn { padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; border: 1px solid #30363d; }
+  .modal-btn.cancel { background: #21262d; color: #c9d1d9; }
+  .modal-btn.cancel:hover { background: #30363d; }
+  .modal-btn.save { background: #238636; color: #fff; }
+  .modal-btn.save:hover { background: #2ea043; }
+  .modal-error { color: #f85149; font-size: 12px; margin-top: 8px; display: none; }
+  .modal-error.show { display: block; }
+
   /* charts */
   .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
   .chart-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
@@ -94,6 +117,54 @@
   <div class="loading">Loading...</div>
 </div>
 
+<!-- Budget Modal -->
+<div class="modal-overlay" id="budgetModal" onclick="if(event.target===this) closeBudgetModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3>Edit Budget</h3>
+    <div class="form-group">
+      <label>Scope</label>
+      <select id="budgetScope">
+        <option value="global">Global</option>
+        <option value="per_cron_job">Per Cron Job (default)</option>
+        <option value="per_sender">Per Sender</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Window</label>
+      <select id="budgetWindow">
+        <option value="daily">Daily</option>
+        <option value="monthly">Monthly</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Limit (USD)</label>
+      <input type="number" id="budgetLimit" step="0.01" min="0" placeholder="e.g. 5.00">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Soft threshold (%)</label>
+        <input type="number" id="budgetSoftPct" step="0.01" min="0" max="1" placeholder="0.80">
+      </div>
+      <div class="form-group">
+        <label>Hard threshold (%)</label>
+        <input type="number" id="budgetHardPct" step="0.01" min="0" max="1" placeholder="1.00">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>On estimated data</label>
+      <select id="budgetOnEstimated">
+        <option value="warn_only">Warn only (degrade hard to soft)</option>
+        <option value="enforce">Enforce hard limits</option>
+      </select>
+    </div>
+    <div class="modal-error" id="budgetModalError"></div>
+    <div class="modal-actions">
+      <button class="modal-btn cancel" onclick="closeBudgetModal()">Cancel</button>
+      <button class="modal-btn save" onclick="saveBudget()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = '';
 let charts = {};
@@ -127,6 +198,68 @@ function renderStatCard(id, value, label, cls) {
   return `<div class="stat-card ${cls}"><div class="value">${value}</div><div class="label">${label}</div></div>`;
 }
 
+// Budget modal functions
+let currentBudgetScope = 'global';
+
+function openBudgetModal(scope) {
+  currentBudgetScope = scope;
+  $('#budgetScope').value = scope;
+  $('#budgetModalError').classList.remove('show');
+  $('#budgetModalError').textContent = '';
+  // Reset other fields to defaults
+  $('#budgetWindow').value = 'daily';
+  $('#budgetLimit').value = '';
+  $('#budgetSoftPct').value = '';
+  $('#budgetHardPct').value = '';
+  $('#budgetOnEstimated').value = 'warn_only';
+  $('#budgetModal').classList.add('open');
+}
+
+function closeBudgetModal() {
+  $('#budgetModal').classList.remove('open');
+}
+
+async function saveBudget() {
+  const payload = {
+    scope: $('#budgetScope').value,
+    window: $('#budgetWindow').value,
+    limit_usd: parseFloat($('#budgetLimit').value),
+    soft_pct: parseFloat($('#budgetSoftPct').value) || undefined,
+    hard_pct: parseFloat($('#budgetHardPct').value) || undefined,
+    on_estimated_mode: $('#budgetOnEstimated').value
+  };
+
+  if (isNaN(payload.limit_usd)) {
+    showModalError('Limit (USD) is required');
+    return;
+  }
+
+  $('#budgetModalError').classList.remove('show');
+
+  try {
+    const response = await fetch('/api/budget', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const result = await response.json();
+    if (result.error) {
+      showModalError(result.error);
+      return;
+    }
+    closeBudgetModal();
+    loadAll(); // refresh dashboard
+  } catch (err) {
+    showModalError('Request failed: ' + err.message);
+  }
+}
+
+function showModalError(msg) {
+  const el = $('#budgetModalError');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
 function renderBudget(data) {
   if (!data.enabled) return '<div class="budget-bar"><h3>Budgets</h3><div class="budget-disabled">No budget.yaml configured. Create ~/.hermes/telemetry/budget.yaml</div></div>';
   const items = data.budgets || [];
@@ -137,6 +270,7 @@ function renderBudget(data) {
     html += `<div class="budget-item">
       <div class="info"><span>${s.scope}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span></div>
       <div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(s.pct, 100)}%"></div></div>
+      <button class="budget-edit-btn" onclick="openBudgetModal('${s.scope}')">Edit</button>
     </div>`;
   }
   html += `<div class="budget-disabled" style="margin-top:8px">on_estimated: ${data.on_estimated}</div></div>`;

@@ -256,6 +256,78 @@ def api_budget():
     return {"enabled": True, "budgets": scopes, "on_estimated": on_est.get("mode", "warn_only")}
 
 
+def api_budget_update(payload):
+    """Update budget.yaml from POST payload. Returns updated budget status or error."""
+    budget_path = DB_PATH.parent / "budget.yaml"
+    if not budget_path.exists():
+        return {"enabled": False, "error": "budget.yaml not found"}
+
+    try:
+        import yaml
+    except ImportError:
+        return {"enabled": False, "error": "PyYAML not installed"}
+
+    try:
+        cfg = yaml.safe_load(budget_path.read_text()) or {}
+    except Exception as e:
+        return {"enabled": False, "error": f"Failed to parse budget.yaml: {e}"}
+
+    # Expected payload: {"scope": "global", "window": "daily", "limit_usd": 5.0}
+    scope = payload.get("scope", "global")
+    window = payload.get("window", "daily")
+    limit_usd = payload.get("limit_usd")
+
+    if limit_usd is None:
+        return {"enabled": False, "error": "limit_usd is required"}
+
+    try:
+        limit_usd = float(limit_usd)
+    except (ValueError, TypeError):
+        return {"enabled": False, "error": "limit_usd must be a number"}
+
+    if limit_usd < 0:
+        return {"enabled": False, "error": "limit_usd must be >= 0"}
+
+    # Initialize budgets structure if missing
+    if "budgets" not in cfg:
+        cfg["budgets"] = {}
+    if scope not in cfg["budgets"]:
+        cfg["budgets"][scope] = {}
+
+    # Update the limit
+    key = f"{window}_usd"
+    cfg["budgets"][scope][key] = limit_usd
+
+    # Optional: update thresholds
+    if "soft_pct" in payload:
+        try:
+            soft = float(payload["soft_pct"])
+            if 0 <= soft <= 1:
+                cfg.setdefault("thresholds", {})["soft_pct"] = soft
+        except (ValueError, TypeError):
+            pass
+    if "hard_pct" in payload:
+        try:
+            hard = float(payload["hard_pct"])
+            if 0 <= hard <= 1:
+                cfg.setdefault("thresholds", {})["hard_pct"] = hard
+        except (ValueError, TypeError):
+            pass
+    if "on_estimated_mode" in payload:
+        mode = payload["on_estimated_mode"]
+        if mode in ("warn_only", "enforce"):
+            cfg.setdefault("on_estimated", {})["mode"] = mode
+
+    # Write back
+    try:
+        budget_path.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
+    except Exception as e:
+        return {"enabled": False, "error": f"Failed to write budget.yaml: {e}"}
+
+    # Return updated status by calling api_budget()
+    return api_budget()
+
+
 # ---------------------------------------------------------------------------
 # HTTP Handler
 # ---------------------------------------------------------------------------
@@ -301,6 +373,27 @@ class Handler(SimpleHTTPRequestHandler):
         if fpath.is_file():
             super().do_GET()
             return
+
+        self.send_response(404)
+        self.end_headers()
+        self.wfile.write(b"Not Found")
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+
+        if path == "/api/budget":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length).decode("utf-8")
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"Invalid JSON")
+                return
+            result = api_budget_update(payload)
+            return self._json(result)
 
         self.send_response(404)
         self.end_headers()
