@@ -194,3 +194,70 @@ def test_stats_models_json_windowed(argv, expected_hours, capsys):
     with patch("hermes_telemetry.telemetry_cli.db.stats_by_model", return_value=fake) as m:
         main(argv)
     m.assert_called_once_with(expected_hours)
+
+
+from hermes_telemetry.budget import BudgetVerdict  # noqa: E402
+
+
+@pytest.fixture
+def global_verdict():
+    return BudgetVerdict(
+        scope="global",
+        scope_id="",
+        window="daily",
+        status="ok",
+        spent=1.0,
+        limit=5.0,
+        pct=0.20,
+        based_on_estimates=False,
+        degraded=False,
+        period_key="2026-06-11",
+    )
+
+
+def test_budget_status_json_global_ok(global_verdict, capsys):
+    with patch("hermes_telemetry.budget.check", return_value=global_verdict), patch(
+        "hermes_telemetry.telemetry_cli.db.list_cron_job_ids", return_value=[]
+    ), patch("hermes_telemetry.telemetry_cli.db.list_sender_ids", return_value=[]):
+        main(["budget", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert data["global"]["status"] == "ok"
+    assert data["global"]["spent"] == pytest.approx(1.0)
+    assert data["global"]["limit"] == pytest.approx(5.0)
+    assert data["cron_jobs"] == {}
+    assert data["senders"] == {}
+
+
+def test_budget_status_json_no_budgets(capsys):
+    with patch("hermes_telemetry.budget.check", return_value=None), patch(
+        "hermes_telemetry.telemetry_cli.db.list_cron_job_ids", return_value=[]
+    ), patch("hermes_telemetry.telemetry_cli.db.list_sender_ids", return_value=[]):
+        main(["budget", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert data["global"] is None
+
+
+def test_budget_cron_json(capsys):
+    cron_verdict = BudgetVerdict(
+        scope="cron_job",
+        scope_id="backup",
+        window="daily",
+        status="soft",
+        spent=4.2,
+        limit=5.0,
+        pct=0.84,
+        based_on_estimates=False,
+        degraded=False,
+        period_key="2026-06-11",
+    )
+    with patch("hermes_telemetry.budget.check", return_value=cron_verdict), patch(
+        "hermes_telemetry.telemetry_cli.db.list_cron_job_ids", return_value=["backup"]
+    ):
+        main(["budget", "cron", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert len(data) == 1
+    assert data[0]["scope_id"] == "backup"
+    assert data[0]["status"] == "soft"

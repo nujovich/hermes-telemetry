@@ -137,7 +137,41 @@ def _budget_text(subcommand: str) -> None:
 
 
 def _budget_json(subcommand: str) -> None:
-    pass  # implemented in Task 6
+    import dataclasses as _dc
+
+    from . import budget as _budget
+
+    since30 = _budget._days_ago_utc(30)
+
+    if subcommand == "cron":
+        cron_ids = db.list_cron_job_ids(since30)
+        rows = []
+        for jid in cron_ids:
+            v = _budget.check("cron_job", jid)
+            if v is not None:
+                rows.append(_dc.asdict(v))
+        print(json.dumps(rows, default=str))
+        return
+
+    # Full status: global + cron_jobs + senders
+    result: dict = {}
+
+    g = _budget.check("global", "")
+    result["global"] = _dc.asdict(g) if g is not None else None
+
+    cron_ids = db.list_cron_job_ids(since30)
+    result["cron_jobs"] = {}
+    for jid in cron_ids:
+        v = _budget.check("cron_job", jid)
+        result["cron_jobs"][jid] = _dc.asdict(v) if v is not None else None
+
+    sender_ids = db.list_sender_ids(since30)
+    result["senders"] = {}
+    for sid in sender_ids:
+        v = _budget.check("sender", sid)
+        result["senders"][sid] = _dc.asdict(v) if v is not None else None
+
+    print(json.dumps(result, default=str))
 
 
 if __name__ == "__main__":
