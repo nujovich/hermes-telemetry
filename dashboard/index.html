@@ -204,18 +204,40 @@ function renderStatCard(id, value, label, cls) {
 
 // Budget modal functions
 let currentBudgetScope = 'global';
+let currentBudgetWindow = 'daily';
 
-function openBudgetModal(scope) {
+async function openBudgetModal(scope) {
   currentBudgetScope = scope;
   $('#budgetScope').value = scope;
   $('#budgetModalError').classList.remove('show');
   $('#budgetModalError').textContent = '';
-  // Reset other fields to defaults
-  $('#budgetWindow').value = 'daily';
-  $('#budgetLimit').value = '';
-  $('#budgetSoftPct').value = '';
-  $('#budgetHardPct').value = '';
-  $('#budgetOnEstimated').value = 'warn_only';
+
+  // Fetch current budget details for pre-fill
+  try {
+    const res = await fetch(`/api/budget/detail?scope=${encodeURIComponent(scope)}&window=${encodeURIComponent($('#budgetWindow').value)}`);
+    const data = await res.json();
+    if (!data.error) {
+      $('#budgetLimit').value = data.limit_usd !== null && data.limit_usd !== undefined ? data.limit_usd : '';
+      $('#budgetSoftPct').value = data.soft_pct !== undefined ? data.soft_pct : '';
+      $('#budgetHardPct').value = data.hard_pct !== undefined ? data.hard_pct : '';
+      $('#budgetOnEstimated').value = data.on_estimated_mode || 'warn_only';
+    } else {
+      // Fallback to defaults on error
+      $('#budgetWindow').value = 'daily';
+      $('#budgetLimit').value = '';
+      $('#budgetSoftPct').value = '';
+      $('#budgetHardPct').value = '';
+      $('#budgetOnEstimated').value = 'warn_only';
+    }
+  } catch {
+    // Fallback to defaults on network error
+    $('#budgetWindow').value = 'daily';
+    $('#budgetLimit').value = '';
+    $('#budgetSoftPct').value = '';
+    $('#budgetHardPct').value = '';
+    $('#budgetOnEstimated').value = 'warn_only';
+  }
+
   $('#budgetModal').classList.add('open');
 }
 
@@ -224,16 +246,22 @@ function closeBudgetModal() {
 }
 
 async function saveBudget() {
+  // Helper: parse float, return undefined if empty/whitespace
+  const parseOptFloat = (v) => {
+    const s = v.trim();
+    return s === '' ? undefined : parseFloat(s);
+  };
+
   const payload = {
     scope: $('#budgetScope').value,
     window: $('#budgetWindow').value,
-    limit_usd: parseFloat($('#budgetLimit').value),
-    soft_pct: parseFloat($('#budgetSoftPct').value) || undefined,
-    hard_pct: parseFloat($('#budgetHardPct').value) || undefined,
+    limit_usd: parseOptFloat($('#budgetLimit').value),
+    soft_pct: parseOptFloat($('#budgetSoftPct').value),
+    hard_pct: parseOptFloat($('#budgetHardPct').value),
     on_estimated_mode: $('#budgetOnEstimated').value
   };
 
-  if (isNaN(payload.limit_usd)) {
+  if (payload.limit_usd === undefined || isNaN(payload.limit_usd)) {
     showModalError('Limit (USD) is required');
     return;
   }
@@ -271,8 +299,10 @@ function renderBudget(data) {
   let html = '<div class="budget-bar"><h3>Budgets</h3>';
   for (const s of items) {
     const cls = s.level;
+    // Escape scope for safe JS string context in onclick attribute
+    const safeScope = JSON.stringify(s.scope);
     html += `<div class="budget-item">
-      <div class="info"><span>${s.scope}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal('${s.scope}')">Edit</button></div>
+      <div class="info"><span>${s.scope}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal(${safeScope})">Edit</button></div>
       <div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(s.pct, 100)}%"></div></div>
     </div>`;
   }
@@ -287,8 +317,7 @@ function renderTokenBreakdown(data) {
   const types = [
     { key: 'tokens_in', label: 'Input', color: '#58a6ff' },
     { key: 'tokens_out', label: 'Output', color: '#3fb950' },
-    { key: 'cache_read_tokens', label: 'Cache Read', color: '#d29922' },
-    { key: 'cache_write_tokens', label: 'Cache Write', color: '#bc8cff' },
+    { key: 'cache_read_tokens', label: 'Cache', color: '#d29922' },
     { key: 'reasoning_tokens', label: 'Reasoning', color: '#f85149' },
   ];
   for (const t of types) {
@@ -427,23 +456,23 @@ async function loadAll() {
 
     // --- cron table ---
     if (cron.length) {
-      let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>In</th><th>Out</th><th>Cache R</th><th>Cache W</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
+      let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
       for (const row of cron) {
         const jid = (row.cron_job_id || '?').substring(0, 20);
         const last = (row.last_run || '').substring(0, 16);
-        t += `<tr><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${nf(row.cache_write_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${last}</td></tr>`;
+        t += `<tr><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${last}</td></tr>`;
       }
       t += '</tbody></table>';
       html += renderTableCard('cronTable', 'Cron Jobs', t);
     }
 
     // --- runs table ---
-    let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache R</th><th>Cache W</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
+    let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
     for (const row of runs) {
       const time = (row.started_at || '').substring(0, 16);
       const sid = (row.session_id || '').substring(0, 24);
       const model = (row.model || '—').substring(0, 20);
-      t += `<tr><td class="text-muted">${time}</td><td>${platformBadge(row.platform)}</td><td class="text-muted">${model}</td><td>${statusBadge(row.status)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${nf(row.cache_write_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${row.session_id}">${sid}</code></td></tr>`;
+      t += `<tr><td class="text-muted">${time}</td><td>${platformBadge(row.platform)}</td><td class="text-muted">${model}</td><td>${statusBadge(row.status)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${row.session_id}">${sid}</code></td></tr>`;
     }
     t += '</tbody></table>';
     html += renderTableCard('runsTable', 'Recent Sessions', t);
