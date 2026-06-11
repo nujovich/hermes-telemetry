@@ -73,7 +73,7 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser | None =
     else:
         if parser:
             parser.print_help()
-        sys.exit(1)
+        sys.exit(0)
 
 
 def _handle_stats(args: argparse.Namespace) -> None:
