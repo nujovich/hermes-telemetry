@@ -427,23 +427,23 @@ async function loadAll() {
 
     // --- cron table ---
     if (cron.length) {
-      let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>Tokens</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
+      let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>In</th><th>Out</th><th>Cache R</th><th>Cache W</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
       for (const row of cron) {
         const jid = (row.cron_job_id || '?').substring(0, 20);
         const last = (row.last_run || '').substring(0, 16);
-        t += `<tr><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${last}</td></tr>`;
+        t += `<tr><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${nf(row.cache_write_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${last}</td></tr>`;
       }
       t += '</tbody></table>';
       html += renderTableCard('cronTable', 'Cron Jobs', t);
     }
 
     // --- runs table ---
-    let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>Tokens</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
+    let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache R</th><th>Cache W</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
     for (const row of runs) {
       const time = (row.started_at || '').substring(0, 16);
       const sid = (row.session_id || '').substring(0, 24);
       const model = (row.model || '—').substring(0, 20);
-      t += `<tr><td class="text-muted">${time}</td><td>${platformBadge(row.platform)}</td><td class="text-muted">${model}</td><td>${statusBadge(row.status)}</td><td>${nf(row.tokens_in)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${row.session_id}">${sid}</code></td></tr>`;
+      t += `<tr><td class="text-muted">${time}</td><td>${platformBadge(row.platform)}</td><td class="text-muted">${model}</td><td>${statusBadge(row.status)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${nf(row.cache_write_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${row.session_id}">${sid}</code></td></tr>`;
     }
     t += '</tbody></table>';
     html += renderTableCard('runsTable', 'Recent Sessions', t);

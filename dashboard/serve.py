@@ -167,6 +167,8 @@ def api_cron(window_hours=168):
                SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS failed_runs,
                SUM(tokens_in) AS tokens_in,
                SUM(tokens_out) AS tokens_out,
+               SUM(cache_read_tokens) AS cache_read_tokens,
+               SUM(cache_write_tokens) AS cache_write_tokens,
                ROUND(SUM(cost_usd), 6) AS cost_usd,
                AVG(duration_ms) AS avg_duration_ms,
                MAX(started_at) AS last_run
@@ -198,12 +200,13 @@ def api_runs(limit=50):
         """
         SELECT session_id, platform, cron_job_id, model, provider,
                started_at, ended_at, status,
-               tokens_in, tokens_out, cost_usd, duration_ms,
+               tokens_in, tokens_out, cache_read_tokens, cache_write_tokens,
+               cost_usd, duration_ms,
                api_calls, tool_calls, estimated_llm_calls
         FROM runs
         ORDER BY started_at DESC
         LIMIT ?
-    """,
+        """,
         (int(limit),),
     )
 
