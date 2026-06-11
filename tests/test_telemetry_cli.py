@@ -261,3 +261,9 @@ def test_budget_cron_json(capsys):
     assert len(data) == 1
     assert data[0]["scope_id"] == "backup"
     assert data[0]["status"] == "soft"
+
+
+def test_main_no_subcommand_exits():
+    with pytest.raises(SystemExit) as exc_info:
+        main([])
+    assert exc_info.value.code == 0

@@ -470,6 +470,29 @@ def register(ctx) -> None:  # noqa: ANN001
     )
 
     # ------------------------------------------------------------------
+    # hermes telemetry CLI command (out-of-session stats/budget access)
+    # ------------------------------------------------------------------
+    try:
+        from . import telemetry_cli as _tcli
+
+        def _setup_telemetry(subparser):
+            _tcli._build_parser_into(subparser)
+
+        def _handle_telemetry(args):
+            _tcli._dispatch(args)
+
+        ctx.register_cli_command(
+            "telemetry",
+            help="Query telemetry data outside an active Hermes session",
+            setup_fn=_setup_telemetry,
+            handler_fn=_handle_telemetry,
+        )
+    except (AttributeError, TypeError):
+        # register_cli_command not available in this Hermes version — standalone
+        # hermes-telemetry script is still fully functional.
+        pass
+
+    # ------------------------------------------------------------------
     # Auto-setup: if pricing.yaml and/or budget.yaml are missing, run
     # non-interactive setup on first load (unless HERMES_TELEMETRY_NO_SETUP=1)
     # ------------------------------------------------------------------
