@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve the plugin directory, following symlinks so this works from any PATH location.
+PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+# Auto-detect the Python that Hermes uses by reading its wrapper script.
+# The wrapper contains a line like: exec "/path/to/venv/bin/hermes" "$@"
+_detect_hermes_python() {
+    local hermes_bin
+    hermes_bin="$(command -v hermes 2>/dev/null)" || return 1
+    hermes_bin="$(readlink -f "$hermes_bin")"
+    local venv_dir
+    # Wrapper format assumed: exec "/abs/path/bin/hermes" "$@"  (double-quoted)
+    venv_dir="$(grep -m1 'exec "' "$hermes_bin" 2>/dev/null \
+        | sed 's|.*exec "\(.*\)/hermes".*|\1|')"
+    [ -n "$venv_dir" ] && [ -x "$venv_dir/python3" ] && echo "$venv_dir/python3"
+}
+
+PYTHON="${HERMES_PYTHON:-$(_detect_hermes_python || echo python3)}"
+
+exec "$PYTHON" "$PLUGIN_DIR/_cli_entrypoint.py" "$@"
