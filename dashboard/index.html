@@ -81,8 +81,10 @@
   <div class="actions">
     <select id="windowSelect" onchange="loadAll()">
       <option value="24">Last 24h</option>
-      <option value="168" selected>Last 7 days</option>
+      <option value="168">Last 7 days</option>
       <option value="720">Last 30 days</option>
+      <option value="2160">Last 90 days</option>
+      <option value="0" selected>All time</option>
     </select>
     <button class="refresh-btn" onclick="loadAll()">&#x21bb; Refresh</button>
   </div>
@@ -214,7 +216,7 @@ async function loadAll() {
     const [summary, cron, providers, runs, budget] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
-      fetchJSON('/api/providers'),
+      fetchJSON(`/api/providers?hours=${hours}`),
       fetchJSON('/api/runs?limit=30'),
       fetchJSON('/api/budget'),
     ]);
@@ -236,8 +238,17 @@ async function loadAll() {
     html += renderBudget(budget);
 
     // --- charts row 1: daily cost + top tools ---
+    let dailyTitle;
+    switch (hours) {
+      case '24': dailyTitle = 'Daily Cost (last 24h)'; break;
+      case '168': dailyTitle = 'Daily Cost (last 7 days)'; break;
+      case '720': dailyTitle = 'Daily Cost (last 30 days)'; break;
+      case '2160': dailyTitle = 'Daily Cost (last 90 days)'; break;
+      case '0': dailyTitle = 'Daily Cost (all time)'; break;
+      default: dailyTitle = 'Daily Cost';
+    }
     html += '<div class="chart-row">';
-    html += renderChartCard('dailyCost', 'Daily Cost (7 days)', 'chart-daily');
+    html += renderChartCard('dailyCost', dailyTitle, 'chart-daily');
     html += renderChartCard('topTools', 'Top Tools by Calls', 'chart-tools');
     html += '</div>';
 
