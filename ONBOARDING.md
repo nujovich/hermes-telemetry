@@ -305,7 +305,7 @@ Source: `tools/delegate_tool.py:2269-2277`
 parent_session_id: str
 child_role: str
 child_summary: str
-child_status: str    # "ok" | "error" | other
+child_status: str    # "completed" | "failed" | "error" | "interrupted" | "timeout"
 duration_ms: int
 ```
 **NO token or cost data.** We record a synthetic `tool_calls` row with
