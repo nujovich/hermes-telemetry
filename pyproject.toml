@@ -33,9 +33,6 @@ Repository = "https://github.com/nujovich/hermes-telemetry"
 Issues = "https://github.com/nujovich/hermes-telemetry/issues"
 Changelog = "https://github.com/nujovich/hermes-telemetry/blob/main/CHANGELOG.md"
 
-[project.scripts]
-hermes-telemetry = "hermes_telemetry.telemetry_cli:main"
-
 [tool.setuptools.packages.find]
 include = ["hermes_telemetry*"]
 
