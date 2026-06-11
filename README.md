@@ -161,6 +161,7 @@ hermes plugins enable hermes-telemetry
 To use `hermes-telemetry` from the command line outside of sessions (one-time setup):
 
 ```bash
+chmod +x ~/.hermes/plugins/hermes-telemetry/hermes-telemetry
 ln -s ~/.hermes/plugins/hermes-telemetry/hermes-telemetry ~/.local/bin/hermes-telemetry
 ```
 
@@ -176,6 +177,7 @@ hermes plugins enable hermes-telemetry
 To use `hermes-telemetry` from the command line outside of sessions (one-time setup):
 
 ```bash
+chmod +x ~/.hermes/plugins/hermes-telemetry/hermes-telemetry
 ln -s ~/.hermes/plugins/hermes-telemetry/hermes-telemetry ~/.local/bin/hermes-telemetry
 ```
 
