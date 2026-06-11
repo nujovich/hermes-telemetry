@@ -56,6 +56,7 @@ LLM provider
 - [What It Measures](#what-it-measures)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Standalone CLI](#standalone-cli)
 - [Setup Wizard](#setup-wizard)
 - [Dashboard (Web UI)](#dashboard-web-ui-1)
   - [Auto-Refresh](#auto-refresh)
@@ -157,12 +158,28 @@ hermes plugins install nujovich/hermes-telemetry
 hermes plugins enable hermes-telemetry
 ```
 
+To use `hermes-telemetry` from the command line outside of sessions (one-time setup):
+
+```bash
+ln -s ~/.hermes/plugins/hermes-telemetry/hermes-telemetry ~/.local/bin/hermes-telemetry
+```
+
+Future `git pull` updates the CLI automatically — no re-linking needed.
+
 ### Option B: Manual install
 
 ```
 git clone https://github.com/nujovich/hermes-telemetry ~/.hermes/plugins/hermes-telemetry
 hermes plugins enable hermes-telemetry
 ```
+
+To use `hermes-telemetry` from the command line outside of sessions (one-time setup):
+
+```bash
+ln -s ~/.hermes/plugins/hermes-telemetry/hermes-telemetry ~/.local/bin/hermes-telemetry
+```
+
+Future `git pull` updates the CLI automatically — no re-linking needed.
 
 **Important:** restart the Hermes gateway after enabling:
 
@@ -182,6 +199,38 @@ hermes gateway restart
 1. Optionally configure `pricing.yaml` and `budget.yaml` (see below)
 
 That’s it. The plugin captures data automatically — no agent action required.
+
+-----
+
+## Standalone CLI
+
+Query telemetry data outside of an active Hermes session:
+
+```bash
+# Session summary
+hermes-telemetry stats today
+hermes-telemetry stats week
+hermes-telemetry stats month
+
+# Per-cron-job breakdown
+hermes-telemetry stats cron
+hermes-telemetry stats cron-week
+
+# By provider / model
+hermes-telemetry stats providers
+hermes-telemetry stats models
+
+# Budget status
+hermes-telemetry budget
+hermes-telemetry budget cron
+
+# JSON output (for scripting)
+hermes-telemetry stats today --json | jq ‘.cost_usd’
+hermes-telemetry budget --json | jq ‘.global’
+```
+
+All subcommands read from the same SQLite database as the in-session `/stats` and
+`/budget` slash commands. The gateway does not need to be running.
 
 -----
 
