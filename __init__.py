@@ -142,6 +142,11 @@ def register(ctx) -> None:  # noqa: ANN001
     from . import budget, db, pricing, setup, stats
 
     # ------------------------------------------------------------------
+    # Start budget file watcher (hot-reload on budget.yaml changes)
+    # ------------------------------------------------------------------
+    budget.start_budget_watcher()
+
+    # ------------------------------------------------------------------
     # Auto-refresh pricing from remote sources (once per 24h)
     # ------------------------------------------------------------------
     _try_pricing_refresh(tele_log)

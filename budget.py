@@ -38,6 +38,49 @@ from . import db
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# File watcher for budget.yaml (hot-reload on config changes)
+# ---------------------------------------------------------------------------
+_budget_observer = None
+_budget_watcher_started = False
+
+def start_budget_watcher() -> None:
+    """Start a background file watcher on budget.yaml to auto-reload config on changes."""
+    global _budget_observer, _budget_watcher_started
+    if _budget_watcher_started:
+        return
+    try:
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler, FileModifiedEvent
+    except Exception as exc:
+        logger.debug("budget watcher unavailable (watchdog not installed): %s", exc)
+        return
+
+    class BudgetConfigHandler(FileSystemEventHandler):
+        def on_modified(self, event: FileModifiedEvent) -> None:
+            if not event.is_directory and event.src_path.endswith("budget.yaml"):
+                logger.info("budget.yaml modified — hot-reloading budget config")
+                reload_config()
+
+    path = _budget_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _budget_observer = Observer()
+    _budget_observer.schedule(BudgetConfigHandler(), str(path.parent), recursive=False)
+    _budget_observer.daemon = True
+    _budget_observer.start()
+    _budget_watcher_started = True
+    logger.info("Budget file watcher started on %s", path)
+
+def stop_budget_watcher() -> None:
+    """Stop the budget file watcher (for cleanup/tests)."""
+    global _budget_observer, _budget_watcher_started
+    if _budget_observer:
+        _budget_observer.stop()
+        _budget_observer.join(timeout=2)
+        _budget_observer = None
+    _budget_watcher_started = False
+
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 _DEFAULT_THRESHOLDS = {"soft_pct": 0.80, "hard_pct": 1.00}

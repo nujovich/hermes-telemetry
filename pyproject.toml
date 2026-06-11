@@ -26,6 +26,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Monitoring",
 ]
+dependencies = [
+    "watchdog>=3.0",  # budget.yaml file watcher for hot-reload
+]
 
 [project.urls]
 Homepage = "https://github.com/nujovich/hermes-telemetry"

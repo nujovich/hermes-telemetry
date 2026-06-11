@@ -42,7 +42,11 @@
   .bar-fill.hard { background: #f85149; }
   .budget-disabled { color: #8b949e; font-size: 13px; }
 
-  .budget-edit-btn { background: #21262d; color: #58a6ff; border: 1px solid #30363d; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; margin-left: 8px; }
+  .budget-item { display: flex; flex-direction: column; gap: 8px; }
+  .budget-item .info { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .budget-item .info span:first-child { text-align: left; }
+  .budget-item .info span:last-of-type { flex: 0 0 auto; text-align: right; }
+  .budget-edit-btn { background: #21262d; color: #58a6ff; border: 1px solid #30363d; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; margin-left: 12px; white-space: nowrap; }
   .budget-edit-btn:hover { background: #30363d; }
 
   /* Budget modal */
@@ -268,9 +272,8 @@ function renderBudget(data) {
   for (const s of items) {
     const cls = s.level;
     html += `<div class="budget-item">
-      <div class="info"><span>${s.scope}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span></div>
+      <div class="info"><span>${s.scope}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal('${s.scope}')">Edit</button></div>
       <div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(s.pct, 100)}%"></div></div>
-      <button class="budget-edit-btn" onclick="openBudgetModal('${s.scope}')">Edit</button>
     </div>`;
   }
   html += `<div class="budget-disabled" style="margin-top:8px">on_estimated: ${data.on_estimated}</div></div>`;
