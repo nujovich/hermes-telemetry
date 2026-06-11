@@ -476,7 +476,7 @@ def register(ctx) -> None:  # noqa: ANN001
         from . import telemetry_cli as _tcli
 
         def _setup_telemetry(subparser):
-            _tcli._build_parser_into(subparser)
+            _tcli._build_parser_into(subparser.add_subparsers(dest="command", metavar="COMMAND"))
 
         def _handle_telemetry(args):
             _tcli._dispatch(args)
