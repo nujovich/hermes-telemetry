@@ -112,19 +112,27 @@ def api_summary(window_hours=24):
         GROUP BY tool_name ORDER BY calls DESC LIMIT 10
     """)
 
-    # daily cost chart data (last 7 days for 24h/7d windows, last 30 days for 30d, last 90 days for 90d)
+    # daily cost chart data (last 7 days for 24h/7d windows, last 30 days for 30d, last 90 days for 90d, unbounded for all-time)
     daily_window = int(window_hours)
     if daily_window == 0:
-        daily_window = 2160  # 90 days default for all-time
-    daily_cost = _rows(f"""
-        SELECT DATE(started_at) AS day,
-               ROUND(SUM(cost_usd), 4) AS cost,
-               COUNT(*) AS runs
-        FROM runs
-        WHERE started_at >= datetime('now', '-{daily_window // 24} days')
-        GROUP BY DATE(started_at)
-        ORDER BY day
-    """)
+        daily_cost = _rows("""
+            SELECT DATE(started_at) AS day,
+                   ROUND(SUM(cost_usd), 4) AS cost,
+                   COUNT(*) AS runs
+            FROM runs
+            GROUP BY DATE(started_at)
+            ORDER BY day
+        """)
+    else:
+        daily_cost = _rows(f"""
+            SELECT DATE(started_at) AS day,
+                   ROUND(SUM(cost_usd), 4) AS cost,
+                   COUNT(*) AS runs
+            FROM runs
+            WHERE started_at >= datetime('now', '-{daily_window // 24} days')
+            GROUP BY DATE(started_at)
+            ORDER BY day
+        """)
 
     return {
         "window_hours": int(window_hours),
