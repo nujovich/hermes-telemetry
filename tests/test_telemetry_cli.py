@@ -74,3 +74,30 @@ def test_stats_models_text(argv, expected_hours, capsys):
     with patch("hermes_telemetry.stats._models_block", return_value="M") as m:
         main(argv)
     m.assert_called_once_with(expected_hours)
+
+
+def test_budget_status_text(capsys):
+    with patch("hermes_telemetry.budget._status_block", return_value="BUDGET_STATUS"):
+        main(["budget"])
+    out, _ = capsys.readouterr()
+    assert out == "BUDGET_STATUS\n"
+
+
+def test_budget_cron_text(capsys):
+    with patch("hermes_telemetry.budget._cron_block", return_value="BUDGET_CRON"):
+        main(["budget", "cron"])
+    out, _ = capsys.readouterr()
+    assert out == "BUDGET_CRON\n"
+
+
+def test_budget_set_text(capsys):
+    with patch("hermes_telemetry.budget._set_budget", return_value="Budget updated.") as m:
+        main(["budget", "set", "global", "daily", "10.00"])
+    out, _ = capsys.readouterr()
+    assert out == "Budget updated.\n"
+    m.assert_called_once_with("global", "daily", 10.0)
+
+
+def test_budget_set_invalid_amount_exits():
+    with pytest.raises(SystemExit):
+        main(["budget", "set", "global", "daily", "notanumber"])
