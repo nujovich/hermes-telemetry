@@ -280,6 +280,27 @@ function renderBudget(data) {
   return html;
 }
 
+function renderTokenBreakdown(data) {
+  const tb = data;
+  let html = '<div class="table-card"><h3>Token Breakdown</h3>';
+  html += '<table><thead><tr><th>Type</th><th class="text-right">Count</th><th class="text-right">%</th></tr></thead><tbody>';
+  const types = [
+    { key: 'tokens_in', label: 'Input', color: '#58a6ff' },
+    { key: 'tokens_out', label: 'Output', color: '#3fb950' },
+    { key: 'cache_read_tokens', label: 'Cache Read', color: '#d29922' },
+    { key: 'cache_write_tokens', label: 'Cache Write', color: '#bc8cff' },
+    { key: 'reasoning_tokens', label: 'Reasoning', color: '#f85149' },
+  ];
+  for (const t of types) {
+    const val = tb[t.key] || 0;
+    const pct = tb.total_tokens > 0 ? ((val / tb.total_tokens) * 100).toFixed(1) : '0.0';
+    html += `<tr><td><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${t.color};margin-right:8px;vertical-align:middle"></span>${t.label}</td><td class="text-right">${nf(val)}</td><td class="text-right">${pct}%</td></tr>`;
+  }
+  html += `<tr style="border-top:1px solid #30363d"><td><b>Total</b></td><td class="text-right"><b>${nf(tb.total_tokens)}</b></td><td class="text-right"><b>100%</b></td></tr>`;
+  html += '</tbody></table></div>';
+  return html;
+}
+
 function renderChartCard(id, title, canvasId) {
   return `<div class="chart-card"><h3>${title}</h3><canvas id="${canvasId}"></canvas></div>`;
 }
@@ -350,12 +371,13 @@ async function loadAll() {
   app.innerHTML = '<div class="loading">Loading...</div>';
 
   try {
-    const [summary, cron, providers, runs, budget] = await Promise.all([
+    const [summary, cron, providers, runs, budget, tokenBreakdown] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
       fetchJSON(`/api/providers?hours=${hours}`),
       fetchJSON('/api/runs?limit=30'),
       fetchJSON('/api/budget'),
+      fetchJSON(`/api/token-breakdown?hours=${hours}`),
     ]);
 
     const r = summary.runs || {};
@@ -370,6 +392,11 @@ async function loadAll() {
     html += renderStatCard('tokens', nf(r.tokens_in), 'Tokens In', '');
     html += renderStatCard('cost', fmtCost(r.cost_usd), 'Cost', 'yellow');
     html += '</div>';
+
+    // --- token breakdown ---
+    if (tokenBreakdown && tokenBreakdown.total_tokens > 0) {
+      html += renderTokenBreakdown(tokenBreakdown);
+    }
 
     // --- budget ---
     html += renderBudget(budget);

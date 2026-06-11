@@ -143,6 +143,21 @@ def api_summary(window_hours=24):
     }
 
 
+def api_token_breakdown(window_hours=24):
+    """Get detailed token breakdown: input, output, cache_read, cache_write, reasoning."""
+    since_clause_ts = _since_clause(window_hours, "ts")
+    return _one(f"""
+        SELECT
+            SUM(tokens_in) AS tokens_in,
+            SUM(tokens_out) AS tokens_out,
+            SUM(cache_read_tokens) AS cache_read_tokens,
+            SUM(cache_write_tokens) AS cache_write_tokens,
+            SUM(reasoning_tokens) AS reasoning_tokens,
+            COALESCE(SUM(tokens_in) + SUM(tokens_out) + SUM(cache_read_tokens) + SUM(cache_write_tokens) + SUM(reasoning_tokens), 0) AS total_tokens
+        FROM llm_calls WHERE {since_clause_ts}
+    """)
+
+
 def api_cron(window_hours=168):
     since_clause = _since_clause(window_hours)
     return _rows(f"""
@@ -358,6 +373,10 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/budget":
             return self._json(api_budget())
+
+        if path == "/api/token-breakdown":
+            qs = parse_qs(parsed.query)
+            return self._json(api_token_breakdown(int(qs.get("hours", [24])[0])))
 
         # Static: serve index.html for /
         if path == "/" or path == "/index.html":
