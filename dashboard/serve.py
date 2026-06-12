@@ -219,6 +219,187 @@ def api_runs(limit=50):
     )
 
 
+def api_model_tokens(window_hours=24, limit=100):
+    since_clause_ts = _since_clause(window_hours, "ts")
+    return _rows(
+        f"""
+        SELECT
+            COALESCE(model, '—') AS model,
+            COUNT(*) AS api_calls,
+            COALESCE(SUM(tokens_in), 0) AS tokens_in,
+            COALESCE(SUM(tokens_out), 0) AS tokens_out,
+            COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+            COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+            COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+            ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+            COALESCE(SUM(tokens_in), 0)
+                + COALESCE(SUM(tokens_out), 0)
+                + COALESCE(SUM(cache_read_tokens), 0)
+                + COALESCE(SUM(cache_write_tokens), 0)
+                + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
+        FROM llm_calls
+        WHERE {since_clause_ts}
+        GROUP BY COALESCE(model, '—')
+        ORDER BY total_tokens DESC, api_calls DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+
+
+def api_daily_tokens(window_hours=24, page=1, per_page=15):
+    since_clause_ts = _since_clause(window_hours, "ts")
+    page = max(1, int(page))
+    per_page = max(1, min(15, int(per_page)))
+
+    total_days_row = _one(
+        f"""
+        SELECT COUNT(*) AS total_days
+        FROM (
+            SELECT DATE(ts) AS day
+            FROM llm_calls
+            WHERE {since_clause_ts}
+            GROUP BY DATE(ts)
+        ) d
+        """
+    )
+    total_days = int(total_days_row.get("total_days") or 0)
+    total_pages = max(1, (total_days + per_page - 1) // per_page) if total_days else 1
+    page = min(page, total_pages)
+    offset = (page - 1) * per_page
+
+    rows = _rows(
+        f"""
+        SELECT
+            DATE(ts) AS day,
+            COUNT(*) AS api_calls,
+            COALESCE(SUM(tokens_in), 0) AS tokens_in,
+            COALESCE(SUM(tokens_out), 0) AS tokens_out,
+            COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+            COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+            COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+            ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+            COALESCE(SUM(tokens_in), 0)
+                + COALESCE(SUM(tokens_out), 0)
+                + COALESCE(SUM(cache_read_tokens), 0)
+                + COALESCE(SUM(cache_write_tokens), 0)
+                + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
+        FROM llm_calls
+        WHERE {since_clause_ts}
+        GROUP BY DATE(ts)
+        ORDER BY day DESC
+        LIMIT ? OFFSET ?
+        """,
+        (per_page, offset),
+    )
+
+    return {
+        "page": page,
+        "per_page": per_page,
+        "total_days": total_days,
+        "total_pages": total_pages,
+        "rows": rows,
+    }
+
+
+def api_daily_token_chart(window_hours=24, limit_days=90):
+    since_clause_ts = _since_clause(window_hours, "ts")
+    limit_days = max(1, min(180, int(limit_days)))
+    rows = _rows(
+        f"""
+        SELECT *
+        FROM (
+            SELECT
+                DATE(ts) AS day,
+                COALESCE(SUM(tokens_in), 0) AS tokens_in,
+                COALESCE(SUM(tokens_out), 0) AS tokens_out,
+                COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                COALESCE(SUM(tokens_in), 0)
+                    + COALESCE(SUM(tokens_out), 0)
+                    + COALESCE(SUM(cache_read_tokens), 0)
+                    + COALESCE(SUM(cache_write_tokens), 0)
+                    + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
+            FROM llm_calls
+            WHERE {since_clause_ts}
+            GROUP BY DATE(ts)
+            ORDER BY day DESC
+            LIMIT ?
+        ) d
+        ORDER BY day ASC
+        """,
+        (limit_days,),
+    )
+    return rows
+
+
+def api_daily_model_chart(window_hours=24, limit_days=90, top_n=5):
+    since_clause_ts = _since_clause(window_hours, "ts")
+    limit_days = max(1, min(180, int(limit_days)))
+    top_n = max(1, min(8, int(top_n)))
+
+    top_models = _rows(
+        f"""
+        SELECT COALESCE(model, '—') AS model,
+               COALESCE(SUM(tokens_in), 0)
+                   + COALESCE(SUM(tokens_out), 0)
+                   + COALESCE(SUM(cache_read_tokens), 0)
+                   + COALESCE(SUM(cache_write_tokens), 0)
+                   + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
+        FROM llm_calls
+        WHERE {since_clause_ts}
+        GROUP BY COALESCE(model, '—')
+        ORDER BY total_tokens DESC
+        LIMIT ?
+        """,
+        (top_n,),
+    )
+    model_names = [r["model"] for r in top_models]
+
+    daily_rows = _rows(
+        f"""
+        SELECT *
+        FROM (
+            SELECT
+                DATE(ts) AS day,
+                COALESCE(model, '—') AS model,
+                COALESCE(SUM(tokens_in), 0)
+                    + COALESCE(SUM(tokens_out), 0)
+                    + COALESCE(SUM(cache_read_tokens), 0)
+                    + COALESCE(SUM(cache_write_tokens), 0)
+                    + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
+            FROM llm_calls
+            WHERE {since_clause_ts}
+            GROUP BY DATE(ts), COALESCE(model, '—')
+            ORDER BY day DESC
+            LIMIT 100000
+        ) d
+        ORDER BY day ASC
+        """
+    )
+
+    day_order = []
+    day_map = {}
+    for row in daily_rows:
+        day = row["day"]
+        if day not in day_map:
+            day_order.append(day)
+            day_map[day] = {"day": day, "models": {m: 0 for m in model_names}, "other": 0}
+        if row["model"] in day_map[day]["models"]:
+            day_map[day]["models"][row["model"]] += row["total_tokens"] or 0
+        else:
+            day_map[day]["other"] += row["total_tokens"] or 0
+
+    if len(day_order) > limit_days:
+        day_order = day_order[-limit_days:]
+
+    return {
+        "models": model_names,
+        "rows": [day_map[d] for d in day_order],
+    }
+
+
 def api_budget():
     budget_path = DB_PATH.parent / "budget.yaml"
     if not budget_path.exists():
@@ -362,15 +543,14 @@ def api_budget_update(payload):
             return {"enabled": False, "error": "on_estimated_mode must be 'warn_only' or 'enforce'"}
         cfg.setdefault("on_estimated", {})["mode"] = mode
 
-    # Write back (atomic: temp file + os.replace)
+    # Write back atomically via Path.replace()
     try:
-        # Inline atomic write to avoid importing os at module level
-        import os
         import yaml
+
         tmp = budget_path.with_suffix(".yaml.tmp")
         with open(tmp, "w") as f:
             yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
-        os.replace(tmp, budget_path)
+        tmp.replace(budget_path)
     except Exception as e:
         return {"enabled": False, "error": f"Failed to write budget.yaml: {e}"}
 
@@ -437,6 +617,44 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/runs":
             qs = parse_qs(parsed.query)
             return self._json(api_runs(qs.get("limit", [50])[0]))
+
+        if path == "/api/model-tokens":
+            qs = parse_qs(parsed.query)
+            return self._json(
+                api_model_tokens(
+                    int(qs.get("hours", [24])[0]),
+                    int(qs.get("limit", [100])[0]),
+                )
+            )
+
+        if path == "/api/daily-tokens":
+            qs = parse_qs(parsed.query)
+            return self._json(
+                api_daily_tokens(
+                    int(qs.get("hours", [24])[0]),
+                    int(qs.get("page", [1])[0]),
+                    int(qs.get("per_page", [15])[0]),
+                )
+            )
+
+        if path == "/api/daily-token-chart":
+            qs = parse_qs(parsed.query)
+            return self._json(
+                api_daily_token_chart(
+                    int(qs.get("hours", [24])[0]),
+                    int(qs.get("limit_days", [90])[0]),
+                )
+            )
+
+        if path == "/api/daily-model-chart":
+            qs = parse_qs(parsed.query)
+            return self._json(
+                api_daily_model_chart(
+                    int(qs.get("hours", [24])[0]),
+                    int(qs.get("limit_days", [90])[0]),
+                    int(qs.get("top_n", [5])[0]),
+                )
+            )
 
         if path == "/api/budget":
             return self._json(api_budget())

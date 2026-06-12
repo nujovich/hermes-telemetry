@@ -8,9 +8,15 @@
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #c9d1d9; min-height: 100vh; }
-  .header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .header-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
   .header h1 { font-size: 18px; font-weight: 600; color: #e6edf3; }
   .header h1 span { color: #58a6ff; }
+  .page-tabs { display: flex; gap: 10px; align-items: center; }
+  .page-tab { background: #21262d; color: #c9d1d9; border: 1px solid #3d444d; border-radius: 999px; padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 700; letter-spacing: 0.2px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.03); }
+  .page-tab:hover { background: #30363d; border-color: #58a6ff; }
+  .page-tab.active { color: #ffffff; border-color: #58a6ff; background: linear-gradient(180deg, #1f6feb 0%, #1a4f9c 100%); box-shadow: 0 0 0 1px rgba(88,166,255,0.25), 0 6px 16px rgba(31,111,235,0.18); }
+  .page-title { font-size: 18px; font-weight: 600; color: #e6edf3; margin-bottom: 18px; }
   .header .actions { display: flex; gap: 8px; align-items: center; }
   .header select { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
   .header select:focus { outline: none; border-color: #58a6ff; }
@@ -99,12 +105,29 @@
 
   .loading { text-align: center; padding: 60px; color: #8b949e; }
   .error-box { background: #da363333; border: 1px solid #f85149; color: #f85149; padding: 16px; border-radius: 8px; margin: 24px 0; }
+  .table-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; color: #8b949e; font-size: 12px; }
+  .pager { display: flex; align-items: center; gap: 8px; }
+  .pager-btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  .pager-btn:hover { background: #30363d; }
+  .pager-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .full-width-chart { margin-bottom: 24px; }
+  .full-width-chart canvas { max-height: 420px; min-height: 420px; }
+  .svg-chart-host { height: 420px; width: 100%; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; color: #8b949e; font-size: 12px; }
+  .chart-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .chart-legend-swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>hermes-<span>telemetry</span></h1>
+  <div class="header-left">
+    <h1>hermes-<span>telemetry</span></h1>
+    <div class="page-tabs">
+      <button id="tab-home" class="page-tab active" onclick="switchPage('home')">Home</button>
+      <button id="tab-breakdown" class="page-tab" onclick="switchPage('breakdown')">Breakdown</button>
+    </div>
+  </div>
   <div class="actions">
     <select id="windowSelect" onchange="loadAll()">
       <option value="24">Last 24h</option>
@@ -172,6 +195,9 @@
 <script>
 const API = '';
 let charts = {};
+let currentDailyTokensPage = 1;
+let lastWindowHours = null;
+let currentPage = 'home';
 
 function $(sel) { return document.querySelector(sel); }
 function escHtml(s) {
@@ -346,8 +372,54 @@ function renderChartCard(id, title, canvasId) {
   return `<div class="chart-card"><h3>${title}</h3><canvas id="${canvasId}"></canvas></div>`;
 }
 
+function renderWideChartCard(title, canvasId) {
+  return `<div class="chart-card full-width-chart"><h3>${title}</h3><canvas id="${canvasId}"></canvas></div>`;
+}
+
+function renderWideSvgCard(title, hostId) {
+  return `<div class="chart-card full-width-chart"><h3>${title}</h3><div id="${hostId}" class="svg-chart-host"></div></div>`;
+}
+
 function renderTableCard(id, title, tableHtml) {
   return `<div class="table-card"><h3>${title}</h3>${tableHtml}</div>`;
+}
+
+function renderModelTokensTable(rows) {
+  if (!rows || !rows.length) return renderTableCard('modelTokensTable', 'Model Token Usage', '<div class="text-muted">No model token data for this range.</div>');
+  let t = '<table><thead><tr><th>Model</th><th>Calls</th><th>In</th><th>Out</th><th>Cache Read</th><th>Cache Write</th><th>Reasoning</th><th>Total</th><th>Cost</th></tr></thead><tbody>';
+  for (const row of rows) {
+    const model = escHtml((row.model || '—').substring(0, 48));
+    t += `<tr><td class="text-muted" title="${model}">${model}</td><td>${nf(row.api_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.cache_write_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
+  }
+  t += '</tbody></table>';
+  return renderTableCard('modelTokensTable', 'Model Token Usage', t);
+}
+
+function renderDailyTokensTable(data) {
+  const rows = data?.rows || [];
+  let t = '<table><thead><tr><th>Day</th><th>Calls</th><th>In</th><th>Out</th><th>Cache Read</th><th>Cache Write</th><th>Reasoning</th><th>Total</th><th>Cost</th></tr></thead><tbody>';
+  if (!rows.length) {
+    t += '<tr><td colspan="9" class="text-muted">No daily token data for this range.</td></tr>';
+  } else {
+    for (const row of rows) {
+      t += `<tr><td class="text-muted">${escHtml(row.day || '—')}</td><td>${nf(row.api_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.cache_write_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
+    }
+  }
+  t += '</tbody></table>';
+  t += `<div class="table-actions"><div>Showing ${rows.length ? ((data.page - 1) * data.per_page + 1) : 0}-${Math.min(data.page * data.per_page, data.total_days)} of ${nf(data.total_days)} day(s)</div><div class="pager"><button class="pager-btn" onclick="changeDailyTokensPage(-1)" ${data.page <= 1 ? 'disabled' : ''}>Prev</button><span>Page ${nf(data.page)} / ${nf(data.total_pages)}</span><button class="pager-btn" onclick="changeDailyTokensPage(1)" ${data.page >= data.total_pages ? 'disabled' : ''}>Next</button></div></div>`;
+  return renderTableCard('dailyTokensTable', 'Daily Token Usage', t);
+}
+
+function changeDailyTokensPage(delta) {
+  currentDailyTokensPage = Math.max(1, currentDailyTokensPage + delta);
+  loadAll();
+}
+
+function switchPage(page) {
+  currentPage = page;
+  $('#tab-home')?.classList.toggle('active', page === 'home');
+  $('#tab-breakdown')?.classList.toggle('active', page === 'breakdown');
+  loadAll();
 }
 
 function drawLineChart(canvasId, labels, datasets, yLabel) {
@@ -389,6 +461,24 @@ function drawBarChart(canvasId, labels, data, color, yLabel) {
   });
 }
 
+function drawStackedBarChart(canvasId, labels, datasets, yLabel) {
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  charts[canvasId] = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8b949e', font: { size: 11 } } } },
+      scales: {
+        x: { stacked: true, ticks: { color: '#8b949e', font: { size: 11 } }, grid: { display: false } },
+        y: { stacked: true, ticks: { color: '#8b949e', font: { size: 11 } }, grid: { color: '#21262d' }, title: { display: !!yLabel, text: yLabel, color: '#8b949e' } },
+      },
+    },
+  });
+}
+
 function drawDoughnutChart(canvasId, labels, data, colors) {
   destroyChart(canvasId);
   const ctx = document.getElementById(canvasId).getContext('2d');
@@ -406,112 +496,213 @@ function drawDoughnutChart(canvasId, labels, data, colors) {
   });
 }
 
+function renderDailyCombinedSvg(hostId, dailyTokenChart, dailyModelChart) {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  const rows = dailyTokenChart || [];
+  const modelRowsByDay = Object.fromEntries((dailyModelChart?.rows || []).map(r => [r.day, r]));
+  const modelNames = dailyModelChart?.models || [];
+  const modelColors = ['#bc8cff', '#8b949e', '#58a6ff', '#3fb950', '#d29922', '#f85149'];
+  const tokenSeries = [
+    { label: 'Input', color: '#58a6ff', key: 'tokens_in' },
+    { label: 'Output', color: '#3fb950', key: 'tokens_out' },
+    { label: 'Cache Read', color: '#d29922', key: 'cache_read_tokens' },
+    { label: 'Reasoning', color: '#f85149', key: 'reasoning_tokens' },
+  ];
+  const legendItems = [
+    ...tokenSeries.map(s => ({ label: s.label, color: s.color })),
+    ...modelNames.map((m, i) => ({ label: `Model: ${(m || '—').replace(/^openrouter\//, '').substring(0, 18)}`, color: modelColors[i % modelColors.length] })),
+  ];
+  if ((dailyModelChart?.rows || []).some(r => (r.other || 0) > 0)) legendItems.push({ label: 'Model: Other', color: '#8b949e' });
+
+  if (!rows.length) {
+    host.innerHTML = '<div class="text-muted">No chart data.</div>';
+    return;
+  }
+
+  const width = Math.max(900, host.clientWidth || 900);
+  const height = 420;
+  const pad = { top: 18, right: 24, bottom: 50, left: 70 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const maxY = Math.max(...rows.map(r => Math.max(
+    (r.tokens_in || 0) + (r.tokens_out || 0) + (r.cache_read_tokens || 0) + (r.reasoning_tokens || 0),
+    Object.values(modelRowsByDay[r.day]?.models || {}).reduce((a, b) => a + b, 0) + (modelRowsByDay[r.day]?.other || 0)
+  )), 1);
+  const ticks = 6;
+  const groupW = plotW / rows.length;
+  const barW = Math.max(10, Math.min(56, groupW * 0.22));
+  const leftX = i => pad.left + groupW * i + (groupW / 2) - barW;
+  const rightX = i => pad.left + groupW * i + (groupW / 2);
+  const y = v => pad.top + plotH - (v / maxY) * plotH;
+
+  let svg = `<div class="chart-legend">${legendItems.map(item => `<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:${item.color}"></span>${escHtml(item.label)}</span>`).join('')}</div>`;
+  svg += `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">`;
+
+  for (let i = 0; i <= ticks; i++) {
+    const val = maxY * (i / ticks);
+    const yy = pad.top + plotH - (plotH * i / ticks);
+    svg += `<line x1="${pad.left}" y1="${yy}" x2="${width - pad.right}" y2="${yy}" stroke="#21262d" stroke-width="1" />`;
+    svg += `<text x="${pad.left - 10}" y="${yy + 4}" text-anchor="end" fill="#8b949e" font-size="11">${nf(Math.round(val))}</text>`;
+  }
+
+  rows.forEach((row, i) => {
+    let acc = 0;
+    for (const s of tokenSeries) {
+      const v = row[s.key] || 0;
+      if (!v) continue;
+      const h = (v / maxY) * plotH;
+      const yy = y(acc + v);
+      svg += `<rect x="${leftX(i)}" y="${yy}" width="${barW}" height="${h}" fill="${s.color}"><title>${row.day} · ${s.label}: ${nf(v)}</title></rect>`;
+      acc += v;
+    }
+
+    acc = 0;
+    modelNames.forEach((model, idx) => {
+      const v = modelRowsByDay[row.day]?.models?.[model] || 0;
+      if (!v) return;
+      const h = (v / maxY) * plotH;
+      const yy = y(acc + v);
+      svg += `<rect x="${rightX(i)}" y="${yy}" width="${barW}" height="${h}" fill="${modelColors[idx % modelColors.length]}"><title>${row.day} · Model: ${escHtml(model)}: ${nf(v)}</title></rect>`;
+      acc += v;
+    });
+    const other = modelRowsByDay[row.day]?.other || 0;
+    if (other) {
+      const h = (other / maxY) * plotH;
+      const yy = y(acc + other);
+      svg += `<rect x="${rightX(i)}" y="${yy}" width="${barW}" height="${h}" fill="#8b949e"><title>${row.day} · Model: Other: ${nf(other)}</title></rect>`;
+    }
+
+    svg += `<text x="${pad.left + groupW * i + groupW/2}" y="${height - 16}" text-anchor="middle" fill="#8b949e" font-size="11">${row.day}</text>`;
+  });
+
+  svg += `<text x="20" y="${pad.top + plotH / 2}" fill="#8b949e" font-size="12" transform="rotate(-90 20 ${pad.top + plotH / 2})">Tokens</text>`;
+  svg += `</svg>`;
+  host.innerHTML = svg;
+}
+
 async function loadAll() {
   const hours = $('#windowSelect').value;
   const app = $('#app');
+  if (lastWindowHours !== hours) {
+    currentDailyTokensPage = 1;
+    lastWindowHours = hours;
+  }
   app.innerHTML = '<div class="loading">Loading...</div>';
 
   try {
-    const [summary, cron, providers, runs, budget, tokenBreakdown] = await Promise.all([
+    const chartHours = hours === '0' ? 2160 : Number(hours);
+    const [summary, cron, providers, runs, budget, tokenBreakdown, modelTokens, dailyTokens, dailyTokenChart, dailyModelChart] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
       fetchJSON(`/api/providers?hours=${hours}`),
       fetchJSON('/api/runs?limit=30'),
       fetchJSON('/api/budget'),
       fetchJSON(`/api/token-breakdown?hours=${hours}`),
+      fetchJSON(`/api/model-tokens?hours=${hours}&limit=100`),
+      fetchJSON(`/api/daily-tokens?hours=${hours}&page=${currentDailyTokensPage}&per_page=15`),
+      fetchJSON(`/api/daily-token-chart?hours=${chartHours}&limit_days=90`),
+      fetchJSON(`/api/daily-model-chart?hours=${chartHours}&limit_days=90&top_n=5`),
     ]);
 
     const r = summary.runs || {};
     const l = summary.llm || {};
+    currentDailyTokensPage = dailyTokens?.page || 1;
 
-    // --- stat cards ---
-    let html = '<div class="stat-grid">';
-    html += renderStatCard('sessions', nf(r.total_runs), 'Sessions', 'blue');
-    html += renderStatCard('ok', nf(r.ok_runs), 'OK', 'green');
-    html += renderStatCard('failed', nf(r.failed_runs), 'Failed', 'red');
-    html += renderStatCard('api', nf(l.api_calls), 'API Calls', 'purple');
-    html += renderStatCard('tokens', nf(r.tokens_in), 'Tokens In', '');
-    html += renderStatCard('cost', fmtCost(r.cost_usd), 'Cost', 'yellow');
-    html += '</div>';
+    let html = `<div class="page-title">${currentPage === 'home' ? 'Home' : 'Breakdown'}</div>`;
 
-    // --- token breakdown ---
-    if (tokenBreakdown && tokenBreakdown.total_tokens > 0) {
-      html += renderTokenBreakdown(tokenBreakdown);
-    }
+    if (currentPage === 'home') {
+      // --- stat cards ---
+      html += '<div class="stat-grid">';
+      html += renderStatCard('sessions', nf(r.total_runs), 'Sessions', 'blue');
+      html += renderStatCard('ok', nf(r.ok_runs), 'OK', 'green');
+      html += renderStatCard('failed', nf(r.failed_runs), 'Failed', 'red');
+      html += renderStatCard('api', nf(l.api_calls), 'API Calls', 'purple');
+      html += renderStatCard('tokens', nf(r.tokens_in), 'Tokens In', '');
+      html += renderStatCard('cost', fmtCost(r.cost_usd), 'Cost', 'yellow');
+      html += '</div>';
 
-    // --- budget ---
-    html += renderBudget(budget);
+      // --- budget ---
+      html += renderBudget(budget);
 
-    // --- charts row 1: daily cost + top tools ---
-    let dailyTitle;
-    switch (hours) {
-      case '24': dailyTitle = 'Daily Cost (last 24h)'; break;
-      case '168': dailyTitle = 'Daily Cost (last 7 days)'; break;
-      case '720': dailyTitle = 'Daily Cost (last 30 days)'; break;
-      case '2160': dailyTitle = 'Daily Cost (last 90 days)'; break;
-      case '0': dailyTitle = 'Daily Cost (all time)'; break;
-      default: dailyTitle = 'Daily Cost';
-    }
-    html += '<div class="chart-row">';
-    html += renderChartCard('dailyCost', dailyTitle, 'chart-daily');
-    html += renderChartCard('topTools', 'Top Tools by Calls', 'chart-tools');
-    html += '</div>';
+      // --- charts row 1: daily cost + top tools ---
+      let dailyTitle;
+      switch (hours) {
+        case '24': dailyTitle = 'Daily Cost (last 24h)'; break;
+        case '168': dailyTitle = 'Daily Cost (last 7 days)'; break;
+        case '720': dailyTitle = 'Daily Cost (last 30 days)'; break;
+        case '2160': dailyTitle = 'Daily Cost (last 90 days)'; break;
+        case '0': dailyTitle = 'Daily Cost (all time)'; break;
+        default: dailyTitle = 'Daily Cost';
+      }
+      html += '<div class="chart-row">';
+      html += renderChartCard('dailyCost', dailyTitle, 'chart-daily');
+      html += renderChartCard('topTools', 'Top Tools by Calls', 'chart-tools');
+      html += '</div>';
 
-    // --- charts row 2: cron cost + providers ---
-    html += '<div class="chart-row">';
-    html += renderChartCard('cronCost', 'Cost by Cron Job', 'chart-cron');
-    html += renderChartCard('providers', 'Provider Distribution', 'chart-providers');
-    html += '</div>';
-    html += '<div style="font-size:11px;color:#8b949e;margin-top:-16px;margin-bottom:24px;padding:0 4px">';
-    html += '<b>Provider key:</b> <code>openrouter</code> = model with <code>openrouter/</code> prefix · <code>nous</code> = model without prefix (direct to Nous Research) · <code>anthropic</code> = direct to Anthropic';
-    html += '</div>';
+      // --- charts row 2: cron cost + providers ---
+      html += '<div class="chart-row">';
+      html += renderChartCard('cronCost', 'Cost by Cron Job', 'chart-cron');
+      html += renderChartCard('providers', 'Provider Distribution', 'chart-providers');
+      html += '</div>';
+      html += '<div style="font-size:11px;color:#8b949e;margin-top:-16px;margin-bottom:24px;padding:0 4px">';
+      html += '<b>Provider key:</b> <code>openrouter</code> = model with <code>openrouter/</code> prefix · <code>nous</code> = model without prefix (direct to Nous Research) · <code>anthropic</code> = direct to Anthropic';
+      html += '</div>';
 
-    // --- cron table ---
-    if (cron.length) {
-      let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
-      for (const row of cron) {
-        const jid = (row.cron_job_id || '?').substring(0, 20);
-        const last = (row.last_run || '').substring(0, 16);
-        t += `<tr><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${last}</td></tr>`;
+      // --- cron table ---
+      if (cron.length) {
+        let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
+        for (const row of cron) {
+          const jid = (row.cron_job_id || '?').substring(0, 20);
+          const last = (row.last_run || '').substring(0, 16);
+          t += `<tr><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${last}</td></tr>`;
+        }
+        t += '</tbody></table>';
+        html += renderTableCard('cronTable', 'Cron Jobs', t);
+      }
+
+      // --- runs table ---
+      let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
+      for (const row of runs) {
+        const time = (row.started_at || '').substring(0, 16);
+        const sid = (row.session_id || '').substring(0, 24);
+        const model = (row.model || '—').substring(0, 20);
+        t += `<tr><td class="text-muted">${time}</td><td>${platformBadge(row.platform)}</td><td class="text-muted">${model}</td><td>${statusBadge(row.status)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${row.session_id}">${sid}</code></td></tr>`;
       }
       t += '</tbody></table>';
-      html += renderTableCard('cronTable', 'Cron Jobs', t);
+      html += renderTableCard('runsTable', 'Recent Sessions', t);
+    } else {
+      if (tokenBreakdown && tokenBreakdown.total_tokens > 0) {
+        html += renderTokenBreakdown(tokenBreakdown);
+      }
+      html += renderModelTokensTable(modelTokens);
+      html += renderDailyTokensTable(dailyTokens);
+      html += renderWideSvgCard(hours === '0' ? 'Daily Token + Model Breakdown (last 90 days)' : 'Daily Token + Model Breakdown', 'daily-combined-svg');
     }
-
-    // --- runs table ---
-    let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
-    for (const row of runs) {
-      const time = (row.started_at || '').substring(0, 16);
-      const sid = (row.session_id || '').substring(0, 24);
-      const model = (row.model || '—').substring(0, 20);
-      t += `<tr><td class="text-muted">${time}</td><td>${platformBadge(row.platform)}</td><td class="text-muted">${model}</td><td>${statusBadge(row.status)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${row.session_id}">${sid}</code></td></tr>`;
-    }
-    t += '</tbody></table>';
-    html += renderTableCard('runsTable', 'Recent Sessions', t);
 
     app.innerHTML = html;
 
     // --- render charts (after DOM is ready) ---
-    // daily cost
-    const dc = summary.daily_cost || [];
-    drawLineChart('chart-daily', dc.map(d => d.day), [{
-      label: 'Cost ($)', data: dc.map(d => d.cost),
-      borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.15)', fill: true, tension: 0.3, pointRadius: 4,
-    }], 'USD');
+    if (currentPage === 'home') {
+      const dc = summary.daily_cost || [];
+      drawLineChart('chart-daily', dc.map(d => d.day), [{
+        label: 'Cost ($)', data: dc.map(d => d.cost),
+        borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.15)', fill: true, tension: 0.3, pointRadius: 4,
+      }], 'USD');
 
-    // top tools
-    const tools = (summary.top_tools || []).slice(0, 8);
-    drawBarChart('chart-tools', tools.map(t => t.tool_name.split('_').pop().substring(0, 12)), tools.map(t => t.calls), '#3fb950', 'Calls');
+      const tools = (summary.top_tools || []).slice(0, 8);
+      drawBarChart('chart-tools', tools.map(t => t.tool_name.split('_').pop().substring(0, 12)), tools.map(t => t.calls), '#3fb950', 'Calls');
 
-    // cron cost (might be empty)
-    if (cron.length) {
-      drawBarChart('chart-cron', cron.map(c => (c.cron_job_id || '?').substring(0, 16)), cron.map(c => c.cost_usd), '#bc8cff', 'Cost ($)');
-    }
+      if (cron.length) {
+        drawBarChart('chart-cron', cron.map(c => (c.cron_job_id || '?').substring(0, 16)), cron.map(c => c.cost_usd), '#bc8cff', 'Cost ($)');
+      }
 
-    // providers
-    if (providers.length) {
-      const colors = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#8b949e'];
-      drawDoughnutChart('chart-providers', providers.map(p => p.provider || '(unknown)'), providers.map(p => p.total_calls), colors);
+      if (providers.length) {
+        const colors = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#8b949e'];
+        drawDoughnutChart('chart-providers', providers.map(p => p.provider || '(unknown)'), providers.map(p => p.total_calls), colors);
+      }
+    } else {
+      renderDailyCombinedSvg('daily-combined-svg', dailyTokenChart, dailyModelChart);
     }
 
   } catch (err) {
