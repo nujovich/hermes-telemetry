@@ -144,22 +144,26 @@ def api_summary(window_hours=24):
 
 
 def api_token_breakdown(window_hours=24):
-    """Get detailed token breakdown: input, output, cache_read, cache_write, reasoning."""
-    since_clause_ts = _since_clause(window_hours, "ts")
-    # COALESCE each SUM individually: SUM() returns NULL when all rows are NULL,
-    # which happens for reasoning_tokens on models that don't emit it.
-    return _one(f"""
-        SELECT
-            COALESCE(SUM(tokens_in), 0) AS tokens_in,
-            COALESCE(SUM(tokens_out), 0) AS tokens_out,
-            COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-            COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
-            COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
-            COALESCE(SUM(tokens_in), 0) + COALESCE(SUM(tokens_out), 0)
-                + COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_write_tokens), 0)
-                + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
-        FROM llm_calls WHERE {since_clause_ts}
-    """)
+    """Get detailed token breakdown: input, output, cache_read, cache_write, reasoning.
+    Returns None if the DB schema is older and missing token columns."""
+    try:
+        since_clause_ts = _since_clause(window_hours, "ts")
+        # COALESCE each SUM individually: SUM() returns NULL when all rows are NULL,
+        # which happens for reasoning_tokens on models that don't emit it.
+        return _one(f"""
+            SELECT
+                COALESCE(SUM(tokens_in), 0) AS tokens_in,
+                COALESCE(SUM(tokens_out), 0) AS tokens_out,
+                COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                COALESCE(SUM(tokens_in), 0) + COALESCE(SUM(tokens_out), 0)
+                    + COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_write_tokens), 0)
+                    + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
+            FROM llm_calls WHERE {since_clause_ts}
+        """)
+    except Exception:
+        return None
 
 
 def api_cron(window_hours=168):

@@ -146,11 +146,11 @@
     </div>
     <div class="form-row">
       <div class="form-group">
-        <label>Soft threshold (%) <span class="text-muted" style="font-size:10px;font-weight:400">(global)</span></label>
+        <label>Soft threshold (%) <span class="text-muted" style="font-size:10px;font-weight:400">(applies to all scopes)</span></label>
         <input type="number" id="budgetSoftPct" step="0.01" min="0" max="1" placeholder="0.80">
       </div>
       <div class="form-group">
-        <label>Hard threshold (%) <span class="text-muted" style="font-size:10px;font-weight:400">(global)</span></label>
+        <label>Hard threshold (%) <span class="text-muted" style="font-size:10px;font-weight:400">(applies to all scopes)</span></label>
         <input type="number" id="budgetHardPct" step="0.01" min="0" max="1" placeholder="1.00">
       </div>
     </div>
@@ -174,6 +174,14 @@ const API = '';
 let charts = {};
 
 function $(sel) { return document.querySelector(sel); }
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 function nf(n) { return n == null ? '—' : Number(n).toLocaleString(); }
 function fmtCost(v) { return v == null ? '$0.00' : '$' + Number(v).toFixed(4); }
 function fmtMs(v) {
@@ -302,10 +310,11 @@ function renderBudget(data) {
   let html = '<div class="budget-bar"><h3>Budgets</h3>';
   for (const s of items) {
     const cls = s.level;
+    const label = escHtml(s.scope);
     // Use single quotes in onclick to avoid JSON.stringify double-quote escaping issues
     const safeScope = s.scope.replace(/'/g, "\\'");
     html += `<div class="budget-item">
-      <div class="info"><span>${s.scope}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal('${safeScope}')">Edit</button></div>
+      <div class="info"><span>${label}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal('${safeScope}')">Edit</button></div>
       <div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(s.pct, 100)}%"></div></div>
     </div>`;
   }

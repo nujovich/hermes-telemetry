@@ -56,10 +56,21 @@ def start_budget_watcher() -> None:
         return
 
     class BudgetConfigHandler(FileSystemEventHandler):
-        def on_modified(self, event: FileModifiedEvent) -> None:
-            if not event.is_directory and event.src_path.endswith("budget.yaml"):
-                logger.info("budget.yaml modified — hot-reloading budget config")
+        def _reload_if_budget(self, path: str) -> None:
+            if os.path.basename(path) == "budget.yaml":
+                logger.info("budget.yaml changed — hot-reloading budget config")
                 reload_config()
+
+        def on_modified(self, event: FileModifiedEvent) -> None:
+            if not event.is_directory:
+                self._reload_if_budget(event.src_path)
+
+        def on_created(self, event) -> None:
+            if not event.is_directory:
+                self._reload_if_budget(event.src_path)
+
+        def on_moved(self, event) -> None:
+            self._reload_if_budget(getattr(event, "dest_path", ""))
 
     path = _budget_path()
     path.parent.mkdir(parents=True, exist_ok=True)
