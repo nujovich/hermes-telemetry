@@ -143,6 +143,29 @@ def api_summary(window_hours=24):
     }
 
 
+def api_token_breakdown(window_hours=24):
+    """Get detailed token breakdown: input, output, cache_read, cache_write, reasoning.
+    Returns None if the DB schema is older and missing token columns."""
+    try:
+        since_clause_ts = _since_clause(window_hours, "ts")
+        # COALESCE each SUM individually: SUM() returns NULL when all rows are NULL,
+        # which happens for reasoning_tokens on models that don't emit it.
+        return _one(f"""
+            SELECT
+                COALESCE(SUM(tokens_in), 0) AS tokens_in,
+                COALESCE(SUM(tokens_out), 0) AS tokens_out,
+                COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                COALESCE(SUM(tokens_in), 0) + COALESCE(SUM(tokens_out), 0)
+                    + COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_write_tokens), 0)
+                    + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
+            FROM llm_calls WHERE {since_clause_ts}
+        """)
+    except Exception:
+        return None
+
+
 def api_cron(window_hours=168):
     since_clause = _since_clause(window_hours)
     return _rows(f"""
@@ -152,6 +175,8 @@ def api_cron(window_hours=168):
                SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS failed_runs,
                SUM(tokens_in) AS tokens_in,
                SUM(tokens_out) AS tokens_out,
+               SUM(cache_read_tokens) AS cache_read_tokens,
+               SUM(cache_write_tokens) AS cache_write_tokens,
                ROUND(SUM(cost_usd), 6) AS cost_usd,
                AVG(duration_ms) AS avg_duration_ms,
                MAX(started_at) AS last_run
@@ -183,12 +208,13 @@ def api_runs(limit=50):
         """
         SELECT session_id, platform, cron_job_id, model, provider,
                started_at, ended_at, status,
-               tokens_in, tokens_out, cost_usd, duration_ms,
+               tokens_in, tokens_out, cache_read_tokens, cache_write_tokens,
+               cost_usd, duration_ms,
                api_calls, tool_calls, estimated_llm_calls
         FROM runs
         ORDER BY started_at DESC
         LIMIT ?
-    """,
+        """,
         (int(limit),),
     )
 
@@ -256,6 +282,134 @@ def api_budget():
     return {"enabled": True, "budgets": scopes, "on_estimated": on_est.get("mode", "warn_only")}
 
 
+MAX_BUDGET_PAYLOAD = 1_048_576  # 1 MiB
+
+# Allowed values for budget config — prevents YAML key injection
+ALLOWED_SCOPES = {"global", "per_cron_job", "per_sender"}
+ALLOWED_WINDOWS = {"daily", "monthly"}
+
+
+def _validate_threshold(key: str, value, cfg: dict) -> str | None:
+    """Validate and store a threshold (soft_pct/hard_pct). Returns error msg or None."""
+    try:
+        val = float(value)
+    except (ValueError, TypeError):
+        return f"{key} must be a number"
+    if not (0 <= val <= 1):
+        return f"{key} must be between 0 and 1"
+    cfg.setdefault("thresholds", {})[key] = val
+    return None
+
+
+def api_budget_update(payload):
+    """Update budget.yaml from POST payload. Returns updated budget status or error."""
+    budget_path = DB_PATH.parent / "budget.yaml"
+    if not budget_path.exists():
+        return {"enabled": False, "error": "budget.yaml not found"}
+
+    try:
+        import yaml
+    except ImportError:
+        return {"enabled": False, "error": "PyYAML not installed"}
+
+    try:
+        cfg = yaml.safe_load(budget_path.read_text()) or {}
+    except Exception as e:
+        return {"enabled": False, "error": f"Failed to parse budget.yaml: {e}"}
+
+    # Expected payload: {"scope": "global", "window": "daily", "limit_usd": 5.0}
+    scope = payload.get("scope", "global")
+    window = payload.get("window", "daily")
+    limit_usd = payload.get("limit_usd")
+
+    # Validate scope/window against allowed sets (prevents YAML key injection)
+    if scope not in ALLOWED_SCOPES:
+        return {"enabled": False, "error": f"invalid scope: {scope!r}"}
+    if window not in ALLOWED_WINDOWS:
+        return {"enabled": False, "error": f"invalid window: {window!r}"}
+
+    if limit_usd is None:
+        return {"enabled": False, "error": "limit_usd is required"}
+
+    try:
+        limit_usd = float(limit_usd)
+    except (ValueError, TypeError):
+        return {"enabled": False, "error": "limit_usd must be a number"}
+
+    if limit_usd < 0:
+        return {"enabled": False, "error": "limit_usd must be >= 0"}
+
+    # Initialize budgets structure if missing
+    if "budgets" not in cfg:
+        cfg["budgets"] = {}
+    if scope not in cfg["budgets"]:
+        cfg["budgets"][scope] = {}
+
+    # Update the limit
+    key = f"{window}_usd"
+    cfg["budgets"][scope][key] = limit_usd
+
+    # Optional: update thresholds (validated, no silent failures)
+    for field, yaml_key in (("soft_pct", "soft_pct"), ("hard_pct", "hard_pct")):
+        if field in payload:
+            err = _validate_threshold(yaml_key, payload[field], cfg)
+            if err:
+                return {"enabled": False, "error": err}
+
+    if "on_estimated_mode" in payload:
+        mode = payload["on_estimated_mode"]
+        if mode not in ("warn_only", "enforce"):
+            return {"enabled": False, "error": "on_estimated_mode must be 'warn_only' or 'enforce'"}
+        cfg.setdefault("on_estimated", {})["mode"] = mode
+
+    # Write back (atomic: temp file + os.replace)
+    try:
+        # Inline atomic write to avoid importing os at module level
+        import os
+        import yaml
+        tmp = budget_path.with_suffix(".yaml.tmp")
+        with open(tmp, "w") as f:
+            yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp, budget_path)
+    except Exception as e:
+        return {"enabled": False, "error": f"Failed to write budget.yaml: {e}"}
+
+    # Return updated status by calling api_budget()
+    return api_budget()
+
+
+def api_budget_detail(scope: str, window: str):
+    """Get raw budget config for a specific scope/window for modal pre-fill."""
+    if scope not in ALLOWED_SCOPES or window not in ALLOWED_WINDOWS:
+        return {"error": "invalid scope or window"}
+    budget_path = DB_PATH.parent / "budget.yaml"
+    if not budget_path.exists():
+        return {"error": "budget.yaml not found"}
+    try:
+        import yaml
+    except ImportError:
+        return {"error": "PyYAML not installed"}
+    try:
+        cfg = yaml.safe_load(budget_path.read_text()) or {}
+    except Exception as e:
+        return {"error": f"Failed to parse budget.yaml: {e}"}
+
+    budgets = cfg.get("budgets", {})
+    thresholds = cfg.get("thresholds", {})
+    on_est = cfg.get("on_estimated", {})
+
+    limit = budgets.get(scope, {}).get(f"{window}_usd")
+
+    return {
+        "scope": scope,
+        "window": window,
+        "limit_usd": limit,
+        "soft_pct": thresholds.get("soft_pct", 0.8),
+        "hard_pct": thresholds.get("hard_pct", 1.0),
+        "on_estimated_mode": on_est.get("mode", "warn_only"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # HTTP Handler
 # ---------------------------------------------------------------------------
@@ -287,6 +441,16 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/budget":
             return self._json(api_budget())
 
+        if path == "/api/budget/detail":
+            qs = parse_qs(parsed.query)
+            scope = qs.get("scope", ["global"])[0]
+            window = qs.get("window", ["daily"])[0]
+            return self._json(api_budget_detail(scope, window))
+
+        if path == "/api/token-breakdown":
+            qs = parse_qs(parsed.query)
+            return self._json(api_token_breakdown(int(qs.get("hours", [24])[0])))
+
         # Static: serve index.html for /
         if path == "/" or path == "/index.html":
             html = (SCRIPT_DIR / "index.html").read_bytes()
@@ -306,9 +470,37 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Not Found")
 
-    def _json(self, data):
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+
+        if path == "/api/budget":
+            content_length = int(self.headers.get("Content-Length", 0))
+            if content_length > MAX_BUDGET_PAYLOAD:
+                self.send_response(413)
+                self.end_headers()
+                self.wfile.write(b"Payload too large")
+                return
+            body = self.rfile.read(content_length).decode("utf-8")
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"Invalid JSON")
+                return
+            result = api_budget_update(payload)
+            # Return proper HTTP status: 200 for success, 400 for validation errors
+            status = 200 if result.get("enabled") or "error" not in result else 400
+            return self._json(result, status)
+
+        self.send_response(404)
+        self.end_headers()
+        self.wfile.write(b"Not Found")
+
+    def _json(self, data, status=200):
         body = json.dumps(data, default=str).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(body)))

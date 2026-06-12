@@ -42,6 +42,33 @@
   .bar-fill.hard { background: #f85149; }
   .budget-disabled { color: #8b949e; font-size: 13px; }
 
+  .budget-item { display: flex; flex-direction: column; gap: 8px; }
+  .budget-item .info { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .budget-item .info span:first-child { text-align: left; }
+  .budget-item .info span:last-of-type { flex: 0 0 auto; text-align: right; }
+  .budget-edit-btn { background: #21262d; color: #58a6ff; border: 1px solid #30363d; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; margin-left: 12px; white-space: nowrap; }
+  .budget-edit-btn:hover { background: #30363d; }
+
+  /* Budget modal */
+  .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 99999; }
+  .modal-overlay.open { display: flex !important; }
+  .modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; width: 100%; max-width: 400px; margin: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+  .modal h3 { color: #e6edf3; margin-bottom: 16px; font-size: 16px; }
+  .modal .form-group { margin-bottom: 16px; }
+  .modal label { display: block; color: #8b949e; font-size: 12px; margin-bottom: 4px; }
+  .modal select, .modal input { width: 100%; background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; font-size: 13px; box-sizing: border-box; }
+  .modal select:focus, .modal input:focus { outline: none; border-color: #58a6ff; }
+  .modal .form-row { display: flex; gap: 8px; }
+  .modal .form-row .form-group { flex: 1; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+  .modal-btn { padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; border: 1px solid #30363d; }
+  .modal-btn.cancel { background: #21262d; color: #c9d1d9; }
+  .modal-btn.cancel:hover { background: #30363d; }
+  .modal-btn.save { background: #238636; color: #fff; }
+  .modal-btn.save:hover { background: #2ea043; }
+  .modal-error { color: #f85149; font-size: 12px; margin-top: 8px; display: none; }
+  .modal-error.show { display: block; }
+
   /* charts */
   .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
   .chart-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
@@ -94,11 +121,67 @@
   <div class="loading">Loading...</div>
 </div>
 
+<!-- Budget Modal -->
+<div class="modal-overlay" id="budgetModal" onclick="if(event.target===this) closeBudgetModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3>Edit Budget</h3>
+    <div class="form-group">
+      <label>Scope</label>
+      <select id="budgetScope">
+        <option value="global">Global</option>
+        <option value="per_cron_job">Per Cron Job (default)</option>
+        <option value="per_sender">Per Sender</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Window</label>
+      <select id="budgetWindow">
+        <option value="daily">Daily</option>
+        <option value="monthly">Monthly</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Limit (USD)</label>
+      <input type="number" id="budgetLimit" step="0.01" min="0" placeholder="e.g. 5.00">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Soft threshold (%) <span class="text-muted" style="font-size:10px;font-weight:400">(applies to all scopes)</span></label>
+        <input type="number" id="budgetSoftPct" step="0.01" min="0" max="1" placeholder="0.80">
+      </div>
+      <div class="form-group">
+        <label>Hard threshold (%) <span class="text-muted" style="font-size:10px;font-weight:400">(applies to all scopes)</span></label>
+        <input type="number" id="budgetHardPct" step="0.01" min="0" max="1" placeholder="1.00">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>On estimated data</label>
+      <select id="budgetOnEstimated">
+        <option value="warn_only">Warn only (degrade hard to soft)</option>
+        <option value="enforce">Enforce hard limits</option>
+      </select>
+    </div>
+    <div class="modal-error" id="budgetModalError"></div>
+    <div class="modal-actions">
+      <button class="modal-btn cancel" onclick="closeBudgetModal()">Cancel</button>
+      <button class="modal-btn save" onclick="saveBudget()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = '';
 let charts = {};
 
 function $(sel) { return document.querySelector(sel); }
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 function nf(n) { return n == null ? '—' : Number(n).toLocaleString(); }
 function fmtCost(v) { return v == null ? '$0.00' : '$' + Number(v).toFixed(4); }
 function fmtMs(v) {
@@ -127,6 +210,99 @@ function renderStatCard(id, value, label, cls) {
   return `<div class="stat-card ${cls}"><div class="value">${value}</div><div class="label">${label}</div></div>`;
 }
 
+// Budget modal functions
+let currentBudgetScope = 'global';
+
+async function openBudgetModal(scope) {
+  // Parse "global/daily" -> scope="global", window="daily"
+  const [parsedScope, parsedWindow] = scope.split('/');
+  const actualScope = parsedScope || scope;
+  const actualWindow = parsedWindow || 'daily';
+
+  currentBudgetScope = actualScope;
+
+  // Open modal FIRST (synchronous, works even if fetch fails)
+  $('#budgetModal').classList.add('open');
+
+  // Reset fields immediately - no waiting
+  $('#budgetScope').value = actualScope;
+  $('#budgetWindow').value = 'daily';  // reset window dropdown to daily
+  $('#budgetLimit').value = '';
+  $('#budgetSoftPct').value = '';
+  $('#budgetHardPct').value = '';
+  $('#budgetOnEstimated').value = 'warn_only';
+  $('#budgetModalError').classList.remove('show');
+  $('#budgetModalError').textContent = '';
+
+  // Then fetch details for pre-fill (async, non-blocking)
+  // Always fetch window=daily as default — avoids stale dropdown state bug
+  try {
+    const res = await fetch(`/api/budget/detail?scope=${encodeURIComponent(actualScope)}&window=daily`);
+    const data = await res.json();
+    if (!data.error) {
+      $('#budgetLimit').value = data.limit_usd !== null && data.limit_usd !== undefined ? data.limit_usd : '';
+      $('#budgetSoftPct').value = data.soft_pct !== undefined ? data.soft_pct : '';
+      $('#budgetHardPct').value = data.hard_pct !== undefined ? data.hard_pct : '';
+      $('#budgetOnEstimated').value = data.on_estimated_mode || 'warn_only';
+      // Set window dropdown to match the fetched data's window if needed
+      // Budget config has separate daily/monthly limits per scope
+    }
+  } catch {
+    // Keep defaults on network error - modal already open with empty fields
+  }
+}
+
+function closeBudgetModal() {
+  $('#budgetModal').classList.remove('open');
+}
+
+async function saveBudget() {
+  // Helper: parse float, return undefined if empty/whitespace
+  const parseOptFloat = (v) => {
+    const s = v.trim();
+    return s === '' ? undefined : parseFloat(s);
+  };
+
+  const payload = {
+    scope: $('#budgetScope').value,
+    window: $('#budgetWindow').value,
+    limit_usd: parseOptFloat($('#budgetLimit').value),
+    soft_pct: parseOptFloat($('#budgetSoftPct').value),
+    hard_pct: parseOptFloat($('#budgetHardPct').value),
+    on_estimated_mode: $('#budgetOnEstimated').value
+  };
+
+  if (payload.limit_usd === undefined || isNaN(payload.limit_usd)) {
+    showModalError('Limit (USD) is required');
+    return;
+  }
+
+  $('#budgetModalError').classList.remove('show');
+
+  try {
+    const response = await fetch('/api/budget', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const result = await response.json();
+    if (result.error) {
+      showModalError(result.error);
+      return;
+    }
+    closeBudgetModal();
+    loadAll(); // refresh dashboard
+  } catch (err) {
+    showModalError('Request failed: ' + err.message);
+  }
+}
+
+function showModalError(msg) {
+  const el = $('#budgetModalError');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
 function renderBudget(data) {
   if (!data.enabled) return '<div class="budget-bar"><h3>Budgets</h3><div class="budget-disabled">No budget.yaml configured. Create ~/.hermes/telemetry/budget.yaml</div></div>';
   const items = data.budgets || [];
@@ -134,12 +310,35 @@ function renderBudget(data) {
   let html = '<div class="budget-bar"><h3>Budgets</h3>';
   for (const s of items) {
     const cls = s.level;
+    const label = escHtml(s.scope);
+    // Use single quotes in onclick to avoid JSON.stringify double-quote escaping issues
+    const safeScope = s.scope.replace(/'/g, "\\'");
     html += `<div class="budget-item">
-      <div class="info"><span>${s.scope}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span></div>
+      <div class="info"><span>${label}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal('${safeScope}')">Edit</button></div>
       <div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(s.pct, 100)}%"></div></div>
     </div>`;
   }
   html += `<div class="budget-disabled" style="margin-top:8px">on_estimated: ${data.on_estimated}</div></div>`;
+  return html;
+}
+
+function renderTokenBreakdown(data) {
+  const tb = data;
+  let html = '<div class="table-card"><h3>Token Breakdown</h3>';
+  html += '<table><thead><tr><th>Type</th><th class="text-right">Count</th><th class="text-right">%</th></tr></thead><tbody>';
+  const types = [
+    { key: 'tokens_in', label: 'Input', color: '#58a6ff' },
+    { key: 'tokens_out', label: 'Output', color: '#3fb950' },
+    { key: 'cache_read_tokens', label: 'Cache', color: '#d29922' },
+    { key: 'reasoning_tokens', label: 'Reasoning', color: '#f85149' },
+  ];
+  for (const t of types) {
+    const val = tb[t.key] || 0;
+    const pct = tb.total_tokens > 0 ? ((val / tb.total_tokens) * 100).toFixed(1) : '0.0';
+    html += `<tr><td><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${t.color};margin-right:8px;vertical-align:middle"></span>${t.label}</td><td class="text-right">${nf(val)}</td><td class="text-right">${pct}%</td></tr>`;
+  }
+  html += `<tr style="border-top:1px solid #30363d"><td><b>Total</b></td><td class="text-right"><b>${nf(tb.total_tokens)}</b></td><td class="text-right"><b>100%</b></td></tr>`;
+  html += '</tbody></table></div>';
   return html;
 }
 
@@ -213,12 +412,13 @@ async function loadAll() {
   app.innerHTML = '<div class="loading">Loading...</div>';
 
   try {
-    const [summary, cron, providers, runs, budget] = await Promise.all([
+    const [summary, cron, providers, runs, budget, tokenBreakdown] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
       fetchJSON(`/api/providers?hours=${hours}`),
       fetchJSON('/api/runs?limit=30'),
       fetchJSON('/api/budget'),
+      fetchJSON(`/api/token-breakdown?hours=${hours}`),
     ]);
 
     const r = summary.runs || {};
@@ -233,6 +433,11 @@ async function loadAll() {
     html += renderStatCard('tokens', nf(r.tokens_in), 'Tokens In', '');
     html += renderStatCard('cost', fmtCost(r.cost_usd), 'Cost', 'yellow');
     html += '</div>';
+
+    // --- token breakdown ---
+    if (tokenBreakdown && tokenBreakdown.total_tokens > 0) {
+      html += renderTokenBreakdown(tokenBreakdown);
+    }
 
     // --- budget ---
     html += renderBudget(budget);
@@ -263,23 +468,23 @@ async function loadAll() {
 
     // --- cron table ---
     if (cron.length) {
-      let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>Tokens</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
+      let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
       for (const row of cron) {
         const jid = (row.cron_job_id || '?').substring(0, 20);
         const last = (row.last_run || '').substring(0, 16);
-        t += `<tr><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${last}</td></tr>`;
+        t += `<tr><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${last}</td></tr>`;
       }
       t += '</tbody></table>';
       html += renderTableCard('cronTable', 'Cron Jobs', t);
     }
 
     // --- runs table ---
-    let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>Tokens</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
+    let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
     for (const row of runs) {
       const time = (row.started_at || '').substring(0, 16);
       const sid = (row.session_id || '').substring(0, 24);
       const model = (row.model || '—').substring(0, 20);
-      t += `<tr><td class="text-muted">${time}</td><td>${platformBadge(row.platform)}</td><td class="text-muted">${model}</td><td>${statusBadge(row.status)}</td><td>${nf(row.tokens_in)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${row.session_id}">${sid}</code></td></tr>`;
+      t += `<tr><td class="text-muted">${time}</td><td>${platformBadge(row.platform)}</td><td class="text-muted">${model}</td><td>${statusBadge(row.status)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${row.session_id}">${sid}</code></td></tr>`;
     }
     t += '</tbody></table>';
     html += renderTableCard('runsTable', 'Recent Sessions', t);

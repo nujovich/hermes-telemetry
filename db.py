@@ -140,6 +140,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Apply migrations in order
     _migrate_v2(conn)
     _migrate_v3(conn)
+    _migrate_v4(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -209,6 +210,24 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (3, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v4(conn: sqlite3.Connection) -> None:
+    """Add v4 schema: cache tokens on runs table for per-session/cron breakdown."""
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 4")
+    if cur.fetchone() is not None:
+        return
+
+    for col in ("cache_read_tokens", "cache_write_tokens"):
+        try:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {col} INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # already exists
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (4, ?)",
         (_utcnow(),),
     )
 
@@ -323,15 +342,17 @@ def record_llm_call(
     conn.execute(
         """
         UPDATE runs
-        SET tokens_in  = tokens_in  + ?,
-            tokens_out = tokens_out + ?,
-            cost_usd   = cost_usd   + ?,
-            api_calls  = api_calls  + 1,
-            model      = COALESCE(model, ?),
-            provider   = COALESCE(provider, ?)
+        SET tokens_in         = tokens_in  + ?,
+            tokens_out        = tokens_out + ?,
+            cache_read_tokens = cache_read_tokens + ?,
+            cache_write_tokens = cache_write_tokens + ?,
+            cost_usd          = cost_usd   + ?,
+            api_calls         = api_calls  + 1,
+            model             = COALESCE(model, ?),
+            provider          = COALESCE(provider, ?)
         WHERE session_id = ?
         """,
-        (tokens_in, tokens_out, cost_usd, model, provider, session_id),
+        (tokens_in, tokens_out, cache_read_tokens, cache_write_tokens, cost_usd, model, provider, session_id),
     )
     if estimated:
         conn.execute(
