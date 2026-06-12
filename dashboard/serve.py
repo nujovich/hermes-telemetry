@@ -358,9 +358,15 @@ def api_budget_update(payload):
             return {"enabled": False, "error": "on_estimated_mode must be 'warn_only' or 'enforce'"}
         cfg.setdefault("on_estimated", {})["mode"] = mode
 
-    # Write back
+    # Write back (atomic: temp file + os.replace)
     try:
-        budget_path.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
+        # Inline atomic write to avoid importing os at module level
+        import os
+        import yaml
+        tmp = budget_path.with_suffix(".yaml.tmp")
+        with open(tmp, "w") as f:
+            yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp, budget_path)
     except Exception as e:
         return {"enabled": False, "error": f"Failed to write budget.yaml: {e}"}
 

@@ -478,6 +478,7 @@ def _cron_block() -> str:
 
 def _set_budget(scope: str, window: str, usd: float) -> str:
     """Persist a limit to budget.yaml and hot-reload."""
+    import os
     import yaml
 
     if scope not in ("global", "cron_job", "sender"):
@@ -503,8 +504,12 @@ def _set_budget(scope: str, window: str, usd: float) -> str:
     else:  # sender
         budgets.setdefault("per_sender", {}).setdefault("default", {})[key] = usd
 
-    with open(path, "w") as f:
+    # Atomic write: temp file + os.replace (POSIX atomic)
+    # Prevents watchdog from reading partial/empty YAML on IN_MODIFY
+    tmp = path.with_suffix(".yaml.tmp")
+    with open(tmp, "w") as f:
         yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
+    os.replace(tmp, path)
     reload_config()
     return f"Set {scope} {window} budget to ${usd:.2f}. Saved to {path}."
 
