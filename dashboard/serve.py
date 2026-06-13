@@ -38,11 +38,10 @@ DEFAULT_PORT = 8765
 logger = logging.getLogger("hermes_telemetry.dashboard")
 
 # ---------------------------------------------------------------------------
-# DB path
+# DB / Hermes paths
 # ---------------------------------------------------------------------------
-DB_PATH = (
-    Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "telemetry" / "telemetry.db"
-)
+HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+DB_PATH = HERMES_HOME / "telemetry" / "telemetry.db"
 
 _local = threading.local()
 
@@ -74,6 +73,63 @@ def _since_clause(window_hours, col="started_at"):
     if wh == 0:
         return "1=1"
     return f"{col} >= datetime('now', '-{wh} hours')"
+
+
+def _active_hermes_session_ids():
+    """Return session IDs still present in Hermes' active/session files.
+
+    Telemetry is append-only. Hermes session deletion does not delete rows from
+    telemetry.db, so dashboard session lists soft-hide rows whose session record
+    no longer exists. Cron telemetry is kept separately via session_id LIKE
+    'cron_%' because cron runs are not represented in sessions.json.
+    """
+    hermes_home = HERMES_HOME
+    sessions_dir = hermes_home / "sessions"
+    sessions_json = sessions_dir / "sessions.json"
+    ids = set()
+    metadata_available = False
+
+    try:
+        if sessions_json.exists():
+            metadata_available = True
+            data = json.loads(sessions_json.read_text())
+            if isinstance(data, dict):
+                for item in data.values():
+                    if isinstance(item, dict) and item.get("session_id"):
+                        ids.add(str(item["session_id"]))
+    except Exception:
+        # Missing/corrupt Hermes session metadata should not take down telemetry.
+        pass
+
+    try:
+        if sessions_dir.exists():
+            metadata_available = True
+            for path in sessions_dir.glob("session_*.json"):
+                session_id = path.stem.removeprefix("session_")
+                if session_id:
+                    ids.add(session_id)
+    except Exception:
+        pass
+
+    return ids, metadata_available
+
+
+def _visible_sessions_clause(col="session_id", include_deleted=False):
+    if include_deleted:
+        return "1=1", []
+    active_ids, metadata_available = _active_hermes_session_ids()
+    if not metadata_available:
+        # If Hermes session metadata is unavailable, degrade gracefully instead of
+        # hiding almost every non-cron telemetry row.
+        return "1=1", []
+    active_ids = sorted(active_ids)
+    clauses = [f"{col} LIKE 'cron_%'"]
+    params = []
+    if active_ids:
+        placeholders = ",".join("?" for _ in active_ids)
+        clauses.append(f"{col} IN ({placeholders})")
+        params.extend(active_ids)
+    return "(" + " OR ".join(clauses) + ")", params
 
 
 # ---------------------------------------------------------------------------
@@ -195,28 +251,143 @@ def api_providers(window_hours=24):
                COUNT(*) AS total_calls,
                SUM(CASE WHEN estimated=0 THEN 1 ELSE 0 END) AS real_calls,
                SUM(CASE WHEN estimated=1 THEN 1 ELSE 0 END) AS estimated_calls,
-               ROUND(SUM(cost_usd), 6) AS cost_usd
+               ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+               COALESCE(SUM(tokens_in), 0) AS tokens_in,
+               COALESCE(SUM(tokens_out), 0) AS tokens_out,
+               COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+               COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+               COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+               COALESCE(SUM(tokens_in), 0)
+                   + COALESCE(SUM(tokens_out), 0)
+                   + COALESCE(SUM(cache_read_tokens), 0)
+                   + COALESCE(SUM(cache_write_tokens), 0)
+                   + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens,
+               ROUND(COALESCE(SUM(cost_usd), 0) / NULLIF(COUNT(*), 0), 6) AS avg_cost_per_call
         FROM llm_calls
         WHERE {since_clause_ts}
         GROUP BY provider
-        ORDER BY total_calls DESC
+        ORDER BY cost_usd DESC, total_tokens DESC, total_calls DESC
     """)
 
 
-def api_runs(limit=50):
-    return _rows(
-        """
+def _build_run_filters(
+    window_hours=0,
+    day: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    session_id: str | None = None,
+    cron_job_id: str | None = None,
+    q: str | None = None,
+):
+    clauses = [_since_clause(window_hours, "started_at")]
+    params = []
+    if day:
+        clauses.append("DATE(started_at) = ?")
+        params.append(day)
+    if model:
+        clauses.append("COALESCE(model, '—') = ?")
+        params.append(model)
+    if provider:
+        clauses.append("COALESCE(provider, '—') = ?")
+        params.append(provider)
+    if platform:
+        clauses.append("COALESCE(platform, 'cli') = ?")
+        params.append(platform)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if session_id:
+        clauses.append("session_id = ?")
+        params.append(session_id)
+    if cron_job_id:
+        clauses.append("COALESCE(cron_job_id, '') = ?")
+        params.append(cron_job_id)
+    if q:
+        like = f"%{q}%"
+        clauses.append(
+            "("
+            "session_id LIKE ? OR "
+            "COALESCE(model, '') LIKE ? OR "
+            "COALESCE(provider, '') LIKE ? OR "
+            "COALESCE(cron_job_id, '') LIKE ? OR "
+            "COALESCE(platform, '') LIKE ? OR "
+            "COALESCE(status, '') LIKE ?"
+            ")"
+        )
+        params.extend([like, like, like, like, like, like])
+    return " AND ".join(clauses), params
+
+
+def api_runs(
+    limit=50,
+    window_hours=0,
+    day: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    session_id: str | None = None,
+    cron_job_id: str | None = None,
+    q: str | None = None,
+    include_deleted=False,
+):
+    base_where_sql, base_params = _build_run_filters(
+        window_hours,
+        day,
+        model,
+        provider,
+        platform,
+        status,
+        session_id,
+        cron_job_id,
+        q,
+    )
+    visible_sql, visible_params = _visible_sessions_clause("session_id", include_deleted)
+    where_sql = f"{base_where_sql} AND {visible_sql}"
+    params = [*base_params, *visible_params]
+    rows = _rows(
+        f"""
         SELECT session_id, platform, cron_job_id, model, provider,
                started_at, ended_at, status,
                tokens_in, tokens_out, cache_read_tokens, cache_write_tokens,
                cost_usd, duration_ms,
                api_calls, tool_calls, estimated_llm_calls
         FROM runs
+        WHERE {where_sql}
         ORDER BY started_at DESC
         LIMIT ?
         """,
-        (int(limit),),
+        (*params, int(limit)),
     )
+    total_row = _one(
+        f"SELECT COUNT(*) AS total_runs FROM runs WHERE {where_sql}",
+        tuple(params),
+    )
+    raw_total_row = _one(
+        f"SELECT COUNT(*) AS total_runs FROM runs WHERE {base_where_sql}",
+        tuple(base_params),
+    )
+    total_runs = int(total_row.get("total_runs") or 0)
+    raw_total_runs = int(raw_total_row.get("total_runs") or 0)
+    return {
+        "filters": {
+            "hours": int(window_hours),
+            "day": day,
+            "model": model,
+            "provider": provider,
+            "platform": platform,
+            "status": status,
+            "session_id": session_id,
+            "cron_job_id": cron_job_id,
+            "q": q,
+            "include_deleted": bool(include_deleted),
+        },
+        "total_runs": total_runs,
+        "hidden_deleted_runs": max(0, raw_total_runs - total_runs),
+        "rows": rows,
+    }
 
 
 def api_model_tokens(window_hours=24, limit=100):
@@ -398,6 +569,166 @@ def api_daily_model_chart(window_hours=24, limit_days=90, top_n=5):
         "models": model_names,
         "rows": [day_map[d] for d in day_order],
     }
+
+
+def api_session_detail(session_id: str):
+    if not session_id:
+        return {"error": "session_id is required"}
+
+    run = _one(
+        """
+        SELECT session_id, platform, cron_job_id, model, provider,
+               started_at, ended_at, status,
+               tokens_in, tokens_out, cache_read_tokens, cache_write_tokens,
+               cost_usd, duration_ms, api_calls, tool_calls, estimated_llm_calls
+        FROM runs WHERE session_id = ?
+        """,
+        (session_id,),
+    )
+    if not run:
+        return {"error": "session not found", "session_id": session_id}
+
+    llm_summary = _one(
+        """
+        SELECT COUNT(*) AS api_calls,
+               COALESCE(SUM(tokens_in), 0) AS tokens_in,
+               COALESCE(SUM(tokens_out), 0) AS tokens_out,
+               COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+               COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+               COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+               ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+               AVG(latency_ms) AS avg_latency_ms,
+               SUM(CASE WHEN estimated = 1 THEN 1 ELSE 0 END) AS estimated_calls
+        FROM llm_calls
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    )
+
+    llm_calls = _rows(
+        """
+        SELECT ts, model, provider, tokens_in, tokens_out,
+               cache_read_tokens, cache_write_tokens, reasoning_tokens,
+               cost_usd, latency_ms, estimated
+        FROM llm_calls
+        WHERE session_id = ?
+        ORDER BY ts DESC, id DESC
+        LIMIT 100
+        """,
+        (session_id,),
+    )
+
+    provider_models = _rows(
+        """
+        SELECT COALESCE(provider, '—') AS provider,
+               COALESCE(model, '—') AS model,
+               COUNT(*) AS api_calls,
+               ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+               COALESCE(SUM(tokens_in), 0)
+                   + COALESCE(SUM(tokens_out), 0)
+                   + COALESCE(SUM(cache_read_tokens), 0)
+                   + COALESCE(SUM(cache_write_tokens), 0)
+                   + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
+        FROM llm_calls
+        WHERE session_id = ?
+        GROUP BY COALESCE(provider, '—'), COALESCE(model, '—')
+        ORDER BY total_tokens DESC, cost_usd DESC
+        LIMIT 20
+        """,
+        (session_id,),
+    )
+
+    tool_summary = _one(
+        """
+        SELECT COUNT(*) AS tool_calls,
+               SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) AS ok_calls,
+               SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS failed_calls,
+               AVG(latency_ms) AS avg_latency_ms
+        FROM tool_calls
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    )
+
+    tool_calls = _rows(
+        """
+        SELECT ts, tool_name, ok, latency_ms
+        FROM tool_calls
+        WHERE session_id = ?
+        ORDER BY ts DESC, id DESC
+        LIMIT 100
+        """,
+        (session_id,),
+    )
+
+    return {
+        "run": run,
+        "llm_summary": llm_summary,
+        "llm_calls": llm_calls,
+        "provider_models": provider_models,
+        "tool_summary": tool_summary,
+        "tool_calls": tool_calls,
+    }
+
+
+def api_cache_efficiency(window_hours=24):
+    since_clause_ts = _since_clause(window_hours, "ts")
+    overall = _one(
+        f"""
+        SELECT COUNT(*) AS api_calls,
+               COUNT(DISTINCT session_id) AS sessions,
+               COALESCE(SUM(tokens_in), 0) AS tokens_in,
+               COALESCE(SUM(tokens_out), 0) AS tokens_out,
+               COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+               COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+               COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+               ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+               SUM(CASE WHEN cache_read_tokens > 0 THEN 1 ELSE 0 END) AS calls_with_cache,
+               COUNT(DISTINCT CASE WHEN cache_read_tokens > 0 THEN session_id END) AS sessions_with_cache
+        FROM llm_calls
+        WHERE {since_clause_ts}
+        """
+    )
+    tokens_in = int(overall.get("tokens_in") or 0)
+    cache_read = int(overall.get("cache_read_tokens") or 0)
+    cacheable_total = tokens_in + cache_read
+    overall["cache_hit_share_pct"] = (
+        round((cache_read / cacheable_total) * 100, 2) if cacheable_total else 0.0
+    )
+    overall["cache_calls_pct"] = (
+        round(((overall.get("calls_with_cache") or 0) / (overall.get("api_calls") or 1)) * 100, 2)
+        if overall.get("api_calls")
+        else 0.0
+    )
+    overall["estimated_cache_saved_tokens"] = cache_read
+
+    by_model = _rows(
+        f"""
+        SELECT COALESCE(model, '—') AS model,
+               COUNT(*) AS api_calls,
+               COUNT(DISTINCT session_id) AS sessions,
+               COALESCE(SUM(tokens_in), 0) AS tokens_in,
+               COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+               ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+               SUM(CASE WHEN cache_read_tokens > 0 THEN 1 ELSE 0 END) AS calls_with_cache
+        FROM llm_calls
+        WHERE {since_clause_ts}
+        GROUP BY COALESCE(model, '—')
+        HAVING COUNT(*) > 0
+        ORDER BY cache_read_tokens DESC, tokens_in DESC
+        LIMIT 20
+        """
+    )
+    for row in by_model:
+        cacheable = (row.get("tokens_in") or 0) + (row.get("cache_read_tokens") or 0)
+        row["cache_hit_share_pct"] = (
+            round(((row.get("cache_read_tokens") or 0) / cacheable) * 100, 2) if cacheable else 0.0
+        )
+        row["cache_calls_pct"] = round(
+            ((row.get("calls_with_cache") or 0) / (row.get("api_calls") or 1)) * 100, 2
+        )
+
+    return {"overall": overall, "by_model": by_model}
 
 
 def api_budget():
@@ -614,9 +945,31 @@ class Handler(SimpleHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             return self._json(api_providers(int(qs.get("hours", [24])[0])))
 
+        if path == "/api/cache-efficiency":
+            qs = parse_qs(parsed.query)
+            return self._json(api_cache_efficiency(int(qs.get("hours", [24])[0])))
+
         if path == "/api/runs":
             qs = parse_qs(parsed.query)
-            return self._json(api_runs(qs.get("limit", [50])[0]))
+            return self._json(
+                api_runs(
+                    int(qs.get("limit", [50])[0]),
+                    int(qs.get("hours", [0])[0]),
+                    qs.get("day", [None])[0],
+                    qs.get("model", [None])[0],
+                    qs.get("provider", [None])[0],
+                    qs.get("platform", [None])[0],
+                    qs.get("status", [None])[0],
+                    qs.get("session_id", [None])[0],
+                    qs.get("cron_job_id", [None])[0],
+                    qs.get("q", [None])[0],
+                    qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
+                )
+            )
+
+        if path == "/api/session-detail":
+            qs = parse_qs(parsed.query)
+            return self._json(api_session_detail(qs.get("session_id", [""])[0]))
 
         if path == "/api/model-tokens":
             qs = parse_qs(parsed.query)
