@@ -32,6 +32,11 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - Python <3.9 fallback
+    ZoneInfo = None
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
@@ -1746,16 +1751,42 @@ def api_cache_efficiency(window_hours=24):
     return {"overall": overall, "by_model": by_model}
 
 
-def _budget_window_start_utc(window: str) -> str:
-    now = datetime.now().astimezone()
+def _dashboard_viewer_tz(tz_name: str | None):
+    if tz_name and ZoneInfo is not None:
+        try:
+            return ZoneInfo(tz_name), tz_name
+        except Exception:
+            pass
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    label = getattr(local_tz, "key", None) or str(local_tz)
+    return local_tz, label
+
+
+def _budget_window_bounds_utc(window: str, tz_name: str | None = None, now_utc: datetime | None = None):
+    tzinfo, tz_label = _dashboard_viewer_tz(tz_name)
+    now_utc = now_utc or datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(tzinfo)
     if window == "monthly":
-        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start_local = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if start_local.month == 12:
+            end_local = start_local.replace(year=start_local.year + 1, month=1)
+        else:
+            end_local = start_local.replace(month=start_local.month + 1)
     else:
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start.astimezone(timezone.utc).isoformat()
+        start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local + timedelta(days=1)
+    return {
+        "viewer_timezone": tz_label,
+        "window_start_utc": start_local.astimezone(timezone.utc).isoformat(),
+        "window_end_utc": end_local.astimezone(timezone.utc).isoformat(),
+    }
 
 
-def api_budget():
+def _budget_window_start_utc(window: str, tz_name: str | None = None) -> str:
+    return _budget_window_bounds_utc(window, tz_name)["window_start_utc"]
+
+
+def api_budget(tz_name: str | None = None):
     budget_path = DB_PATH.parent / "budget.yaml"
     if not budget_path.exists():
         return {"enabled": False}
@@ -1778,9 +1809,10 @@ def api_budget():
         limit = g.get(f"{win_key}_usd")
         if limit is None:
             continue
+        bounds = _budget_window_bounds_utc(win_key, tz_name)
         spend = _one(
             "SELECT COALESCE(SUM(cost_usd),0.0) AS spent, COALESCE(SUM(estimated_llm_calls),0) AS est, COALESCE(SUM(api_calls),0) AS total FROM runs WHERE started_at >= ?",
-            (_budget_window_start_utc(win_key),),
+            (bounds["window_start_utc"],),
         )
         spent = float(spend.get("spent", 0))
         pct = spent / limit if limit > 0 else 0
@@ -1794,12 +1826,14 @@ def api_budget():
         scopes.append(
             {
                 "scope": f"global/{win_key}",
+                "window": win_key,
                 "spent": round(spent, 6),
                 "limit": limit,
                 "pct": round(pct * 100, 1),
                 "level": level,
                 "estimated_calls": spend.get("est", 0),
                 "total_calls": spend.get("total", 0),
+                **bounds,
             }
         )
 
@@ -1833,7 +1867,7 @@ def _validate_threshold(key: str, value, cfg: dict) -> str | None:
     return None
 
 
-def api_budget_update(payload):
+def api_budget_update(payload, tz_name: str | None = None):
     """Update budget.yaml from POST payload. Returns updated budget status or error."""
     budget_path = DB_PATH.parent / "budget.yaml"
     if not budget_path.exists():
@@ -1906,10 +1940,10 @@ def api_budget_update(payload):
         return {"enabled": False, "error": f"Failed to write budget.yaml: {e}"}
 
     # Return updated status by calling api_budget()
-    return api_budget()
+    return api_budget(tz_name)
 
 
-def api_budget_detail(scope: str, window: str):
+def api_budget_detail(scope: str, window: str, tz_name: str | None = None):
     """Get raw budget config for a specific scope/window for modal pre-fill."""
     if scope not in ALLOWED_SCOPES or window not in ALLOWED_WINDOWS:
         return {"error": "invalid scope or window"}
@@ -1938,6 +1972,7 @@ def api_budget_detail(scope: str, window: str):
         "soft_pct": thresholds.get("soft_pct", 0.8),
         "hard_pct": thresholds.get("hard_pct", 1.0),
         "on_estimated_mode": on_est.get("mode", "warn_only"),
+        **_budget_window_bounds_utc(window, tz_name),
     }
 
 
@@ -2151,13 +2186,16 @@ class Handler(SimpleHTTPRequestHandler):
                 )
 
             if path == "/api/budget":
-                return self._json(api_budget())
+                qs = parse_qs(parsed.query)
+                tz_name = qs.get("tz", [None])[0]
+                return self._json(api_budget(tz_name))
 
             if path == "/api/budget/detail":
                 qs = parse_qs(parsed.query)
                 scope = qs.get("scope", ["global"])[0]
                 window = qs.get("window", ["daily"])[0]
-                return self._json(api_budget_detail(scope, window))
+                tz_name = qs.get("tz", [None])[0]
+                return self._json(api_budget_detail(scope, window, tz_name))
 
             if path == "/api/token-breakdown":
                 qs = parse_qs(parsed.query)
@@ -2191,6 +2229,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
 
         if path == "/api/budget":
+            parsed_qs = parse_qs(parsed.query)
+            parsed_tz = parsed_qs.get("tz", [None])[0]
             content_length = int(self.headers.get("Content-Length", 0))
             if content_length > MAX_BUDGET_PAYLOAD:
                 self.send_response(413)
@@ -2205,7 +2245,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b"Invalid JSON")
                 return
-            result = api_budget_update(payload)
+            result = api_budget_update(payload, parsed_tz)
             # Return proper HTTP status: 200 for success, 400 for validation errors
             status = 200 if result.get("enabled") or "error" not in result else 400
             return self._json(result, status)

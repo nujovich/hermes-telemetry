@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import hermes_telemetry.db as db
@@ -312,3 +313,81 @@ def test_model_period_trends_week_groups_by_monday_start(serve_module):
     trends = serve_module.api_model_period_trends(window_hours=0, granularity="week", metric="tokens", top_n=2, limit_periods=12)
     assert [row["period"] for row in trends["rows"]] == ["2025-12-29"]
     assert trends["rows"][0]["models"]["gpt-5.4"]["total_tokens"] == 300
+
+
+def test_budget_window_bounds_follow_viewer_timezone_daily(serve_module):
+    bounds = serve_module._budget_window_bounds_utc(
+        "daily",
+        "Asia/Dhaka",
+        now_utc=datetime(2026, 6, 13, 18, 30, tzinfo=timezone.utc),
+    )
+    assert bounds["viewer_timezone"] == "Asia/Dhaka"
+    assert bounds["window_start_utc"] == "2026-06-13T18:00:00+00:00"
+    assert bounds["window_end_utc"] == "2026-06-14T18:00:00+00:00"
+
+
+def test_budget_window_bounds_follow_viewer_timezone_monthly(serve_module):
+    bounds = serve_module._budget_window_bounds_utc(
+        "monthly",
+        "Asia/Dhaka",
+        now_utc=datetime(2026, 12, 31, 20, 30, tzinfo=timezone.utc),
+    )
+    assert bounds["viewer_timezone"] == "Asia/Dhaka"
+    assert bounds["window_start_utc"] == "2026-12-31T18:00:00+00:00"
+    assert bounds["window_end_utc"] == "2027-01-31T18:00:00+00:00"
+
+
+def test_budget_update_returns_viewer_timezone_metadata(serve_module, tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "telemetry.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE runs (started_at TEXT, cost_usd REAL, estimated_llm_calls INTEGER, api_calls INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO runs (started_at, cost_usd, estimated_llm_calls, api_calls) VALUES (?, ?, ?, ?)",
+        ("2026-06-13T01:00:00+00:00", 0.5, 0, 1),
+    )
+    conn.commit()
+    conn.close()
+
+    budget_path = tmp_path / "budget.yaml"
+    budget_path.write_text(
+        "budgets:\n  global:\n    daily_usd: 5.0\n    monthly_usd: 100.0\nthresholds:\n  soft_pct: 0.8\n  hard_pct: 1.0\non_estimated:\n  mode: warn_only\n"
+    )
+
+    serve_module.DB_PATH = db_path
+    serve_module._local.c = None
+
+    updated = serve_module.api_budget_update({"scope": "global", "window": "daily", "limit_usd": 5.0}, "UTC")
+    expected = serve_module.api_budget("UTC")
+
+    updated_daily = next(x for x in updated["budgets"] if x["scope"] == "global/daily")
+    expected_daily = next(x for x in expected["budgets"] if x["scope"] == "global/daily")
+    assert updated_daily["viewer_timezone"] == expected_daily["viewer_timezone"] == "UTC"
+    assert updated_daily["window_start_utc"] == expected_daily["window_start_utc"]
+    assert updated_daily["window_end_utc"] == expected_daily["window_end_utc"]
+
+
+def test_budget_detail_restores_default_thresholds(serve_module, tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "telemetry.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE runs (started_at TEXT, cost_usd REAL, estimated_llm_calls INTEGER, api_calls INTEGER)"
+    )
+    conn.commit()
+    conn.close()
+
+    budget_path = tmp_path / "budget.yaml"
+    budget_path.write_text("budgets:\n  global:\n    daily_usd: 5.0\n")
+
+    serve_module.DB_PATH = db_path
+    serve_module._local.c = None
+
+    detail = serve_module.api_budget_detail("global", "daily", "UTC")
+    assert detail["soft_pct"] == 0.8
+    assert detail["hard_pct"] == 1.0
+    assert detail["on_estimated_mode"] == "warn_only"
