@@ -85,6 +85,22 @@ def _since_clause(window_hours, col="started_at"):
     return f"{col} >= '{cutoff}'"
 
 
+def _normalize_granularity(granularity: str | None) -> str:
+    g = (granularity or "day").strip().lower()
+    if g not in {"day", "week", "month"}:
+        raise ValueError(f"invalid granularity: {granularity!r}")
+    return g
+
+
+def _period_label_expr(col: str, granularity: str) -> str:
+    granularity = _normalize_granularity(granularity)
+    if granularity == "day":
+        return f"DATE({col})"
+    if granularity == "week":
+        return f"DATE({col}, '-' || ((CAST(strftime('%w', {col}) AS INTEGER) + 6) % 7) || ' days')"
+    return f"strftime('%Y-%m', {col})"
+
+
 def _active_hermes_session_ids():
     """Return session IDs still present in Hermes' active/session files.
 
@@ -1384,6 +1400,192 @@ def api_daily_model_chart(window_hours=24, limit_days=90, top_n=5):
     }
 
 
+def api_model_period_trends(window_hours=24, granularity="day", metric="tokens", top_n=6, limit_periods=24):
+    granularity = _normalize_granularity(granularity)
+    metric = (metric or "tokens").strip().lower()
+    if metric not in {"tokens", "cost", "requests", "share"}:
+        raise ValueError(f"invalid metric: {metric!r}")
+    top_n = max(1, min(8, int(top_n)))
+    limit_periods = max(1, min(36, int(limit_periods)))
+    since_clause_ts = _since_clause(window_hours, "ts")
+    period_expr = _period_label_expr("ts", granularity)
+
+    metric_expr = {
+        "tokens": "COALESCE(SUM(tokens_in), 0) + COALESCE(SUM(tokens_out), 0) + COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_write_tokens), 0) + COALESCE(SUM(reasoning_tokens), 0)",
+        "cost": "COALESCE(SUM(cost_usd), 0)",
+        "requests": "COUNT(*)",
+        "share": "COALESCE(SUM(tokens_in), 0) + COALESCE(SUM(tokens_out), 0) + COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_write_tokens), 0) + COALESCE(SUM(reasoning_tokens), 0)",
+    }[metric]
+
+    top_models = _rows(
+        f"""
+        SELECT COALESCE(model, '—') AS model,
+               {metric_expr} AS metric_total
+        FROM llm_calls
+        WHERE {since_clause_ts}
+        GROUP BY COALESCE(model, '—')
+        ORDER BY metric_total DESC, model ASC
+        LIMIT ?
+        """,
+        (top_n,),
+    )
+    model_names = [r["model"] for r in top_models]
+
+    period_rows = _rows(
+        f"""
+        SELECT {period_expr} AS period,
+               MIN(DATE(ts)) AS period_start,
+               COALESCE(model, '—') AS model,
+               COUNT(*) AS api_calls,
+               COALESCE(SUM(tokens_in), 0) AS tokens_in,
+               COALESCE(SUM(tokens_out), 0) AS tokens_out,
+               COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+               COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+               COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+               ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+               COALESCE(SUM(tokens_in), 0)
+                   + COALESCE(SUM(tokens_out), 0)
+                   + COALESCE(SUM(cache_read_tokens), 0)
+                   + COALESCE(SUM(cache_write_tokens), 0)
+                   + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
+        FROM llm_calls
+        WHERE {since_clause_ts}
+        GROUP BY {period_expr}, COALESCE(model, '—')
+        ORDER BY period_start ASC, model ASC
+        """
+    )
+
+    period_order = []
+    period_map = {}
+    for row in period_rows:
+        period = row["period"]
+        if period not in period_map:
+            period_order.append(period)
+            period_map[period] = {
+                "period": period,
+                "period_start": row["period_start"],
+                "models": {m: {"api_calls": 0, "total_tokens": 0, "cost_usd": 0.0} for m in model_names},
+                "other": {"api_calls": 0, "total_tokens": 0, "cost_usd": 0.0},
+                "totals": {"api_calls": 0, "total_tokens": 0, "cost_usd": 0.0},
+            }
+        bucket = period_map[period]["models"].get(row["model"]) or period_map[period]["other"]
+        bucket["api_calls"] += int(row.get("api_calls") or 0)
+        bucket["total_tokens"] += int(row.get("total_tokens") or 0)
+        bucket["cost_usd"] = round(float(bucket["cost_usd"] or 0) + float(row.get("cost_usd") or 0), 6)
+        period_map[period]["totals"]["api_calls"] += int(row.get("api_calls") or 0)
+        period_map[period]["totals"]["total_tokens"] += int(row.get("total_tokens") or 0)
+        period_map[period]["totals"]["cost_usd"] = round(
+            float(period_map[period]["totals"]["cost_usd"] or 0) + float(row.get("cost_usd") or 0),
+            6,
+        )
+
+    if len(period_order) > limit_periods:
+        period_order = period_order[-limit_periods:]
+
+    return {
+        "granularity": granularity,
+        "metric": metric,
+        "models": model_names,
+        "rows": [period_map[p] for p in period_order],
+    }
+
+
+def api_model_share_comparison(window_hours=24, granularity="day", limit=12):
+    granularity = _normalize_granularity(granularity)
+    limit = max(1, min(20, int(limit)))
+    since_clause_ts = _since_clause(window_hours, "ts")
+    period_expr = _period_label_expr("ts", granularity)
+    rows = _rows(
+        f"""
+        SELECT {period_expr} AS period,
+               MIN(DATE(ts)) AS period_start,
+               COALESCE(model, '—') AS model,
+               COUNT(*) AS api_calls,
+               ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+               COALESCE(SUM(tokens_in), 0)
+                   + COALESCE(SUM(tokens_out), 0)
+                   + COALESCE(SUM(cache_read_tokens), 0)
+                   + COALESCE(SUM(cache_write_tokens), 0)
+                   + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
+        FROM llm_calls
+        WHERE {since_clause_ts}
+        GROUP BY {period_expr}, COALESCE(model, '—')
+        ORDER BY period_start ASC, model ASC
+        """
+    )
+    if not rows:
+        return {"granularity": granularity, "current_period": None, "previous_period": None, "rows": []}
+
+    periods = []
+    period_models = {}
+    for row in rows:
+        period = row["period"]
+        if period not in period_models:
+            periods.append(period)
+            period_models[period] = {"models": {}, "totals": {"total_tokens": 0, "cost_usd": 0.0, "api_calls": 0}}
+        period_models[period]["models"][row["model"]] = {
+            "total_tokens": int(row.get("total_tokens") or 0),
+            "cost_usd": float(row.get("cost_usd") or 0),
+            "api_calls": int(row.get("api_calls") or 0),
+        }
+        period_models[period]["totals"]["total_tokens"] += int(row.get("total_tokens") or 0)
+        period_models[period]["totals"]["cost_usd"] = round(
+            float(period_models[period]["totals"]["cost_usd"] or 0) + float(row.get("cost_usd") or 0),
+            6,
+        )
+        period_models[period]["totals"]["api_calls"] += int(row.get("api_calls") or 0)
+
+    current_period = periods[-1]
+    if len(periods) < 2:
+        return {
+            "granularity": granularity,
+            "current_period": current_period,
+            "previous_period": None,
+            "rows": [],
+        }
+    previous_period = periods[-2]
+    current = period_models[current_period]
+    previous = period_models[previous_period]
+    all_models = set(current["models"]) | set(previous["models"])
+    out_rows = []
+    current_total_tokens = max(1, current["totals"]["total_tokens"])
+    prev_total_tokens = max(1, previous["totals"]["total_tokens"])
+    current_total_cost = max(0.000001, float(current["totals"]["cost_usd"] or 0.0))
+    prev_total_cost = max(0.000001, float(previous["totals"]["cost_usd"] or 0.0))
+    for model in all_models:
+        cur = current["models"].get(model, {"total_tokens": 0, "cost_usd": 0.0, "api_calls": 0})
+        prev = previous["models"].get(model, {"total_tokens": 0, "cost_usd": 0.0, "api_calls": 0})
+        current_token_share = round((cur["total_tokens"] / current_total_tokens) * 100, 2) if current["totals"]["total_tokens"] else 0.0
+        previous_token_share = round((prev["total_tokens"] / prev_total_tokens) * 100, 2) if previous["totals"]["total_tokens"] else 0.0
+        current_cost_share = round((float(cur["cost_usd"] or 0.0) / current_total_cost) * 100, 2) if current["totals"]["cost_usd"] else 0.0
+        previous_cost_share = round((float(prev["cost_usd"] or 0.0) / prev_total_cost) * 100, 2) if previous["totals"]["cost_usd"] else 0.0
+        out_rows.append(
+            {
+                "model": model,
+                "current_tokens": cur["total_tokens"],
+                "previous_tokens": prev["total_tokens"],
+                "current_token_share_pct": current_token_share,
+                "previous_token_share_pct": previous_token_share,
+                "token_share_delta_pct": round(current_token_share - previous_token_share, 2),
+                "current_cost_usd": round(float(cur["cost_usd"] or 0.0), 6),
+                "previous_cost_usd": round(float(prev["cost_usd"] or 0.0), 6),
+                "current_cost_share_pct": current_cost_share,
+                "previous_cost_share_pct": previous_cost_share,
+                "cost_share_delta_pct": round(current_cost_share - previous_cost_share, 2),
+                "current_api_calls": cur["api_calls"],
+                "previous_api_calls": prev["api_calls"],
+                "api_calls_delta": cur["api_calls"] - prev["api_calls"],
+            }
+        )
+    out_rows.sort(key=lambda r: (r["current_tokens"], r["current_cost_usd"], r["current_api_calls"]), reverse=True)
+    return {
+        "granularity": granularity,
+        "current_period": current_period,
+        "previous_period": previous_period,
+        "rows": out_rows[:limit],
+    }
+
+
 def api_session_detail(session_id: str):
     if not session_id:
         return {"error": "session_id is required"}
@@ -1923,6 +2125,28 @@ class Handler(SimpleHTTPRequestHandler):
                         _parse_int(qs.get("hours", [24])[0], "hours"),
                         _parse_int(qs.get("limit_days", [90])[0], "limit_days"),
                         _parse_int(qs.get("top_n", [5])[0], "top_n"),
+                    )
+                )
+
+            if path == "/api/model-period-trends":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_model_period_trends(
+                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        qs.get("granularity", ["day"])[0],
+                        qs.get("metric", ["tokens"])[0],
+                        _parse_int(qs.get("top_n", [6])[0], "top_n"),
+                        _parse_int(qs.get("limit_periods", [24])[0], "limit_periods"),
+                    )
+                )
+
+            if path == "/api/model-share-comparison":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_model_share_comparison(
+                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        qs.get("granularity", ["day"])[0],
+                        _parse_int(qs.get("limit", [12])[0], "limit"),
                     )
                 )
 

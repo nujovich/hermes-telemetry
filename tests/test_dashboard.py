@@ -251,3 +251,64 @@ def test_operator_followup_api_surfaces(serve_module):
     assert by_cron["job-a"]["failed_runs"] == 1
     assert by_cron["job-a"]["wasted_tokens"] == 1400
     assert "failure-rate" in by_cron["job-a"]["risks"]
+
+
+def test_model_period_trends_and_share_comparison(serve_module):
+    db.start_run("sess-may-m1", model="gpt-5.4", platform="cli")
+    db.record_llm_call("sess-may-m1", "2026-05-15T10:00:00+00:00", "gpt-5.4", "openai-codex", 100, 50, 0.01, 120)
+    db.end_run("sess-may-m1", "ok")
+
+    db.start_run("sess-may-m2", model="claude", platform="discord")
+    db.record_llm_call("sess-may-m2", "2026-05-16T10:00:00+00:00", "claude", "anthropic", 50, 50, 0.02, 140)
+    db.end_run("sess-may-m2", "ok")
+
+    db.start_run("sess-june-m1", model="gpt-5.4", platform="cli")
+    db.record_llm_call("sess-june-m1", "2026-06-10T10:00:00+00:00", "gpt-5.4", "openai-codex", 300, 100, 0.03, 220)
+    db.end_run("sess-june-m1", "ok")
+
+    db.start_run("sess-june-m2", model="claude", platform="discord")
+    db.record_llm_call("sess-june-m2", "2026-06-11T10:00:00+00:00", "claude", "anthropic", 100, 100, 0.06, 180)
+    db.end_run("sess-june-m2", "ok")
+
+    trends = serve_module.api_model_period_trends(window_hours=0, granularity="month", metric="tokens", top_n=2, limit_periods=12)
+    assert trends["granularity"] == "month"
+    assert trends["models"] == ["gpt-5.4", "claude"]
+    assert [row["period"] for row in trends["rows"]] == ["2026-05", "2026-06"]
+    june = trends["rows"][-1]
+    assert june["models"]["gpt-5.4"]["total_tokens"] == 400
+    assert june["models"]["claude"]["total_tokens"] == 200
+    assert june["totals"]["total_tokens"] == 600
+
+    comparison = serve_module.api_model_share_comparison(window_hours=0, granularity="month", limit=10)
+    assert comparison["current_period"] == "2026-06"
+    assert comparison["previous_period"] == "2026-05"
+    by_model = {row["model"]: row for row in comparison["rows"]}
+    assert by_model["gpt-5.4"]["current_token_share_pct"] == pytest.approx(66.67, abs=0.01)
+    assert by_model["gpt-5.4"]["previous_token_share_pct"] == pytest.approx(60.0, abs=0.01)
+    assert by_model["gpt-5.4"]["token_share_delta_pct"] == pytest.approx(6.67, abs=0.01)
+    assert by_model["claude"]["current_cost_share_pct"] == pytest.approx(66.67, abs=0.01)
+
+
+def test_model_share_comparison_requires_two_periods(serve_module):
+    db.start_run("sess-only", model="gpt-5.4", platform="cli")
+    db.record_llm_call("sess-only", "2026-06-10T10:00:00+00:00", "gpt-5.4", "openai-codex", 300, 100, 0.03, 220)
+    db.end_run("sess-only", "ok")
+
+    comparison = serve_module.api_model_share_comparison(window_hours=0, granularity="month", limit=10)
+    assert comparison["current_period"] == "2026-06"
+    assert comparison["previous_period"] is None
+    assert comparison["rows"] == []
+
+
+def test_model_period_trends_week_groups_by_monday_start(serve_module):
+    db.start_run("sess-week-a", model="gpt-5.4", platform="cli")
+    db.record_llm_call("sess-week-a", "2025-12-29T10:00:00+00:00", "gpt-5.4", "openai-codex", 100, 0, 0.01, 100)
+    db.end_run("sess-week-a", "ok")
+
+    db.start_run("sess-week-b", model="gpt-5.4", platform="cli")
+    db.record_llm_call("sess-week-b", "2026-01-02T10:00:00+00:00", "gpt-5.4", "openai-codex", 200, 0, 0.02, 100)
+    db.end_run("sess-week-b", "ok")
+
+    trends = serve_module.api_model_period_trends(window_hours=0, granularity="week", metric="tokens", top_n=2, limit_periods=12)
+    assert [row["period"] for row in trends["rows"]] == ["2025-12-29"]
+    assert trends["rows"][0]["models"]["gpt-5.4"]["total_tokens"] == 300
