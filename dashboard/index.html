@@ -330,7 +330,7 @@ function initAutoRefresh() {
 }
 function badge(v, map) {
   const cls = map[v] || 'cli';
-  return `<span class="badge ${cls}">${v}</span>`;
+  return `<span class="badge ${cls}">${escHtml(v || '—')}</span>`;
 }
 const statusBadge = v => badge(v, { ok: 'ok', error: 'error', interrupted: 'error', running: 'running' });
 const platformBadge = v => badge(v || 'cli', { cron: 'cron', cli: 'cli', telegram: 'cli', discord: 'cli' });
@@ -363,7 +363,7 @@ async function openBudgetModal(scope) {
 
   // Reset fields immediately - no waiting
   $('#budgetScope').value = actualScope;
-  $('#budgetWindow').value = 'daily';  // reset window dropdown to daily
+  $('#budgetWindow').value = actualWindow;
   $('#budgetLimit').value = '';
   $('#budgetSoftPct').value = '';
   $('#budgetHardPct').value = '';
@@ -372,17 +372,15 @@ async function openBudgetModal(scope) {
   $('#budgetModalError').textContent = '';
 
   // Then fetch details for pre-fill (async, non-blocking)
-  // Always fetch window=daily as default — avoids stale dropdown state bug
   try {
-    const res = await fetch(`/api/budget/detail?scope=${encodeURIComponent(actualScope)}&window=daily`);
+    const res = await fetch(`/api/budget/detail?scope=${encodeURIComponent(actualScope)}&window=${encodeURIComponent(actualWindow)}`);
     const data = await res.json();
     if (!data.error) {
+      $('#budgetWindow').value = data.window || actualWindow;
       $('#budgetLimit').value = data.limit_usd !== null && data.limit_usd !== undefined ? data.limit_usd : '';
       $('#budgetSoftPct').value = data.soft_pct !== undefined ? data.soft_pct : '';
       $('#budgetHardPct').value = data.hard_pct !== undefined ? data.hard_pct : '';
       $('#budgetOnEstimated').value = data.on_estimated_mode || 'warn_only';
-      // Set window dropdown to match the fetched data's window if needed
-      // Budget config has separate daily/monthly limits per scope
     }
   } catch {
     // Keep defaults on network error - modal already open with empty fields
@@ -1044,7 +1042,7 @@ async function loadAll(options = {}) {
         const platform = row.platform || 'cli';
         const status = row.status || '—';
         const cronShort = (row.cron_job_id || '—').substring(0, 16);
-        t += `<tr class="clickable-row" onclick='openSessionDetail(${JSON.stringify(row.session_id || '')})'><td class="text-muted">${time}</td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${JSON.stringify(platform)}})'>${platformBadge(platform)}</span></td><td class="text-muted">${row.cron_job_id ? `<span class="inline-btn" onclick='event.stopPropagation(); addDrilldown({cron_job_id:${JSON.stringify(row.cron_job_id || '')}})'>${escHtml(cronShort)}</span>` : '—'}</td><td class="text-muted">${model}</td><td><span onclick='event.stopPropagation(); addDrilldown({status:${JSON.stringify(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${row.session_id}">${sid}</code></td></tr>`;
+        t += `<tr class="clickable-row" onclick='openSessionDetail(${JSON.stringify(row.session_id || '')})'><td class="text-muted">${escHtml(time)}</td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${JSON.stringify(platform)}})'>${platformBadge(platform)}</span></td><td class="text-muted">${row.cron_job_id ? `<span class="inline-btn" onclick='event.stopPropagation(); addDrilldown({cron_job_id:${JSON.stringify(row.cron_job_id || '')}})'>${escHtml(cronShort)}</span>` : '—'}</td><td class="text-muted" title="${escHtml(row.model || '—')}">${escHtml(model)}</td><td><span onclick='event.stopPropagation(); addDrilldown({status:${JSON.stringify(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml(sid)}</code></td></tr>`;
       }
       t += '</tbody></table><div class="subtle-note">Click platform, cron job, or status for a filtered breakdown view. Click row for full session detail.</div>';
       html += renderTableCard('runsTable', 'Recent Sessions', t);

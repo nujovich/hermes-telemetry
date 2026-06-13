@@ -63,16 +63,26 @@ def _one(sql, params=()):
     return dict(r) if r else {}
 
 
-def _since_clause(window_hours, col="started_at"):
-    """Return SQL WHERE clause for time window. 0 = all time (no filter).
-    Args:
-        window_hours: 0 = all time (no filter), otherwise hours back
-        col: column name (default 'started_at', use 'ts' for llm_calls)
+def _since_cutoff_iso(window_hours):
+    """UTC ISO cutoff matching the stored timestamp format in telemetry.db.
+
+    runs.started_at and llm_calls.ts are stored as UTC ISO-8601 strings with a
+    +00:00 offset. Using SQLite datetime('now', ...) creates a different string
+    format and breaks lexicographic comparisons, so generate the cutoff in the
+    same format as the stored data.
     """
     wh = int(window_hours)
-    if wh == 0:
+    if wh <= 0:
+        return None
+    return (datetime.now(timezone.utc) - timedelta(hours=wh)).isoformat()
+
+
+def _since_clause(window_hours, col="started_at"):
+    """Return SQL WHERE clause for time window. 0 = all time (no filter)."""
+    cutoff = _since_cutoff_iso(window_hours)
+    if cutoff is None:
         return "1=1"
-    return f"{col} >= datetime('now', '-{wh} hours')"
+    return f"{col} >= '{cutoff}'"
 
 
 def _active_hermes_session_ids():
@@ -168,7 +178,7 @@ def api_summary(window_hours=24):
         GROUP BY tool_name ORDER BY calls DESC LIMIT 10
     """)
 
-    # daily cost chart data (last 7 days for 24h/7d windows, last 30 days for 30d, last 90 days for 90d, unbounded for all-time)
+    # daily cost chart data
     daily_window = int(window_hours)
     if daily_window == 0:
         daily_cost = _rows("""
@@ -180,15 +190,19 @@ def api_summary(window_hours=24):
             ORDER BY day
         """)
     else:
-        daily_cost = _rows(f"""
+        cutoff = _since_cutoff_iso(daily_window)
+        daily_cost = _rows(
+            """
             SELECT DATE(started_at) AS day,
                    ROUND(SUM(cost_usd), 4) AS cost,
                    COUNT(*) AS runs
             FROM runs
-            WHERE started_at >= datetime('now', '-{daily_window // 24} days')
+            WHERE started_at >= ?
             GROUP BY DATE(started_at)
             ORDER BY day
-        """)
+        """,
+            (cutoff,),
+        )
 
     return {
         "window_hours": int(window_hours),
@@ -731,6 +745,15 @@ def api_cache_efficiency(window_hours=24):
     return {"overall": overall, "by_model": by_model}
 
 
+def _budget_window_start_utc(window: str) -> str:
+    now = datetime.now().astimezone()
+    if window == "monthly":
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(timezone.utc).isoformat()
+
+
 def api_budget():
     budget_path = DB_PATH.parent / "budget.yaml"
     if not budget_path.exists():
@@ -747,28 +770,16 @@ def api_budget():
     thresholds = cfg.get("thresholds", {})
     on_est = cfg.get("on_estimated", {})
 
-    # evaluate each scope
-    now = datetime.now(timezone.utc)
-    now.strftime("%Y-%m-%d")
-    now.strftime("%Y-%m")
-    local_now = now.astimezone()
-    local_now.strftime("%Y-%m-%d")
-    local_now.strftime("%Y-%m")
-
     scopes = []
 
-    # global daily
     g = budgets.get("global", {})
-    for win_key, win_label, since in [
-        ("daily", "global/daily", now - timedelta(hours=24)),
-        ("monthly", "monthly", now - timedelta(days=30)),
-    ]:
+    for win_key in ("daily", "monthly"):
         limit = g.get(f"{win_key}_usd")
         if limit is None:
             continue
         spend = _one(
             "SELECT COALESCE(SUM(cost_usd),0.0) AS spent, COALESCE(SUM(estimated_llm_calls),0) AS est, COALESCE(SUM(api_calls),0) AS total FROM runs WHERE started_at >= ?",
-            (since.isoformat(),),
+            (_budget_window_start_utc(win_key),),
         )
         spent = float(spend.get("spent", 0))
         pct = spent / limit if limit > 0 else 0
@@ -781,7 +792,7 @@ def api_budget():
             level = "soft"
         scopes.append(
             {
-                "scope": win_label,
+                "scope": f"global/{win_key}",
                 "spent": round(spent, 6),
                 "limit": limit,
                 "pct": round(pct * 100, 1),
@@ -795,6 +806,14 @@ def api_budget():
 
 
 MAX_BUDGET_PAYLOAD = 1_048_576  # 1 MiB
+
+
+def _parse_int(value, name: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid {name}: {value!r}") from None
+
 
 # Allowed values for budget config — prevents YAML key injection
 ALLOWED_SCOPES = {"global", "per_cron_job", "per_sender"}
@@ -932,95 +951,98 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
 
-        # API routes
-        if path == "/api/summary":
-            qs = parse_qs(parsed.query)
-            return self._json(api_summary(qs.get("hours", [24])[0]))
+        try:
+            # API routes
+            if path == "/api/summary":
+                qs = parse_qs(parsed.query)
+                return self._json(api_summary(_parse_int(qs.get("hours", [24])[0], "hours")))
 
-        if path == "/api/cron":
-            qs = parse_qs(parsed.query)
-            return self._json(api_cron(qs.get("hours", [168])[0]))
+            if path == "/api/cron":
+                qs = parse_qs(parsed.query)
+                return self._json(api_cron(_parse_int(qs.get("hours", [168])[0], "hours")))
 
-        if path == "/api/providers":
-            qs = parse_qs(parsed.query)
-            return self._json(api_providers(int(qs.get("hours", [24])[0])))
+            if path == "/api/providers":
+                qs = parse_qs(parsed.query)
+                return self._json(api_providers(_parse_int(qs.get("hours", [24])[0], "hours")))
 
-        if path == "/api/cache-efficiency":
-            qs = parse_qs(parsed.query)
-            return self._json(api_cache_efficiency(int(qs.get("hours", [24])[0])))
+            if path == "/api/cache-efficiency":
+                qs = parse_qs(parsed.query)
+                return self._json(api_cache_efficiency(_parse_int(qs.get("hours", [24])[0], "hours")))
 
-        if path == "/api/runs":
-            qs = parse_qs(parsed.query)
-            return self._json(
-                api_runs(
-                    int(qs.get("limit", [50])[0]),
-                    int(qs.get("hours", [0])[0]),
-                    qs.get("day", [None])[0],
-                    qs.get("model", [None])[0],
-                    qs.get("provider", [None])[0],
-                    qs.get("platform", [None])[0],
-                    qs.get("status", [None])[0],
-                    qs.get("session_id", [None])[0],
-                    qs.get("cron_job_id", [None])[0],
-                    qs.get("q", [None])[0],
-                    qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
+            if path == "/api/runs":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_runs(
+                        _parse_int(qs.get("limit", [50])[0], "limit"),
+                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        qs.get("day", [None])[0],
+                        qs.get("model", [None])[0],
+                        qs.get("provider", [None])[0],
+                        qs.get("platform", [None])[0],
+                        qs.get("status", [None])[0],
+                        qs.get("session_id", [None])[0],
+                        qs.get("cron_job_id", [None])[0],
+                        qs.get("q", [None])[0],
+                        qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
+                    )
                 )
-            )
 
-        if path == "/api/session-detail":
-            qs = parse_qs(parsed.query)
-            return self._json(api_session_detail(qs.get("session_id", [""])[0]))
+            if path == "/api/session-detail":
+                qs = parse_qs(parsed.query)
+                return self._json(api_session_detail(qs.get("session_id", [""])[0]))
 
-        if path == "/api/model-tokens":
-            qs = parse_qs(parsed.query)
-            return self._json(
-                api_model_tokens(
-                    int(qs.get("hours", [24])[0]),
-                    int(qs.get("limit", [100])[0]),
+            if path == "/api/model-tokens":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_model_tokens(
+                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        _parse_int(qs.get("limit", [100])[0], "limit"),
+                    )
                 )
-            )
 
-        if path == "/api/daily-tokens":
-            qs = parse_qs(parsed.query)
-            return self._json(
-                api_daily_tokens(
-                    int(qs.get("hours", [24])[0]),
-                    int(qs.get("page", [1])[0]),
-                    int(qs.get("per_page", [15])[0]),
+            if path == "/api/daily-tokens":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_daily_tokens(
+                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        _parse_int(qs.get("page", [1])[0], "page"),
+                        _parse_int(qs.get("per_page", [15])[0], "per_page"),
+                    )
                 )
-            )
 
-        if path == "/api/daily-token-chart":
-            qs = parse_qs(parsed.query)
-            return self._json(
-                api_daily_token_chart(
-                    int(qs.get("hours", [24])[0]),
-                    int(qs.get("limit_days", [90])[0]),
+            if path == "/api/daily-token-chart":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_daily_token_chart(
+                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        _parse_int(qs.get("limit_days", [90])[0], "limit_days"),
+                    )
                 )
-            )
 
-        if path == "/api/daily-model-chart":
-            qs = parse_qs(parsed.query)
-            return self._json(
-                api_daily_model_chart(
-                    int(qs.get("hours", [24])[0]),
-                    int(qs.get("limit_days", [90])[0]),
-                    int(qs.get("top_n", [5])[0]),
+            if path == "/api/daily-model-chart":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_daily_model_chart(
+                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        _parse_int(qs.get("limit_days", [90])[0], "limit_days"),
+                        _parse_int(qs.get("top_n", [5])[0], "top_n"),
+                    )
                 )
-            )
 
-        if path == "/api/budget":
-            return self._json(api_budget())
+            if path == "/api/budget":
+                return self._json(api_budget())
 
-        if path == "/api/budget/detail":
-            qs = parse_qs(parsed.query)
-            scope = qs.get("scope", ["global"])[0]
-            window = qs.get("window", ["daily"])[0]
-            return self._json(api_budget_detail(scope, window))
+            if path == "/api/budget/detail":
+                qs = parse_qs(parsed.query)
+                scope = qs.get("scope", ["global"])[0]
+                window = qs.get("window", ["daily"])[0]
+                return self._json(api_budget_detail(scope, window))
 
-        if path == "/api/token-breakdown":
-            qs = parse_qs(parsed.query)
-            return self._json(api_token_breakdown(int(qs.get("hours", [24])[0])))
+            if path == "/api/token-breakdown":
+                qs = parse_qs(parsed.query)
+                return self._json(api_token_breakdown(_parse_int(qs.get("hours", [24])[0], "hours")))
+        except ValueError as e:
+            return self._json({"error": str(e)}, 400)
 
         # Static: serve index.html for /
         if path == "/" or path == "/index.html":
@@ -1073,7 +1095,6 @@ class Handler(SimpleHTTPRequestHandler):
         body = json.dumps(data, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
