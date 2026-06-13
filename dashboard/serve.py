@@ -1007,6 +1007,202 @@ def api_error_center(
     }
 
 
+def api_model_efficiency(window_hours=0, limit=50, include_deleted=False):
+    limit = max(1, min(int(limit), 500))
+    since_clause = _since_clause(window_hours, "lc.ts")
+    tool_since_clause = _since_clause(window_hours, "tc.ts")
+    sub_lc_since_clause = _since_clause(window_hours, "lc2.ts")
+    visible_sql, visible_params = _visible_sessions_clause("r.session_id", include_deleted)
+    sub_visible_sql = visible_sql.replace("r.session_id", "r2.session_id")
+    rows = _rows(
+        f"""
+        SELECT COALESCE(lc.model, '—') AS model,
+               COALESCE(lc.provider, '—') AS provider,
+               COUNT(*) AS api_calls,
+               COUNT(DISTINCT lc.session_id) AS sessions,
+               COALESCE(SUM(lc.tokens_in), 0) AS tokens_in,
+               COALESCE(SUM(lc.tokens_out), 0) AS tokens_out,
+               COALESCE(SUM(lc.cache_read_tokens), 0) AS cache_read_tokens,
+               COALESCE(SUM(lc.cache_write_tokens), 0) AS cache_write_tokens,
+               COALESCE(SUM(lc.reasoning_tokens), 0) AS reasoning_tokens,
+               ROUND(COALESCE(SUM(lc.cost_usd), 0), 6) AS cost_usd,
+               ROUND(AVG(lc.latency_ms), 1) AS avg_latency_ms,
+               SUM(CASE WHEN lc.estimated = 1 THEN 1 ELSE 0 END) AS estimated_calls,
+               SUM(CASE WHEN COALESCE(r.status, 'running') NOT IN ('ok', 'running') THEN 1 ELSE 0 END) AS failed_run_calls,
+               COUNT(DISTINCT CASE WHEN COALESCE(r.status, 'running') NOT IN ('ok', 'running') THEN lc.session_id END) AS failed_sessions,
+               COALESCE((
+                   SELECT COUNT(DISTINCT tc.id)
+                   FROM tool_calls tc
+                   LEFT JOIN runs r2 ON r2.session_id = tc.session_id
+                   LEFT JOIN llm_calls lc2 ON lc2.session_id = tc.session_id
+                   WHERE {tool_since_clause}
+                     AND {sub_visible_sql}
+                     AND {sub_lc_since_clause}
+                     AND COALESCE(lc2.model, '—') = COALESCE(lc.model, '—')
+                     AND COALESCE(lc2.provider, '—') = COALESCE(lc.provider, '—')
+               ), 0) AS tool_calls
+        FROM llm_calls lc
+        LEFT JOIN runs r ON r.session_id = lc.session_id
+        WHERE {since_clause} AND {visible_sql}
+        GROUP BY COALESCE(lc.model, '—'), COALESCE(lc.provider, '—')
+        ORDER BY (COALESCE(SUM(lc.tokens_in), 0) + COALESCE(SUM(lc.tokens_out), 0) + COALESCE(SUM(lc.cache_read_tokens), 0) + COALESCE(SUM(lc.cache_write_tokens), 0) + COALESCE(SUM(lc.reasoning_tokens), 0)) DESC
+        LIMIT ?
+        """,
+        (*visible_params, *visible_params, limit),
+    )
+    for row in rows:
+        api_calls = int(row.get("api_calls") or 0)
+        tokens_in = int(row.get("tokens_in") or 0)
+        tokens_out = int(row.get("tokens_out") or 0)
+        cache_read = int(row.get("cache_read_tokens") or 0)
+        cache_write = int(row.get("cache_write_tokens") or 0)
+        reasoning = int(row.get("reasoning_tokens") or 0)
+        total_tokens = tokens_in + tokens_out + cache_read + cache_write + reasoning
+        cost = float(row.get("cost_usd") or 0.0)
+        tool_calls = int(row.get("tool_calls") or 0)
+        estimated = int(row.get("estimated_calls") or 0)
+        failed_sessions = int(row.get("failed_sessions") or 0)
+        sessions = int(row.get("sessions") or 0)
+        row["total_tokens"] = total_tokens
+        row["cost_per_1m"] = round((cost / total_tokens) * 1_000_000, 6) if total_tokens else 0.0
+        row["output_input_ratio"] = round(tokens_out / tokens_in, 4) if tokens_in else 0.0
+        row["cache_hit_share_pct"] = (
+            round((cache_read / (tokens_in + cache_read)) * 100, 2)
+            if (tokens_in + cache_read)
+            else 0.0
+        )
+        row["tool_calls_per_api"] = round(tool_calls / api_calls, 2) if api_calls else 0.0
+        row["estimated_pct"] = round((estimated / api_calls) * 100, 2) if api_calls else 0.0
+        row["failure_pct"] = round((failed_sessions / sessions) * 100, 2) if sessions else 0.0
+        score = 100
+        score -= min(35, row["failure_pct"] * 2)
+        score -= min(25, max(0, (float(row.get("avg_latency_ms") or 0) - 5000) / 500))
+        score -= min(20, row["estimated_pct"] / 5)
+        score += min(10, row["cache_hit_share_pct"] / 10)
+        row["efficiency_score"] = round(max(0, min(100, score)), 1)
+    return rows
+
+
+def api_tool_failure_heatmap(window_hours=0, limit=80, include_deleted=False):
+    limit = max(1, min(int(limit), 500))
+    since_clause = _since_clause(window_hours, "tc.ts")
+    visible_sql, visible_params = _visible_sessions_clause("r.session_id", include_deleted)
+    rows = _rows(
+        f"""
+        SELECT tc.tool_name,
+               COALESCE(r.model, '—') AS model,
+               COALESCE(r.platform, 'cli') AS platform,
+               COALESCE(r.cron_job_id, '') AS cron_job_id,
+               COUNT(*) AS calls,
+               SUM(CASE WHEN tc.ok = 0 THEN 1 ELSE 0 END) AS failed_calls,
+               COUNT(DISTINCT tc.session_id) AS sessions,
+               ROUND(AVG(tc.latency_ms), 1) AS avg_latency_ms,
+               MAX(tc.ts) AS last_seen
+        FROM tool_calls tc
+        LEFT JOIN runs r ON r.session_id = tc.session_id
+        WHERE {since_clause} AND {visible_sql}
+        GROUP BY tc.tool_name, COALESCE(r.model, '—'), COALESCE(r.platform, 'cli'), COALESCE(r.cron_job_id, '')
+        HAVING calls > 0
+        ORDER BY failed_calls DESC, calls DESC, avg_latency_ms DESC
+        LIMIT ?
+        """,
+        (*visible_params, limit),
+    )
+    for row in rows:
+        calls = int(row.get("calls") or 0)
+        failed = int(row.get("failed_calls") or 0)
+        row["failure_pct"] = round((failed / calls) * 100, 2) if calls else 0.0
+    return rows
+
+
+def api_cron_failure_waste(window_hours=0, limit=50, include_deleted=False):
+    limit = max(1, min(int(limit), 500))
+    run_where, run_params = _build_run_filters(window_hours, platform="cron")
+    visible_sql, visible_params = _visible_sessions_clause("runs.session_id", include_deleted)
+    where_sql = f"{run_where} AND {visible_sql} AND COALESCE(runs.cron_job_id, '') != ''"
+    params = [*run_params, *visible_params]
+    sub_run_where = run_where.replace("started_at", "r2.started_at")
+    sub_visible_sql = visible_sql.replace("runs.session_id", "r2.session_id")
+    rows = _rows(
+        f"""
+        SELECT runs.cron_job_id,
+               COUNT(*) AS runs,
+               SUM(CASE WHEN runs.status = 'ok' THEN 1 ELSE 0 END) AS ok_runs,
+               SUM(CASE WHEN COALESCE(runs.status, 'running') NOT IN ('ok', 'running') THEN 1 ELSE 0 END) AS failed_runs,
+               SUM(CASE WHEN runs.status = 'interrupted' THEN 1 ELSE 0 END) AS interrupted_runs,
+               SUM(CASE WHEN runs.status = 'timeout' THEN 1 ELSE 0 END) AS timeout_runs,
+               SUM(CASE WHEN COALESCE(runs.status, 'running') = 'running' THEN 1 ELSE 0 END) AS running_runs,
+               COALESCE(SUM(runs.tokens_in), 0) AS tokens_in,
+               COALESCE(SUM(runs.tokens_out), 0) AS tokens_out,
+               COALESCE(SUM(runs.cache_read_tokens), 0) AS cache_read_tokens,
+               ROUND(COALESCE(SUM(runs.cost_usd), 0), 6) AS cost_usd,
+               ROUND(COALESCE(AVG(runs.duration_ms), 0), 1) AS avg_duration_ms,
+               MAX(runs.started_at) AS last_run,
+               MAX(CASE WHEN runs.status = 'ok' THEN runs.started_at ELSE NULL END) AS last_success,
+               COALESCE((
+                   SELECT COUNT(*)
+                   FROM tool_calls tc
+                   LEFT JOIN runs r2 ON r2.session_id = tc.session_id
+                   WHERE r2.cron_job_id = runs.cron_job_id
+                     AND tc.ok = 0
+                     AND {sub_run_where}
+                     AND {sub_visible_sql}
+               ), 0) AS failed_tool_calls
+        FROM runs
+        WHERE {where_sql}
+        GROUP BY runs.cron_job_id
+        ORDER BY failed_runs DESC, failed_tool_calls DESC, cost_usd DESC, runs DESC
+        LIMIT ?
+        """,
+        (*run_params, *visible_params, *params, limit),
+    )
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        runs = int(row.get("runs") or 0)
+        failed = int(row.get("failed_runs") or 0)
+        row["failure_pct"] = round((failed / runs) * 100, 2) if runs else 0.0
+        wasted_tokens = 0
+        if failed:
+            wasted = _one(
+                f"""
+                SELECT COALESCE(SUM(tokens_in + tokens_out + COALESCE(cache_read_tokens, 0)), 0) AS wasted_tokens,
+                       ROUND(COALESCE(SUM(cost_usd), 0), 6) AS wasted_cost
+                FROM runs
+                WHERE cron_job_id = ? AND COALESCE(status, 'running') NOT IN ('ok', 'running') AND {run_where}
+                """,
+                (row["cron_job_id"], *run_params),
+            )
+            wasted_tokens = int(wasted.get("wasted_tokens") or 0)
+            row["wasted_cost_usd"] = wasted.get("wasted_cost") or 0
+        else:
+            row["wasted_cost_usd"] = 0
+        row["wasted_tokens"] = wasted_tokens
+        last_success = row.get("last_success")
+        if last_success:
+            try:
+                last_dt = datetime.fromisoformat(str(last_success).replace("Z", "+00:00"))
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                row["last_success_age_hours"] = round((now - last_dt).total_seconds() / 3600, 1)
+            except ValueError:
+                row["last_success_age_hours"] = None
+        else:
+            row["last_success_age_hours"] = None
+        risks = []
+        if row["timeout_runs"]:
+            risks.append("timeout")
+        if row["failure_pct"] >= 20:
+            risks.append("failure-rate")
+        if row["failed_tool_calls"]:
+            risks.append("tool-failures")
+        if row["last_success_age_hours"] is None:
+            risks.append("never-success")
+        elif row["last_success_age_hours"] > 48:
+            risks.append("stale-success")
+        row["risks"] = risks
+    return rows
+
+
 def api_model_tokens(window_hours=24, limit=100):
     since_clause_ts = _since_clause(window_hours, "ts")
     return _rows(
@@ -1668,6 +1864,36 @@ class Handler(SimpleHTTPRequestHandler):
                     api_model_tokens(
                         _parse_int(qs.get("hours", [24])[0], "hours"),
                         _parse_int(qs.get("limit", [100])[0], "limit"),
+                    )
+                )
+
+            if path == "/api/model-efficiency":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_model_efficiency(
+                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        _parse_int(qs.get("limit", [50])[0], "limit"),
+                        qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
+                    )
+                )
+
+            if path == "/api/tool-failure-heatmap":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_tool_failure_heatmap(
+                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        _parse_int(qs.get("limit", [80])[0], "limit"),
+                        qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
+                    )
+                )
+
+            if path == "/api/cron-failure-waste":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_cron_failure_waste(
+                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        _parse_int(qs.get("limit", [50])[0], "limit"),
+                        qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
                     )
                 )
 

@@ -208,3 +208,46 @@ def test_api_provider_health_flags_estimated_and_failures(serve_module):
     assert by_provider["nous"]["failed_runs_current"] == 1
     assert by_provider["nous"]["health"] in {"warn", "error"}
     assert by_provider["openrouter"]["calls_current"] == 1
+
+
+def test_operator_followup_api_surfaces(serve_module):
+    now = db._utcnow()
+    db.start_run("cron_job-a_20260613_120000", model="m1", platform="cron", cron_job_id="job-a")
+    db.record_llm_call(
+        "cron_job-a_20260613_120000",
+        now,
+        "m1",
+        "openrouter",
+        1000,
+        100,
+        0.05,
+        800,
+        cache_read_tokens=300,
+    )
+    db.record_tool_call("cron_job-a_20260613_120000", now, "terminal", False, 1200)
+    db.end_run("cron_job-a_20260613_120000", "error")
+
+    db.start_run("sess-model-ok", model="m2", platform="cli")
+    db.record_llm_call(
+        "sess-model-ok", now, "m2", "nous", 500, 250, 0.01, 400, cache_read_tokens=500
+    )
+    db.record_tool_call("sess-model-ok", now, "read_file", True, 20)
+    db.end_run("sess-model-ok", "ok")
+
+    efficiency = serve_module.api_model_efficiency(window_hours=24, include_deleted=True)
+    by_model = {row["model"]: row for row in efficiency}
+    assert by_model["m2"]["output_input_ratio"] == 0.5
+    assert by_model["m2"]["cache_hit_share_pct"] == 50.0
+    assert "efficiency_score" in by_model["m2"]
+
+    heatmap = serve_module.api_tool_failure_heatmap(window_hours=24, include_deleted=True)
+    terminal_rows = [row for row in heatmap if row["tool_name"] == "terminal"]
+    assert terminal_rows
+    assert terminal_rows[0]["failed_calls"] == 1
+    assert terminal_rows[0]["failure_pct"] == 100.0
+
+    cron_waste = serve_module.api_cron_failure_waste(window_hours=24, include_deleted=True)
+    by_cron = {row["cron_job_id"]: row for row in cron_waste}
+    assert by_cron["job-a"]["failed_runs"] == 1
+    assert by_cron["job-a"]["wasted_tokens"] == 1400
+    assert "failure-rate" in by_cron["job-a"]["risks"]
