@@ -139,8 +139,11 @@
   .filter-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: #1f2937; border: 1px solid #364152; color: #e6edf3; font-size: 12px; font-weight: 600; }
   .chip-close { background: transparent; border: 0; color: #8b949e; cursor: pointer; font-size: 13px; line-height: 1; padding: 0; }
   .chip-close:hover { color: #e6edf3; }
-  .inline-btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; }
+  .inline-btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; max-width: 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
   .inline-btn:hover { background: #30363d; }
+  .data-chip { max-width: 240px; }
+  .provider-chip { max-width: 140px; }
+  .model-chip { max-width: 280px; }
   .search-inline { display: flex; align-items: center; gap: 8px; }
   .search-inline input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; font-size: 12px; min-width: 220px; }
   .search-inline input:focus { outline: none; border-color: #58a6ff; }
@@ -163,6 +166,9 @@
     <div class="page-tabs">
       <button id="tab-home" class="page-tab active" onclick="switchPage('home')">Home</button>
       <button id="tab-breakdown" class="page-tab" onclick="switchPage('breakdown')">Breakdown</button>
+      <button id="tab-requests" class="page-tab" onclick="switchPage('requests')">Request</button>
+      <button id="tab-tools" class="page-tab" onclick="switchPage('tools')">Tool</button>
+      <button id="tab-errors" class="page-tab" onclick="switchPage('errors')">Error</button>
     </div>
   </div>
   <div class="actions">
@@ -258,6 +264,19 @@
   </div>
 </div>
 
+<div class="drawer-overlay" id="requestDrawer" onclick="if(event.target===this) closeRequestDetail()">
+  <div class="drawer" onclick="event.stopPropagation()">
+    <div class="drawer-header">
+      <div>
+        <div class="drawer-title" id="requestDrawerTitle">Request detail</div>
+        <div class="drawer-subtitle" id="requestDrawerSubtitle"></div>
+      </div>
+      <button class="drawer-close" onclick="closeRequestDetail()">Close</button>
+    </div>
+    <div id="requestDrawerBody" class="text-muted">Loading…</div>
+  </div>
+</div>
+
 <script>
 const API = '';
 let charts = {};
@@ -269,6 +288,7 @@ let autoRefreshTimer = null;
 let isLoading = false;
 let latestLoadRequestId = 0;
 let latestDrawerRequestId = 0;
+let latestRequestDrawerRequestId = 0;
 
 function $(sel) { return document.querySelector(sel); }
 function escHtml(s) {
@@ -494,7 +514,7 @@ function renderTableCard(id, title, tableHtml) {
 }
 
 function hasDrilldown() {
-  return !!(currentDrilldown.day || currentDrilldown.model || currentDrilldown.provider || currentDrilldown.platform || currentDrilldown.status || currentDrilldown.cron_job_id || currentDrilldown.q);
+  return !!(currentDrilldown.day || currentDrilldown.model || currentDrilldown.provider || currentDrilldown.platform || currentDrilldown.status || currentDrilldown.cron_job_id || currentDrilldown.tool_name || currentDrilldown.q);
 }
 
 function drilldownLabel() {
@@ -505,6 +525,7 @@ function drilldownLabel() {
   if (currentDrilldown.platform) parts.push(`Platform: ${currentDrilldown.platform}`);
   if (currentDrilldown.status) parts.push(`Status: ${currentDrilldown.status}`);
   if (currentDrilldown.cron_job_id) parts.push(`Cron: ${currentDrilldown.cron_job_id}`);
+  if (currentDrilldown.tool_name) parts.push(`Tool: ${currentDrilldown.tool_name}`);
   if (currentDrilldown.q) parts.push(`Search: ${currentDrilldown.q}`);
   return parts.join(' · ');
 }
@@ -524,6 +545,7 @@ function renderFilterChips() {
     ['status', 'Status'],
     ['platform', 'Platform'],
     ['cron_job_id', 'Cron'],
+    ['tool_name', 'Tool'],
     ['q', 'Search'],
   ];
   const chips = defs
@@ -533,14 +555,21 @@ function renderFilterChips() {
   return chips ? `<div class="chip-list">${chips}</div>` : '';
 }
 
+function updatePageTabs(page) {
+  $('#tab-home')?.classList.toggle('active', page === 'home');
+  $('#tab-breakdown')?.classList.toggle('active', page === 'breakdown');
+  $('#tab-requests')?.classList.toggle('active', page === 'requests');
+  $('#tab-tools')?.classList.toggle('active', page === 'tools');
+  $('#tab-errors')?.classList.toggle('active', page === 'errors');
+}
+
 function setDrilldown(filter) {
   currentDrilldown = { ...(filter || {}) };
   Object.keys(currentDrilldown).forEach(key => {
     if (currentDrilldown[key] == null || currentDrilldown[key] === '') delete currentDrilldown[key];
   });
   currentPage = 'breakdown';
-  $('#tab-home')?.classList.toggle('active', false);
-  $('#tab-breakdown')?.classList.toggle('active', true);
+  updatePageTabs(currentPage);
   loadAll({showShell:false});
 }
 
@@ -587,10 +616,27 @@ function renderProviderBreakdownTable(rows) {
   for (const row of rows) {
     const provider = row.provider || '—';
     const jsProvider = JSON.stringify(provider);
-    t += `<tr class="clickable-row" onclick='addDrilldown({provider:${jsProvider}})'><td class="text-muted">${escHtml(provider)}</td><td>${nf(row.total_calls)}</td><td>${nf(row.real_calls)}</td><td>${nf(row.estimated_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtCost(row.avg_cost_per_call)}</td></tr>`;
+    t += `<tr class="clickable-row" onclick='addDrilldown({provider:${jsProvider}})'><td class="text-muted"><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}">${escHtml(provider)}</span></td><td>${nf(row.total_calls)}</td><td>${nf(row.real_calls)}</td><td>${nf(row.estimated_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtCost(row.avg_cost_per_call)}</td></tr>`;
   }
   t += '</tbody></table><div class="subtle-note">Click a provider row to inspect the exact sessions behind it.</div>';
   return renderTableCard('providerBreakdownTable', 'Provider Cost + Token Breakdown', t);
+}
+
+function renderProviderHealth(data) {
+  const rows = data?.rows || [];
+  let t = '<table><thead><tr><th>Provider</th><th>Health</th><th>Signals</th><th>Calls</th><th>Prev</th><th>Traffic Δ</th><th>Est %</th><th>Fail %</th><th>Latency</th><th>Latency Δ</th><th>Cost</th></tr></thead><tbody>';
+  if (!rows.length) {
+    t += '<tr><td colspan="11" class="text-muted">No provider health data yet.</td></tr>';
+  } else {
+    for (const row of rows) {
+      const provider = row.provider || '—';
+      const healthBadge = row.health === 'warn' ? statusBadge('running') : statusBadge(row.health || 'ok');
+      const anomalies = (row.anomalies || []).length ? row.anomalies.join(', ') : 'normal';
+      t += `<tr class="clickable-row" onclick='addDrilldown({provider:${JSON.stringify(provider)}})'><td class="text-muted"><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}">${escHtml(provider)}</span></td><td>${healthBadge}</td><td class="text-muted">${escHtml(anomalies)}</td><td>${nf(row.calls_current || 0)}</td><td>${nf(row.calls_previous || 0)}</td><td>${Number(row.traffic_delta_pct || 0).toFixed(1)}%</td><td>${Number(row.estimated_pct || 0).toFixed(1)}%</td><td>${Number(row.failure_pct || 0).toFixed(1)}%</td><td>${fmtMs(row.avg_latency_current)}</td><td>${Number(row.latency_delta_pct || 0).toFixed(1)}%</td><td>${fmtCost(row.cost_current)}</td></tr>`;
+    }
+  }
+  t += '</tbody></table><div class="subtle-note">Compares the current window against the previous equal window. Click a provider row to drill into its sessions.</div>';
+  return renderTableCard('providerHealthTable', 'Provider Health / Anomaly Signals', t);
 }
 
 function renderModelTokensTable(rows) {
@@ -646,6 +692,84 @@ function renderCacheEfficiency(data) {
   return renderTableCard('cacheEfficiencyTable', 'Cache Efficiency Stats', html + t);
 }
 
+function renderRequestForensics(data) {
+  const rows = data?.rows || [];
+  const hiddenDeleted = Number(data?.hidden_deleted_requests || 0);
+  let t = '<table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Platform</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Latency</th><th>Est</th><th>Request ID</th></tr></thead><tbody>';
+  if (!rows.length) {
+    t += '<tr><td colspan="12" class="text-muted">No LLM requests match the current range and filters.</td></tr>';
+  } else {
+    for (const row of rows) {
+      const provider = row.provider || '—';
+      const modelRaw = row.model || '—';
+      const platform = row.platform || 'cli';
+      const status = row.status || 'running';
+      t += `<tr class="clickable-row" onclick='openRequestDetail(${Number(row.id || 0)})'><td class="text-muted">${escHtml((row.ts || '').substring(0, 19))}</td><td><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}" onclick='event.stopPropagation(); addDrilldown({provider:${JSON.stringify(provider)}})'>${escHtml(provider)}</span></td><td class="text-muted" title="${escHtml(modelRaw)}"><span class="inline-btn data-chip model-chip" onclick='event.stopPropagation(); addDrilldown({model:${JSON.stringify(modelRaw)}})'>${escHtml(modelRaw)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${JSON.stringify(platform)}})'>${platformBadge(platform)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({status:${JSON.stringify(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td><td>${row.estimated ? statusBadge('running') : statusBadge('ok')}</td><td><code>${nf(row.id || 0)}</code></td></tr>`;
+    }
+  }
+  t += `</tbody></table><div class="table-actions"><div>${nf(rows.length)} shown / ${nf(data?.total_requests || 0)} matching request(s)</div><div class="text-muted">${hiddenDeleted ? `${nf(hiddenDeleted)} request(s) hidden with deleted Hermes sessions.` : 'Click a request row for request-level forensics.'}</div></div>`;
+  return renderTableCard('requestForensicsTable', 'LLM Request Forensics', t);
+}
+
+function renderToolAnalytics(data) {
+  const overall = data?.overall || {};
+  const rows = data?.by_tool || [];
+  let html = '<div class="insight-grid">';
+  html += `<div class="insight-card"><div class="label">Tool calls</div><div class="value">${nf(overall.tool_calls || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Unique tools</div><div class="value">${nf(overall.unique_tools || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Failed tool calls</div><div class="value">${nf(overall.failed_calls || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Avg latency</div><div class="value">${fmtMs(overall.avg_latency_ms)}</div></div>`;
+  html += '</div>';
+  let t = '<table><thead><tr><th>Tool</th><th>Calls</th><th>Sessions</th><th>OK</th><th>Fail</th><th>Fail %</th><th>Avg</th><th>Max</th><th>Last Seen</th></tr></thead><tbody>';
+  if (!rows.length) {
+    t += '<tr><td colspan="9" class="text-muted">No tool activity matches the current range and filters.</td></tr>';
+  } else {
+    for (const row of rows) {
+      const tool = row.tool_name || '—';
+      t += `<tr class="clickable-row" onclick='addDrilldown({tool_name:${JSON.stringify(tool)}})'><td class="text-muted">${escHtml(tool)}</td><td>${nf(row.calls || 0)}</td><td>${nf(row.sessions || 0)}</td><td>${nf(row.ok_calls || 0)}</td><td>${nf(row.failed_calls || 0)}</td><td>${Number(row.failure_pct || 0).toFixed(2)}%</td><td>${fmtMs(row.avg_latency_ms)}</td><td>${fmtMs(row.max_latency_ms)}</td><td class="text-muted">${escHtml((row.last_seen || '').substring(0, 19))}</td></tr>`;
+    }
+  }
+  t += '</tbody></table><div class="subtle-note">Click a tool row to filter the whole breakdown workspace to sessions that used it.</div>';
+  return renderTableCard('toolAnalyticsTable', 'Tool Analytics', html + t);
+}
+
+function renderErrorCenter(data) {
+  const runSummary = data?.summary?.runs || {};
+  const toolSummary = data?.summary?.tools || {};
+  const statuses = data?.status_groups || [];
+  const failedTools = data?.failed_tools || [];
+  const incidents = data?.incidents || [];
+  let html = '<div class="insight-grid">';
+  html += `<div class="insight-card"><div class="label">Failed runs</div><div class="value">${nf(runSummary.failed_runs || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Interrupted runs</div><div class="value">${nf(runSummary.interrupted_runs || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Failed tool calls</div><div class="value">${nf(toolSummary.failed_tool_calls || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Sessions w/ tool failure</div><div class="value">${nf(toolSummary.sessions_with_failed_tools || 0)}</div></div>`;
+  html += '</div>';
+
+  let statusTable = '<table><thead><tr><th>Status</th><th>Runs</th><th>Sessions</th><th>Cost</th><th>Last Seen</th></tr></thead><tbody>';
+  if (!statuses.length) statusTable += '<tr><td colspan="5" class="text-muted">No non-ok session statuses in this range.</td></tr>';
+  else for (const row of statuses) {
+    statusTable += `<tr class="clickable-row" onclick='addDrilldown({status:${JSON.stringify(row.status || '—')}})'><td>${statusBadge(row.status || '—')}</td><td>${nf(row.runs || 0)}</td><td>${nf(row.sessions || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td class="text-muted">${escHtml((row.last_seen || '').substring(0, 19))}</td></tr>`;
+  }
+  statusTable += '</tbody></table>';
+
+  let failedToolTable = '<table><thead><tr><th>Tool</th><th>Failed Calls</th><th>Sessions</th><th>Avg Latency</th><th>Last Seen</th></tr></thead><tbody>';
+  if (!failedTools.length) failedToolTable += '<tr><td colspan="5" class="text-muted">No failed tool calls in this range.</td></tr>';
+  else for (const row of failedTools) {
+    failedToolTable += `<tr class="clickable-row" onclick='addDrilldown({tool_name:${JSON.stringify(row.tool_name || '—')}})'><td class="text-muted">${escHtml(row.tool_name || '—')}</td><td>${nf(row.failed_calls || 0)}</td><td>${nf(row.sessions || 0)}</td><td>${fmtMs(row.avg_latency_ms)}</td><td class="text-muted">${escHtml((row.last_seen || '').substring(0, 19))}</td></tr>`;
+  }
+  failedToolTable += '</tbody></table>';
+
+  let incidentTable = '<table><thead><tr><th>Time</th><th>Kind</th><th>Platform</th><th>Provider</th><th>Model / Tool</th><th>Status</th><th>Latency</th><th>Cost</th><th>Session</th></tr></thead><tbody>';
+  if (!incidents.length) incidentTable += '<tr><td colspan="9" class="text-muted">No recent incidents for this range.</td></tr>';
+  else for (const row of incidents) {
+    const label = row.kind === 'tool_failure' ? (row.tool_name || '—') : (row.model || '—');
+    incidentTable += `<tr class="clickable-row" onclick='openSessionDetail(${JSON.stringify(row.session_id || '')})'><td class="text-muted">${escHtml((row.ts || '').substring(0, 19))}</td><td>${row.kind === 'tool_failure' ? statusBadge('error') : statusBadge(row.status || 'error')}</td><td>${platformBadge(row.platform || 'cli')}</td><td class="text-muted">${escHtml(row.provider || '—')}</td><td class="text-muted" title="${escHtml(label)}">${escHtml(label.substring(0, 36))}</td><td>${statusBadge(row.status || '—')}</td><td>${fmtMs(row.latency_ms)}</td><td>${fmtCost(row.cost_usd)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml((row.session_id || '').substring(0, 24))}</code></td></tr>`;
+  }
+  incidentTable += '</tbody></table><div class="subtle-note">Click status or tool rows to drill down. Click an incident row for full session detail.</div>';
+  return renderTableCard('errorCenterTable', 'Error Center', html + '<h3 style="margin-top:4px">Run Status Groups</h3>' + statusTable + '<div style="height:16px"></div><h3>Failed Tools</h3>' + failedToolTable + '<div style="height:16px"></div><h3>Recent Incidents</h3>' + incidentTable);
+}
+
 function renderRunsInvestigation(data, title = 'Session Investigation') {
   const rows = data?.rows || [];
   let html = '';
@@ -658,7 +782,7 @@ function renderRunsInvestigation(data, title = 'Session Investigation') {
     else if (hasDrilldown()) emptyReason = `No sessions match the current filters${activeSearch ? ` and search “${activeSearch}”` : ''}.`;
     else emptyReason = 'No sessions available for this time range.';
   }
-  html += `<div class="filter-bar"><div class="filter-bar-left">${filterChips || '<div class="subtle-note" style="margin:0">Click a provider, model, day, status, platform, or chart segment to inspect exact sessions behind the totals.</div>'}${hasDrilldown() ? '<button class="inline-btn" onclick="clearDrilldown()">Clear filters</button>' : ''}</div><div class="search-inline"><input id="investigationSearch" type="text" value="${escHtml(activeSearch)}" placeholder="Search session / model / provider / cron" onkeydown="if(event.key===\'Enter\'){applyInvestigationSearch()}" /><button class="inline-btn" onclick="applyInvestigationSearch()">Search</button><button class="inline-btn" onclick="clearInvestigationSearch()">Clear search</button></div></div>`;
+  html += `<div class="filter-bar"><div class="filter-bar-left">${filterChips || '<div class="subtle-note" style="margin:0">Click a provider, model, day, status, platform, tool, or chart segment to inspect exact sessions behind the totals.</div>'}${hasDrilldown() ? '<button class="inline-btn" onclick="clearDrilldown()">Clear filters</button>' : ''}</div><div class="search-inline"><input id="investigationSearch" type="text" value="${escHtml(activeSearch)}" placeholder="Search session / model / provider / cron / tool" onkeydown="if(event.key===\'Enter\'){applyInvestigationSearch()}" /><button class="inline-btn" onclick="applyInvestigationSearch()">Search</button><button class="inline-btn" onclick="clearInvestigationSearch()">Clear search</button></div></div>`;
   const hiddenDeleted = Number(data?.hidden_deleted_runs || 0);
   const hiddenNote = hiddenDeleted ? `${nf(hiddenDeleted)} deleted Hermes session(s) soft-hidden.` : 'Deleted Hermes sessions are hidden by default.';
   html += `<div class="table-actions" style="margin-top:0;margin-bottom:12px"><div>${nf(rows.length)} shown / ${nf(data?.total_runs || 0)} matching session(s)</div><div class="text-muted">${escHtml(emptyReason)} ${escHtml(hiddenNote)}</div></div>`;
@@ -675,7 +799,9 @@ function renderRunsInvestigation(data, title = 'Session Investigation') {
       const status = row.status || '—';
       const platformFilter = JSON.stringify(platform);
       const statusFilter = JSON.stringify(status);
-      t += `<tr class="clickable-row" onclick='openSessionDetail(${JSON.stringify(sid)})'><td class="text-muted">${escHtml((row.started_at || '').substring(0, 16))}</td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${platformFilter}})'>${platformBadge(platform)}</span></td><td class="text-muted">${escHtml(provider)}</td><td class="text-muted" title="${escHtml(row.model || '—')}">${escHtml(model)}</td><td><span onclick='event.stopPropagation(); addDrilldown({status:${statusFilter}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${escHtml(sid)}">${escHtml(sidShort)}</code></td></tr>`;
+      const providerFilter = JSON.stringify(row.provider || '—');
+      const modelFilter = JSON.stringify(row.model || '—');
+      t += `<tr class="clickable-row" onclick='openSessionDetail(${JSON.stringify(sid)})'><td class="text-muted">${escHtml((row.started_at || '').substring(0, 16))}</td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${platformFilter}})'>${platformBadge(platform)}</span></td><td class="text-muted"><span class="inline-btn data-chip provider-chip" title="${escHtml(row.provider || '—')}" onclick='event.stopPropagation(); addDrilldown({provider:${providerFilter}})'>${escHtml(row.provider || '—')}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" onclick='event.stopPropagation(); addDrilldown({model:${modelFilter}})'>${escHtml(row.model || '—')}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({status:${statusFilter}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${escHtml(sid)}">${escHtml(sidShort)}</code></td></tr>`;
     }
   }
   t += '</tbody></table>';
@@ -691,8 +817,7 @@ function changeDailyTokensPage(delta) {
 
 function switchPage(page) {
   currentPage = page;
-  $('#tab-home')?.classList.toggle('active', page === 'home');
-  $('#tab-breakdown')?.classList.toggle('active', page === 'breakdown');
+  updatePageTabs(page);
   loadAll({showShell:false});
 }
 
@@ -713,8 +838,8 @@ function renderSessionDetail(data) {
   const statusFilter = JSON.stringify(run.status || '—');
   let html = '<div class="drawer-section"><div class="insight-grid">';
   html += `<div class="insight-card"><div class="label">Status</div><div class="value"><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({status:${statusFilter}})'>${escHtml(run.status || '—')}</span></div></div>`;
-  html += `<div class="insight-card"><div class="label">Provider</div><div class="value"><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({provider:${providerFilter}})'>${escHtml(run.provider || '—')}</span></div></div>`;
-  html += `<div class="insight-card"><div class="label">Model</div><div class="value" style="font-size:16px"><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({model:${modelFilter}})'>${escHtml(run.model || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">Provider</div><div class="value"><span class="inline-btn data-chip provider-chip" title="${escHtml(run.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${providerFilter}})'>${escHtml(run.provider || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">Model</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(run.model || '—')}" onclick='closeSessionDetail(); addDrilldown({model:${modelFilter}})'>${escHtml(run.model || '—')}</span></div></div>`;
   html += `<div class="insight-card"><div class="label">Cost / Duration</div><div class="value">${fmtCost(run.cost_usd)} / ${fmtMs(run.duration_ms)}</div></div>`;
   html += '</div></div>';
 
@@ -737,21 +862,21 @@ function renderSessionDetail(data) {
 
   let pm = '<div class="drawer-section"><h4>Provider / model mix</h4><table><thead><tr><th>Provider</th><th>Model</th><th>Calls</th><th>Total Tokens</th><th>Cost</th></tr></thead><tbody>';
   for (const row of (data.provider_models || [])) {
-    pm += `<tr><td><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({provider:${JSON.stringify(row.provider || '—')}})'>${escHtml(row.provider || '—')}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({model:${JSON.stringify(row.model || '—')}})'>${escHtml((row.model || '—').substring(0, 40))}</span></td><td>${nf(row.api_calls || 0)}</td><td>${nf(row.total_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
+    pm += `<tr><td><span class="inline-btn data-chip provider-chip" title="${escHtml(row.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${JSON.stringify(row.provider || '—')}})'>${escHtml(row.provider || '—')}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" onclick='closeSessionDetail(); addDrilldown({model:${JSON.stringify(row.model || '—')}})'>${escHtml(row.model || '—')}</span></td><td>${nf(row.api_calls || 0)}</td><td>${nf(row.total_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
   }
   pm += '</tbody></table></div>';
   html += pm;
 
   let llmRows = '<div class="drawer-section"><h4>Recent LLM calls</h4><table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cache</th><th>Reasoning</th><th>Cost</th><th>Latency</th></tr></thead><tbody>';
   for (const row of (data.llm_calls || [])) {
-    llmRows += `<tr><td class="text-muted">${escHtml((row.ts || '').substring(0, 19))}</td><td><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({provider:${JSON.stringify(row.provider || '—')}})'>${escHtml(row.provider || '—')}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({model:${JSON.stringify(row.model || '—')}})'>${escHtml((row.model || '—').substring(0, 34))}</span></td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${nf(row.reasoning_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
+    llmRows += `<tr><td class="text-muted">${escHtml((row.ts || '').substring(0, 19))}</td><td><span class="inline-btn data-chip provider-chip" title="${escHtml(row.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${JSON.stringify(row.provider || '—')}})'>${escHtml(row.provider || '—')}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" onclick='closeSessionDetail(); addDrilldown({model:${JSON.stringify(row.model || '—')}})'>${escHtml(row.model || '—')}</span></td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${nf(row.reasoning_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
   }
   llmRows += '</tbody></table></div>';
   html += llmRows;
 
   let toolRows = '<div class="drawer-section"><h4>Tool calls</h4><table><thead><tr><th>Time</th><th>Tool</th><th>Status</th><th>Latency</th></tr></thead><tbody>';
   for (const row of (data.tool_calls || [])) {
-    toolRows += `<tr><td class="text-muted">${escHtml((row.ts || '').substring(0, 19))}</td><td>${escHtml(row.tool_name || '—')}</td><td>${row.ok ? statusBadge('ok') : statusBadge('error')}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
+    toolRows += `<tr><td class="text-muted">${escHtml((row.ts || '').substring(0, 19))}</td><td><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({tool_name:${JSON.stringify(row.tool_name || '—')}})'>${escHtml(row.tool_name || '—')}</span></td><td>${row.ok ? statusBadge('ok') : statusBadge('error')}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
   }
   toolRows += '</tbody></table></div>';
   html += toolRows;
@@ -774,6 +899,74 @@ async function openSessionDetail(sessionId) {
   } catch (err) {
     if (requestId !== latestDrawerRequestId) return;
     $('#sessionDrawerBody').innerHTML = `<div class="error-box">Failed to load session detail: ${escHtml(err.message)}</div>`;
+  }
+}
+
+function closeRequestDetail() {
+  $('#requestDrawer')?.classList.remove('open');
+}
+
+function renderRequestDetail(data) {
+  if (!data || data.error) {
+    return `<div class="error-box">${escHtml(data?.error || 'Failed to load request detail')}</div>`;
+  }
+  const req = data.request || {};
+  const totals = data.session_totals || {};
+  let html = '<div class="drawer-section"><div class="insight-grid">';
+  html += `<div class="insight-card"><div class="label">Provider</div><div class="value"><span class="inline-btn data-chip provider-chip" title="${escHtml(req.provider || '—')}" onclick='closeRequestDetail(); addDrilldown({provider:${JSON.stringify(req.provider || '—')}})'>${escHtml(req.provider || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">Model</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(req.model || '—')}" onclick='closeRequestDetail(); addDrilldown({model:${JSON.stringify(req.model || '—')}})'>${escHtml(req.model || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">Cost / Latency</div><div class="value">${fmtCost(req.cost_usd)} / ${fmtMs(req.latency_ms)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Estimated</div><div class="value">${req.estimated ? 'Yes' : 'No'}</div></div>`;
+  html += '</div></div>';
+
+  html += '<div class="drawer-section"><h4>Request metrics</h4><table><tbody>';
+  html += `<tr><th>Request ID</th><td><code>${nf(req.id || 0)}</code></td><th>Time</th><td>${escHtml(req.ts || '—')}</td></tr>`;
+  html += `<tr><th>Session</th><td><span class="inline-btn" onclick='closeRequestDetail(); openSessionDetail(${JSON.stringify(req.session_id || '')})'>${escHtml(req.session_id || '—')}</span></td><th>Platform</th><td>${platformBadge(req.platform || 'cli')}</td></tr>`;
+  html += `<tr><th>Status</th><td>${statusBadge(req.status || 'running')}</td><th>Cron Job</th><td>${escHtml(req.cron_job_id || '—')}</td></tr>`;
+  html += `<tr><th>Input</th><td>${nf(req.tokens_in || 0)}</td><th>Output</th><td>${nf(req.tokens_out || 0)}</td></tr>`;
+  html += `<tr><th>Cache Read</th><td>${nf(req.cache_read_tokens || 0)}</td><th>Cache Write</th><td>${nf(req.cache_write_tokens || 0)}</td></tr>`;
+  html += `<tr><th>Reasoning</th><td>${nf(req.reasoning_tokens || 0)}</td><th>Session Tools</th><td>${nf(req.tool_calls || 0)}</td></tr>`;
+  html += '</tbody></table></div>';
+
+  html += '<div class="drawer-section"><h4>Session totals</h4><table><tbody>';
+  html += `<tr><th>API calls</th><td>${nf(totals.api_calls || 0)}</td><th>Estimated calls</th><td>${nf(totals.estimated_calls || 0)}</td></tr>`;
+  html += `<tr><th>Tokens in</th><td>${nf(totals.tokens_in || 0)}</td><th>Tokens out</th><td>${nf(totals.tokens_out || 0)}</td></tr>`;
+  html += `<tr><th>Cache read</th><td>${nf(totals.cache_read_tokens || 0)}</td><th>Reasoning</th><td>${nf(totals.reasoning_tokens || 0)}</td></tr>`;
+  html += `<tr><th>Cost</th><td>${fmtCost(totals.cost_usd)}</td><th>Avg latency</th><td>${fmtMs(totals.avg_latency_ms)}</td></tr>`;
+  html += '</tbody></table></div>';
+
+  let siblingRows = '<div class="drawer-section"><h4>Session LLM calls</h4><table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Latency</th></tr></thead><tbody>';
+  for (const row of (data.sibling_requests || [])) {
+    siblingRows += `<tr class="clickable-row" onclick='openRequestDetail(${Number(row.id || 0)})'><td class="text-muted">${escHtml((row.ts || '').substring(0, 19))}</td><td>${escHtml(row.provider || '—')}</td><td class="text-muted" title="${escHtml(row.model || '—')}">${escHtml((row.model || '—').substring(0, 34))}</td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
+  }
+  siblingRows += '</tbody></table></div>';
+  html += siblingRows;
+
+  let toolRows = '<div class="drawer-section"><h4>Session tool activity</h4><table><thead><tr><th>Time</th><th>Tool</th><th>Status</th><th>Latency</th></tr></thead><tbody>';
+  for (const row of (data.session_tools || [])) {
+    toolRows += `<tr><td class="text-muted">${escHtml((row.ts || '').substring(0, 19))}</td><td><span class="inline-btn" onclick='closeRequestDetail(); addDrilldown({tool_name:${JSON.stringify(row.tool_name || '—')}})'>${escHtml(row.tool_name || '—')}</span></td><td>${row.ok ? statusBadge('ok') : statusBadge('error')}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
+  }
+  toolRows += '</tbody></table></div>';
+  html += toolRows;
+  return html;
+}
+
+async function openRequestDetail(requestId) {
+  if (!requestId) return;
+  const requestSeq = ++latestRequestDrawerRequestId;
+  $('#requestDrawerTitle').textContent = 'Request detail';
+  $('#requestDrawerSubtitle').textContent = `#${requestId}`;
+  $('#requestDrawerBody').innerHTML = '<div class="loading" style="padding:24px">Loading…</div>';
+  $('#requestDrawer')?.classList.add('open');
+  try {
+    const data = await fetchJSON(`/api/request-detail?id=${encodeURIComponent(requestId)}`);
+    if (requestSeq !== latestRequestDrawerRequestId) return;
+    $('#requestDrawerTitle').textContent = `Request detail · ${data?.request?.provider || 'provider'}`;
+    $('#requestDrawerSubtitle').textContent = `#${requestId} · ${data?.request?.session_id || ''}`;
+    $('#requestDrawerBody').innerHTML = renderRequestDetail(data);
+  } catch (err) {
+    if (requestSeq !== latestRequestDrawerRequestId) return;
+    $('#requestDrawerBody').innerHTML = `<div class="error-box">Failed to load request detail: ${escHtml(err.message)}</div>`;
   }
 }
 
@@ -959,10 +1152,11 @@ async function loadAll(options = {}) {
 
   try {
     const chartHours = hours === '0' ? 2160 : Number(hours);
-    const [summary, cron, providers, runsData, budget, tokenBreakdown, modelTokens, dailyTokens, dailyTokenChart, dailyModelChart, cacheEfficiency] = await Promise.all([
+    const [summary, cron, providers, providerHealth, runsData, budget, tokenBreakdown, modelTokens, dailyTokens, dailyTokenChart, dailyModelChart, cacheEfficiency, requestForensics, toolAnalytics, errorCenter] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
       fetchJSON(`/api/providers?hours=${hours}`),
+      fetchJSON(`/api/provider-health?hours=${hours === '0' ? 24 : hours}`),
       fetchJSON(`/api/runs?limit=30&hours=${hours}`),
       fetchJSON('/api/budget'),
       fetchJSON(`/api/token-breakdown?hours=${hours}`),
@@ -971,6 +1165,9 @@ async function loadAll(options = {}) {
       fetchJSON(`/api/daily-token-chart?hours=${chartHours}&limit_days=90`),
       fetchJSON(`/api/daily-model-chart?hours=${chartHours}&limit_days=90&top_n=5`),
       fetchJSON(`/api/cache-efficiency?hours=${hours}`),
+      fetchJSON(`/api/requests?${buildRunsQuery(hours, 60)}`),
+      fetchJSON(`/api/tool-analytics?${buildRunsQuery(hours, 100)}`),
+      fetchJSON(`/api/error-center?${buildRunsQuery(hours, 100)}`),
     ]);
     if (requestId !== latestLoadRequestId) return;
 
@@ -981,7 +1178,14 @@ async function loadAll(options = {}) {
     if (requestId !== latestLoadRequestId) return;
     currentDailyTokensPage = dailyTokens?.page || 1;
 
-    let html = `<div class="page-title">${currentPage === 'home' ? 'Home' : 'Breakdown'}</div>`;
+    const pageTitles = {
+      home: 'Home',
+      breakdown: 'Breakdown',
+      requests: 'Request',
+      tools: 'Tool',
+      errors: 'Error',
+    };
+    let html = `<div class="page-title">${pageTitles[currentPage] || 'Breakdown'}</div>`;
 
     if (currentPage === 'home') {
       // --- stat cards ---
@@ -1034,19 +1238,17 @@ async function loadAll(options = {}) {
       }
 
       // --- runs table ---
-      let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Cron Job</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
+      let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
       for (const row of runs) {
         const time = (row.started_at || '').substring(0, 16);
         const sid = (row.session_id || '').substring(0, 24);
-        const model = (row.model || '—').substring(0, 20);
         const platform = row.platform || 'cli';
         const status = row.status || '—';
-        const cronShort = (row.cron_job_id || '—').substring(0, 16);
-        t += `<tr class="clickable-row" onclick='openSessionDetail(${JSON.stringify(row.session_id || '')})'><td class="text-muted">${escHtml(time)}</td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${JSON.stringify(platform)}})'>${platformBadge(platform)}</span></td><td class="text-muted">${row.cron_job_id ? `<span class="inline-btn" onclick='event.stopPropagation(); addDrilldown({cron_job_id:${JSON.stringify(row.cron_job_id || '')}})'>${escHtml(cronShort)}</span>` : '—'}</td><td class="text-muted" title="${escHtml(row.model || '—')}">${escHtml(model)}</td><td><span onclick='event.stopPropagation(); addDrilldown({status:${JSON.stringify(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml(sid)}</code></td></tr>`;
+        t += `<tr class="clickable-row" onclick='openSessionDetail(${JSON.stringify(row.session_id || '')})'><td class="text-muted">${escHtml(time)}</td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${JSON.stringify(platform)}})'>${platformBadge(platform)}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" title="${escHtml(row.model || '—')}">${escHtml(row.model || '—')}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({status:${JSON.stringify(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml(sid)}</code></td></tr>`;
       }
-      t += '</tbody></table><div class="subtle-note">Click platform, cron job, or status for a filtered breakdown view. Click row for full session detail.</div>';
+      t += '</tbody></table><div class="subtle-note">Click platform or status for a filtered breakdown view. Click row for full session detail.</div>';
       html += renderTableCard('runsTable', 'Recent Sessions', t);
-    } else {
+    } else if (currentPage === 'breakdown') {
       if (tokenBreakdown && tokenBreakdown.total_tokens > 0) {
         html += renderTokenBreakdown(tokenBreakdown);
       }
@@ -1056,6 +1258,13 @@ async function loadAll(options = {}) {
       html += renderDailyTokensTable(dailyTokens);
       html += renderWideSvgCard(hours === '0' ? 'Daily Token + Model Breakdown (last 90 days)' : 'Daily Token + Model Breakdown', 'daily-combined-svg');
       html += renderRunsInvestigation(investigationRuns, hasDrilldown() ? 'Session Investigation' : 'Investigation Workspace');
+    } else if (currentPage === 'requests') {
+      html += renderProviderHealth(providerHealth);
+      html += renderRequestForensics(requestForensics);
+    } else if (currentPage === 'tools') {
+      html += renderToolAnalytics(toolAnalytics);
+    } else if (currentPage === 'errors') {
+      html += renderErrorCenter(errorCenter);
     }
 
     if (requestId !== latestLoadRequestId) return;
@@ -1091,7 +1300,7 @@ async function loadAll(options = {}) {
         );
 
       }
-    } else {
+    } else if (currentPage === 'breakdown') {
       renderDailyCombinedSvg('daily-combined-svg', dailyTokenChart, dailyModelChart);
     }
 

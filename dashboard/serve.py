@@ -284,6 +284,122 @@ def api_providers(window_hours=24):
     """)
 
 
+def api_provider_health(window_hours=24):
+    effective_window = int(window_hours) if int(window_hours) > 0 else 24
+    now = datetime.now(timezone.utc)
+    current_start = (now - timedelta(hours=effective_window)).isoformat()
+    previous_start = (now - timedelta(hours=effective_window * 2)).isoformat()
+
+    llm_rows = _rows(
+        """
+        SELECT COALESCE(provider, '—') AS provider,
+               SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS calls_current,
+               SUM(CASE WHEN ts >= ? AND ts < ? THEN 1 ELSE 0 END) AS calls_previous,
+               SUM(CASE WHEN ts >= ? AND estimated = 1 THEN 1 ELSE 0 END) AS estimated_current,
+               ROUND(AVG(CASE WHEN ts >= ? THEN latency_ms END), 1) AS avg_latency_current,
+               ROUND(AVG(CASE WHEN ts >= ? AND ts < ? THEN latency_ms END), 1) AS avg_latency_previous,
+               ROUND(COALESCE(SUM(CASE WHEN ts >= ? THEN cost_usd ELSE 0 END), 0), 6) AS cost_current
+        FROM llm_calls
+        WHERE ts >= ?
+        GROUP BY COALESCE(provider, '—')
+        ORDER BY calls_current DESC, cost_current DESC
+        """,
+        (
+            current_start,
+            previous_start,
+            current_start,
+            current_start,
+            current_start,
+            previous_start,
+            current_start,
+            current_start,
+            previous_start,
+        ),
+    )
+    run_rows = _rows(
+        """
+        SELECT COALESCE(provider, '—') AS provider,
+               SUM(CASE WHEN started_at >= ? THEN 1 ELSE 0 END) AS runs_current,
+               SUM(CASE WHEN started_at >= ? THEN CASE WHEN status NOT IN ('ok', 'running') THEN 1 ELSE 0 END ELSE 0 END) AS failed_runs_current
+        FROM runs
+        WHERE started_at >= ?
+        GROUP BY COALESCE(provider, '—')
+        """,
+        (current_start, current_start, previous_start),
+    )
+    run_map = {row["provider"]: row for row in run_rows}
+
+    rows = []
+    for row in llm_rows:
+        provider = row["provider"] or "—"
+        calls_current = int(row.get("calls_current") or 0)
+        calls_previous = int(row.get("calls_previous") or 0)
+        est_current = int(row.get("estimated_current") or 0)
+        latency_current = float(row.get("avg_latency_current") or 0)
+        latency_previous = float(row.get("avg_latency_previous") or 0)
+        run_meta = run_map.get(provider, {})
+        failed_runs_current = int(run_meta.get("failed_runs_current") or 0)
+        runs_current = int(run_meta.get("runs_current") or 0)
+        estimated_pct = round((est_current / calls_current) * 100, 2) if calls_current else 0.0
+        failure_pct = round((failed_runs_current / runs_current) * 100, 2) if runs_current else 0.0
+        traffic_delta_pct = (
+            0.0
+            if calls_previous == 0
+            else round(((calls_current - calls_previous) / calls_previous) * 100, 2)
+        )
+        latency_delta_pct = (
+            0.0
+            if latency_previous == 0
+            else round(((latency_current - latency_previous) / latency_previous) * 100, 2)
+        )
+        anomalies = []
+        health = "ok"
+        if estimated_pct >= 50:
+            anomalies.append("estimated-heavy")
+            health = "warn"
+        if failure_pct >= 20:
+            anomalies.append("run-failures")
+            health = "error"
+        elif latency_delta_pct >= 50 and calls_current >= 5:
+            anomalies.append("latency-spike")
+            if health == "ok":
+                health = "warn"
+        if traffic_delta_pct >= 150 and calls_current >= 10:
+            anomalies.append("traffic-spike")
+            if health == "ok":
+                health = "warn"
+        if calls_previous >= 10 and calls_current == 0:
+            anomalies.append("traffic-drop")
+            if health == "ok":
+                health = "warn"
+        rows.append(
+            {
+                "provider": provider,
+                "calls_current": calls_current,
+                "calls_previous": calls_previous,
+                "estimated_pct": estimated_pct,
+                "avg_latency_current": latency_current,
+                "avg_latency_previous": latency_previous,
+                "latency_delta_pct": latency_delta_pct,
+                "cost_current": row.get("cost_current") or 0,
+                "runs_current": runs_current,
+                "failed_runs_current": failed_runs_current,
+                "failure_pct": failure_pct,
+                "traffic_delta_pct": traffic_delta_pct,
+                "health": health,
+                "anomalies": anomalies,
+            }
+        )
+    rows.sort(
+        key=lambda r: (
+            {"error": 0, "warn": 1, "ok": 2}[r["health"]],
+            -r["calls_current"],
+            -r["cost_current"],
+        )
+    )
+    return {"window_hours": effective_window, "rows": rows}
+
+
 def _build_run_filters(
     window_hours=0,
     day: str | None = None,
@@ -293,6 +409,7 @@ def _build_run_filters(
     status: str | None = None,
     session_id: str | None = None,
     cron_job_id: str | None = None,
+    tool_name: str | None = None,
     q: str | None = None,
 ):
     clauses = [_since_clause(window_hours, "started_at")]
@@ -318,6 +435,11 @@ def _build_run_filters(
     if cron_job_id:
         clauses.append("COALESCE(cron_job_id, '') = ?")
         params.append(cron_job_id)
+    if tool_name:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM tool_calls tc WHERE tc.session_id = runs.session_id AND tc.tool_name = ?)"
+        )
+        params.append(tool_name)
     if q:
         like = f"%{q}%"
         clauses.append(
@@ -327,10 +449,11 @@ def _build_run_filters(
             "COALESCE(provider, '') LIKE ? OR "
             "COALESCE(cron_job_id, '') LIKE ? OR "
             "COALESCE(platform, '') LIKE ? OR "
-            "COALESCE(status, '') LIKE ?"
+            "COALESCE(status, '') LIKE ? OR "
+            "EXISTS (SELECT 1 FROM tool_calls tc WHERE tc.session_id = runs.session_id AND tc.tool_name LIKE ?)"
             ")"
         )
-        params.extend([like, like, like, like, like, like])
+        params.extend([like, like, like, like, like, like, like])
     return " AND ".join(clauses), params
 
 
@@ -344,6 +467,7 @@ def api_runs(
     status: str | None = None,
     session_id: str | None = None,
     cron_job_id: str | None = None,
+    tool_name: str | None = None,
     q: str | None = None,
     include_deleted=False,
 ):
@@ -356,6 +480,7 @@ def api_runs(
         status,
         session_id,
         cron_job_id,
+        tool_name,
         q,
     )
     visible_sql, visible_params = _visible_sessions_clause("session_id", include_deleted)
@@ -395,12 +520,490 @@ def api_runs(
             "status": status,
             "session_id": session_id,
             "cron_job_id": cron_job_id,
+            "tool_name": tool_name,
             "q": q,
             "include_deleted": bool(include_deleted),
         },
         "total_runs": total_runs,
         "hidden_deleted_runs": max(0, raw_total_runs - total_runs),
         "rows": rows,
+    }
+
+
+def _build_request_filters(
+    window_hours=0,
+    day: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    session_id: str | None = None,
+    cron_job_id: str | None = None,
+    tool_name: str | None = None,
+    q: str | None = None,
+):
+    clauses = [_since_clause(window_hours, "lc.ts")]
+    params = []
+    if day:
+        clauses.append("DATE(lc.ts) = ?")
+        params.append(day)
+    if model:
+        clauses.append("COALESCE(lc.model, '—') = ?")
+        params.append(model)
+    if provider:
+        clauses.append("COALESCE(lc.provider, '—') = ?")
+        params.append(provider)
+    if platform:
+        clauses.append("COALESCE(r.platform, 'cli') = ?")
+        params.append(platform)
+    if status:
+        clauses.append("COALESCE(r.status, 'running') = ?")
+        params.append(status)
+    if session_id:
+        clauses.append("lc.session_id = ?")
+        params.append(session_id)
+    if cron_job_id:
+        clauses.append("COALESCE(r.cron_job_id, '') = ?")
+        params.append(cron_job_id)
+    if tool_name:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM tool_calls tc WHERE tc.session_id = lc.session_id AND tc.tool_name = ?)"
+        )
+        params.append(tool_name)
+    if q:
+        like = f"%{q}%"
+        clauses.append(
+            "("
+            "CAST(lc.id AS TEXT) LIKE ? OR "
+            "lc.session_id LIKE ? OR "
+            "COALESCE(lc.model, '') LIKE ? OR "
+            "COALESCE(lc.provider, '') LIKE ? OR "
+            "COALESCE(r.cron_job_id, '') LIKE ? OR "
+            "COALESCE(r.platform, '') LIKE ? OR "
+            "COALESCE(r.status, '') LIKE ? OR "
+            "EXISTS (SELECT 1 FROM tool_calls tc WHERE tc.session_id = lc.session_id AND tc.tool_name LIKE ?)"
+            ")"
+        )
+        params.extend([like, like, like, like, like, like, like, like])
+    return " AND ".join(clauses), params
+
+
+def api_requests(
+    limit=100,
+    window_hours=0,
+    day: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    session_id: str | None = None,
+    cron_job_id: str | None = None,
+    tool_name: str | None = None,
+    q: str | None = None,
+    include_deleted=False,
+):
+    base_where_sql, base_params = _build_request_filters(
+        window_hours,
+        day,
+        model,
+        provider,
+        platform,
+        status,
+        session_id,
+        cron_job_id,
+        tool_name,
+        q,
+    )
+    visible_sql, visible_params = _visible_sessions_clause("r.session_id", include_deleted)
+    where_sql = f"{base_where_sql} AND {visible_sql}"
+    params = [*base_params, *visible_params]
+    rows = _rows(
+        f"""
+        SELECT lc.id, lc.ts, lc.session_id, lc.model, lc.provider,
+               lc.tokens_in, lc.tokens_out, lc.cache_read_tokens, lc.cache_write_tokens,
+               lc.reasoning_tokens, lc.cost_usd, lc.latency_ms, lc.estimated,
+               r.platform, r.cron_job_id, r.status, r.tool_calls
+        FROM llm_calls lc
+        LEFT JOIN runs r ON r.session_id = lc.session_id
+        WHERE {where_sql}
+        ORDER BY lc.ts DESC, lc.id DESC
+        LIMIT ?
+        """,
+        (*params, int(limit)),
+    )
+    total_row = _one(
+        f"SELECT COUNT(*) AS total_requests FROM llm_calls lc LEFT JOIN runs r ON r.session_id = lc.session_id WHERE {where_sql}",
+        tuple(params),
+    )
+    raw_total_row = _one(
+        f"SELECT COUNT(*) AS total_requests FROM llm_calls lc LEFT JOIN runs r ON r.session_id = lc.session_id WHERE {base_where_sql}",
+        tuple(base_params),
+    )
+    total_requests = int(total_row.get("total_requests") or 0)
+    raw_total_requests = int(raw_total_row.get("total_requests") or 0)
+    return {
+        "filters": {
+            "hours": int(window_hours),
+            "day": day,
+            "model": model,
+            "provider": provider,
+            "platform": platform,
+            "status": status,
+            "session_id": session_id,
+            "cron_job_id": cron_job_id,
+            "tool_name": tool_name,
+            "q": q,
+            "include_deleted": bool(include_deleted),
+        },
+        "total_requests": total_requests,
+        "hidden_deleted_requests": max(0, raw_total_requests - total_requests),
+        "rows": rows,
+    }
+
+
+def api_request_detail(request_id: int):
+    if not request_id:
+        return {"error": "request id is required"}
+
+    request = _one(
+        """
+        SELECT lc.id, lc.ts, lc.session_id, lc.model, lc.provider,
+               lc.tokens_in, lc.tokens_out, lc.cache_read_tokens, lc.cache_write_tokens,
+               lc.reasoning_tokens, lc.cost_usd, lc.latency_ms, lc.estimated,
+               r.platform, r.cron_job_id, r.status, r.started_at, r.ended_at,
+               r.duration_ms, r.api_calls, r.tool_calls, r.cost_usd AS session_cost_usd
+        FROM llm_calls lc
+        LEFT JOIN runs r ON r.session_id = lc.session_id
+        WHERE lc.id = ?
+        """,
+        (int(request_id),),
+    )
+    if not request:
+        return {"error": "request not found", "request_id": request_id}
+
+    session_totals = _one(
+        """
+        SELECT COUNT(*) AS api_calls,
+               COALESCE(SUM(tokens_in), 0) AS tokens_in,
+               COALESCE(SUM(tokens_out), 0) AS tokens_out,
+               COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+               COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+               COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+               ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+               AVG(latency_ms) AS avg_latency_ms,
+               SUM(CASE WHEN estimated = 1 THEN 1 ELSE 0 END) AS estimated_calls
+        FROM llm_calls
+        WHERE session_id = ?
+        """,
+        (request["session_id"],),
+    )
+
+    sibling_requests = _rows(
+        """
+        SELECT id, ts, model, provider, tokens_in, tokens_out,
+               cache_read_tokens, reasoning_tokens, cost_usd, latency_ms, estimated
+        FROM llm_calls
+        WHERE session_id = ?
+        ORDER BY ts DESC, id DESC
+        LIMIT 20
+        """,
+        (request["session_id"],),
+    )
+
+    session_tools = _rows(
+        """
+        SELECT ts, tool_name, ok, latency_ms
+        FROM tool_calls
+        WHERE session_id = ?
+        ORDER BY ts DESC, id DESC
+        LIMIT 20
+        """,
+        (request["session_id"],),
+    )
+
+    return {
+        "request": request,
+        "session_totals": session_totals,
+        "sibling_requests": sibling_requests,
+        "session_tools": session_tools,
+    }
+
+
+def api_tool_analytics(
+    window_hours=0,
+    day: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    session_id: str | None = None,
+    cron_job_id: str | None = None,
+    tool_name: str | None = None,
+    q: str | None = None,
+    include_deleted=False,
+):
+    clauses = [_since_clause(window_hours, "tc.ts")]
+    params = []
+    if day:
+        clauses.append("DATE(tc.ts) = ?")
+        params.append(day)
+    if model:
+        clauses.append("COALESCE(r.model, '—') = ?")
+        params.append(model)
+    if provider:
+        clauses.append("COALESCE(r.provider, '—') = ?")
+        params.append(provider)
+    if platform:
+        clauses.append("COALESCE(r.platform, 'cli') = ?")
+        params.append(platform)
+    if status:
+        clauses.append("COALESCE(r.status, 'running') = ?")
+        params.append(status)
+    if session_id:
+        clauses.append("tc.session_id = ?")
+        params.append(session_id)
+    if cron_job_id:
+        clauses.append("COALESCE(r.cron_job_id, '') = ?")
+        params.append(cron_job_id)
+    if tool_name:
+        clauses.append("tc.tool_name = ?")
+        params.append(tool_name)
+    if q:
+        like = f"%{q}%"
+        clauses.append(
+            "("
+            "tc.tool_name LIKE ? OR "
+            "tc.session_id LIKE ? OR "
+            "COALESCE(r.model, '') LIKE ? OR "
+            "COALESCE(r.provider, '') LIKE ? OR "
+            "COALESCE(r.cron_job_id, '') LIKE ? OR "
+            "COALESCE(r.platform, '') LIKE ? OR "
+            "COALESCE(r.status, '') LIKE ?"
+            ")"
+        )
+        params.extend([like, like, like, like, like, like, like])
+
+    visible_sql, visible_params = _visible_sessions_clause("r.session_id", include_deleted)
+    where_sql = f"{' AND '.join(clauses)} AND {visible_sql}"
+    params.extend(visible_params)
+
+    overall = _one(
+        f"""
+        SELECT COUNT(*) AS tool_calls,
+               COUNT(DISTINCT tc.tool_name) AS unique_tools,
+               COUNT(DISTINCT tc.session_id) AS sessions,
+               SUM(CASE WHEN tc.ok = 0 THEN 1 ELSE 0 END) AS failed_calls,
+               AVG(tc.latency_ms) AS avg_latency_ms
+        FROM tool_calls tc
+        LEFT JOIN runs r ON r.session_id = tc.session_id
+        WHERE {where_sql}
+        """,
+        tuple(params),
+    )
+    by_tool = _rows(
+        f"""
+        SELECT tc.tool_name,
+               COUNT(*) AS calls,
+               COUNT(DISTINCT tc.session_id) AS sessions,
+               SUM(CASE WHEN tc.ok = 1 THEN 1 ELSE 0 END) AS ok_calls,
+               SUM(CASE WHEN tc.ok = 0 THEN 1 ELSE 0 END) AS failed_calls,
+               ROUND(AVG(tc.latency_ms), 1) AS avg_latency_ms,
+               MAX(tc.latency_ms) AS max_latency_ms,
+               MAX(tc.ts) AS last_seen
+        FROM tool_calls tc
+        LEFT JOIN runs r ON r.session_id = tc.session_id
+        WHERE {where_sql}
+        GROUP BY tc.tool_name
+        ORDER BY failed_calls DESC, calls DESC, avg_latency_ms DESC
+        LIMIT 50
+        """,
+        tuple(params),
+    )
+    for row in by_tool:
+        calls = int(row.get("calls") or 0)
+        failed = int(row.get("failed_calls") or 0)
+        row["failure_pct"] = round((failed / calls) * 100, 2) if calls else 0.0
+    return {"overall": overall, "by_tool": by_tool}
+
+
+def api_error_center(
+    window_hours=0,
+    day: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    session_id: str | None = None,
+    cron_job_id: str | None = None,
+    tool_name: str | None = None,
+    q: str | None = None,
+    include_deleted=False,
+):
+    run_where_sql, run_params = _build_run_filters(
+        window_hours,
+        day,
+        model,
+        provider,
+        platform,
+        status,
+        session_id,
+        cron_job_id,
+        tool_name,
+        q,
+    )
+    visible_sql, visible_params = _visible_sessions_clause("runs.session_id", include_deleted)
+    run_where_sql = f"{run_where_sql} AND {visible_sql}"
+    run_params = [*run_params, *visible_params]
+
+    tool_clauses = [_since_clause(window_hours, "tc.ts")]
+    tool_params = []
+    if day:
+        tool_clauses.append("DATE(tc.ts) = ?")
+        tool_params.append(day)
+    if model:
+        tool_clauses.append("COALESCE(r.model, '—') = ?")
+        tool_params.append(model)
+    if provider:
+        tool_clauses.append("COALESCE(r.provider, '—') = ?")
+        tool_params.append(provider)
+    if platform:
+        tool_clauses.append("COALESCE(r.platform, 'cli') = ?")
+        tool_params.append(platform)
+    if status:
+        tool_clauses.append("COALESCE(r.status, 'running') = ?")
+        tool_params.append(status)
+    if session_id:
+        tool_clauses.append("tc.session_id = ?")
+        tool_params.append(session_id)
+    if cron_job_id:
+        tool_clauses.append("COALESCE(r.cron_job_id, '') = ?")
+        tool_params.append(cron_job_id)
+    if tool_name:
+        tool_clauses.append("tc.tool_name = ?")
+        tool_params.append(tool_name)
+    if q:
+        like = f"%{q}%"
+        tool_clauses.append(
+            "("
+            "tc.tool_name LIKE ? OR "
+            "tc.session_id LIKE ? OR "
+            "COALESCE(r.model, '') LIKE ? OR "
+            "COALESCE(r.provider, '') LIKE ? OR "
+            "COALESCE(r.cron_job_id, '') LIKE ? OR "
+            "COALESCE(r.platform, '') LIKE ? OR "
+            "COALESCE(r.status, '') LIKE ?"
+            ")"
+        )
+        tool_params.extend([like, like, like, like, like, like, like])
+    tool_visible_sql, tool_visible_params = _visible_sessions_clause(
+        "r.session_id", include_deleted
+    )
+    tool_where_sql = f"{' AND '.join(tool_clauses)} AND {tool_visible_sql}"
+    tool_params.extend(tool_visible_params)
+
+    summary = {
+        "runs": _one(
+            f"""
+            SELECT SUM(CASE WHEN status NOT IN ('ok', 'running') THEN 1 ELSE 0 END) AS failed_runs,
+                   SUM(CASE WHEN status = 'interrupted' THEN 1 ELSE 0 END) AS interrupted_runs,
+                   SUM(CASE WHEN status = 'timeout' THEN 1 ELSE 0 END) AS timeout_runs,
+                   COUNT(*) AS total_runs
+            FROM runs
+            WHERE {run_where_sql}
+            """,
+            tuple(run_params),
+        ),
+        "tools": _one(
+            f"""
+            SELECT SUM(CASE WHEN tc.ok = 0 THEN 1 ELSE 0 END) AS failed_tool_calls,
+                   COUNT(DISTINCT CASE WHEN tc.ok = 0 THEN tc.session_id END) AS sessions_with_failed_tools,
+                   COUNT(*) AS tool_calls
+            FROM tool_calls tc
+            LEFT JOIN runs r ON r.session_id = tc.session_id
+            WHERE {tool_where_sql}
+            """,
+            tuple(tool_params),
+        ),
+    }
+
+    status_groups = _rows(
+        f"""
+        SELECT status,
+               COUNT(*) AS runs,
+               COUNT(DISTINCT session_id) AS sessions,
+               ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+               MAX(started_at) AS last_seen
+        FROM runs
+        WHERE {run_where_sql}
+          AND status NOT IN ('ok', 'running')
+        GROUP BY status
+        ORDER BY runs DESC, last_seen DESC
+        """,
+        tuple(run_params),
+    )
+
+    failed_tools = _rows(
+        f"""
+        SELECT tc.tool_name,
+               COUNT(*) AS failed_calls,
+               COUNT(DISTINCT tc.session_id) AS sessions,
+               ROUND(AVG(tc.latency_ms), 1) AS avg_latency_ms,
+               MAX(tc.ts) AS last_seen
+        FROM tool_calls tc
+        LEFT JOIN runs r ON r.session_id = tc.session_id
+        WHERE {tool_where_sql}
+          AND tc.ok = 0
+        GROUP BY tc.tool_name
+        ORDER BY failed_calls DESC, last_seen DESC
+        LIMIT 20
+        """,
+        tuple(tool_params),
+    )
+
+    incidents = _rows(
+        f"""
+        SELECT *
+        FROM (
+            SELECT started_at AS ts,
+                   'run_status' AS kind,
+                   session_id,
+                   platform,
+                   provider,
+                   model,
+                   status,
+                   '' AS tool_name,
+                   duration_ms AS latency_ms,
+                   cost_usd
+            FROM runs
+            WHERE {run_where_sql}
+              AND status NOT IN ('ok', 'running')
+            UNION ALL
+            SELECT tc.ts AS ts,
+                   'tool_failure' AS kind,
+                   tc.session_id,
+                   r.platform,
+                   r.provider,
+                   r.model,
+                   r.status,
+                   tc.tool_name,
+                   tc.latency_ms,
+                   r.cost_usd
+            FROM tool_calls tc
+            LEFT JOIN runs r ON r.session_id = tc.session_id
+            WHERE {tool_where_sql}
+              AND tc.ok = 0
+        ) incidents
+        ORDER BY ts DESC
+        LIMIT 50
+        """,
+        tuple(run_params + tool_params),
+    )
+
+    return {
+        "summary": summary,
+        "status_groups": status_groups,
+        "failed_tools": failed_tools,
+        "incidents": incidents,
     }
 
 
@@ -965,9 +1568,17 @@ class Handler(SimpleHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 return self._json(api_providers(_parse_int(qs.get("hours", [24])[0], "hours")))
 
+            if path == "/api/provider-health":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_provider_health(_parse_int(qs.get("hours", [24])[0], "hours"))
+                )
+
             if path == "/api/cache-efficiency":
                 qs = parse_qs(parsed.query)
-                return self._json(api_cache_efficiency(_parse_int(qs.get("hours", [24])[0], "hours")))
+                return self._json(
+                    api_cache_efficiency(_parse_int(qs.get("hours", [24])[0], "hours"))
+                )
 
             if path == "/api/runs":
                 qs = parse_qs(parsed.query)
@@ -982,6 +1593,26 @@ class Handler(SimpleHTTPRequestHandler):
                         qs.get("status", [None])[0],
                         qs.get("session_id", [None])[0],
                         qs.get("cron_job_id", [None])[0],
+                        qs.get("tool_name", [None])[0],
+                        qs.get("q", [None])[0],
+                        qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
+                    )
+                )
+
+            if path == "/api/requests":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_requests(
+                        _parse_int(qs.get("limit", [100])[0], "limit"),
+                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        qs.get("day", [None])[0],
+                        qs.get("model", [None])[0],
+                        qs.get("provider", [None])[0],
+                        qs.get("platform", [None])[0],
+                        qs.get("status", [None])[0],
+                        qs.get("session_id", [None])[0],
+                        qs.get("cron_job_id", [None])[0],
+                        qs.get("tool_name", [None])[0],
                         qs.get("q", [None])[0],
                         qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
                     )
@@ -990,6 +1621,46 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/session-detail":
                 qs = parse_qs(parsed.query)
                 return self._json(api_session_detail(qs.get("session_id", [""])[0]))
+
+            if path == "/api/request-detail":
+                qs = parse_qs(parsed.query)
+                return self._json(api_request_detail(_parse_int(qs.get("id", [0])[0], "id")))
+
+            if path == "/api/tool-analytics":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_tool_analytics(
+                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        qs.get("day", [None])[0],
+                        qs.get("model", [None])[0],
+                        qs.get("provider", [None])[0],
+                        qs.get("platform", [None])[0],
+                        qs.get("status", [None])[0],
+                        qs.get("session_id", [None])[0],
+                        qs.get("cron_job_id", [None])[0],
+                        qs.get("tool_name", [None])[0],
+                        qs.get("q", [None])[0],
+                        qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
+                    )
+                )
+
+            if path == "/api/error-center":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_error_center(
+                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        qs.get("day", [None])[0],
+                        qs.get("model", [None])[0],
+                        qs.get("provider", [None])[0],
+                        qs.get("platform", [None])[0],
+                        qs.get("status", [None])[0],
+                        qs.get("session_id", [None])[0],
+                        qs.get("cron_job_id", [None])[0],
+                        qs.get("tool_name", [None])[0],
+                        qs.get("q", [None])[0],
+                        qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
+                    )
+                )
 
             if path == "/api/model-tokens":
                 qs = parse_qs(parsed.query)
@@ -1040,7 +1711,9 @@ class Handler(SimpleHTTPRequestHandler):
 
             if path == "/api/token-breakdown":
                 qs = parse_qs(parsed.query)
-                return self._json(api_token_breakdown(_parse_int(qs.get("hours", [24])[0], "hours")))
+                return self._json(
+                    api_token_breakdown(_parse_int(qs.get("hours", [24])[0], "hours"))
+                )
         except ValueError as e:
             return self._json({"error": str(e)}, 400)
 

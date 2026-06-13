@@ -1,4 +1,4 @@
-"""Tests for dashboard/serve.py CLI parsing and bind-warning behaviour."""
+"""Tests for dashboard/serve.py CLI parsing, API helpers, and bind-warning behaviour."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import hermes_telemetry.db as db
 import pytest
 
 # The dashboard ships as a standalone script at dashboard/serve.py — not under
@@ -21,6 +22,16 @@ def serve_module():
     spec.loader.exec_module(module)
     yield module
     sys.modules.pop("dashboard_serve", None)
+
+
+@pytest.fixture(autouse=True)
+def isolated_dashboard_db():
+    db._local.conn = None
+    yield
+    conn = getattr(db._local, "conn", None)
+    if conn:
+        conn.close()
+        db._local.conn = None
 
 
 # ---------------------------------------------------------------------------
@@ -99,3 +110,101 @@ def test_warn_if_exposed_warns_for_specific_lan_ip(serve_module, capsys):
     captured = capsys.readouterr()
     assert "WARNING" in captured.err
     assert "192.168.1.42" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# API helpers
+# ---------------------------------------------------------------------------
+
+
+def test_api_requests_filters_by_tool_and_status(serve_module):
+    now = db._utcnow()
+    db.start_run("sess-ok", model="m1", platform="cli")
+    db.record_llm_call("sess-ok", now, "m1", "openrouter", 100, 50, 0.01, 120)
+    db.record_tool_call("sess-ok", now, "read_file", True, 20)
+    db.end_run("sess-ok", "ok")
+
+    db.start_run("sess-error", model="m2", platform="telegram")
+    db.record_llm_call(
+        "sess-error", now, "m2", "anthropic", 200, 80, 0.02, 300, reasoning_tokens=15
+    )
+    db.record_tool_call("sess-error", now, "terminal", False, 900)
+    db.end_run("sess-error", "error")
+
+    data = serve_module.api_requests(
+        limit=20,
+        window_hours=24,
+        status="error",
+        tool_name="terminal",
+        include_deleted=True,
+    )
+    assert data["total_requests"] == 1
+    row = data["rows"][0]
+    assert row["session_id"] == "sess-error"
+    assert row["provider"] == "anthropic"
+    assert row["reasoning_tokens"] == 15
+
+
+def test_api_request_detail_returns_session_context(serve_module):
+    now = db._utcnow()
+    db.start_run("sess-detail", model="m1", platform="cli")
+    db.record_llm_call("sess-detail", now, "m1", "openrouter", 100, 20, 0.01, 111)
+    db.record_llm_call(
+        "sess-detail", now, "m1", "openrouter", 120, 40, 0.02, 222, cache_read_tokens=30
+    )
+    db.record_tool_call("sess-detail", now, "read_file", True, 44)
+    db.end_run("sess-detail", "ok")
+
+    req_id = db._get_conn().execute("SELECT MAX(id) FROM llm_calls").fetchone()[0]
+    detail = serve_module.api_request_detail(req_id)
+    assert detail["request"]["session_id"] == "sess-detail"
+    assert detail["session_totals"]["api_calls"] == 2
+    assert len(detail["sibling_requests"]) == 2
+    assert detail["session_tools"][0]["tool_name"] == "read_file"
+
+
+def test_api_tool_analytics_and_error_center(serve_module):
+    now = db._utcnow()
+    db.start_run("sess-a", model="m1", platform="cli")
+    db.record_llm_call("sess-a", now, "m1", "openrouter", 100, 20, 0.01, 111)
+    db.record_tool_call("sess-a", now, "read_file", True, 44)
+    db.end_run("sess-a", "ok")
+
+    db.start_run("sess-b", model="m2", platform="discord")
+    db.record_llm_call("sess-b", now, "m2", "anthropic", 150, 35, 0.03, 333)
+    db.record_tool_call("sess-b", now, "terminal", False, 950)
+    db.record_tool_call("sess-b", now, "terminal", False, 870)
+    db.end_run("sess-b", "interrupted")
+
+    analytics = serve_module.api_tool_analytics(window_hours=24, include_deleted=True)
+    by_tool = {row["tool_name"]: row for row in analytics["by_tool"]}
+    assert analytics["overall"]["failed_calls"] == 2
+    assert by_tool["terminal"]["failed_calls"] == 2
+    assert by_tool["terminal"]["failure_pct"] == 100.0
+
+    errors = serve_module.api_error_center(window_hours=24, include_deleted=True)
+    assert errors["summary"]["runs"]["interrupted_runs"] == 1
+    assert errors["summary"]["tools"]["failed_tool_calls"] == 2
+    assert errors["failed_tools"][0]["tool_name"] == "terminal"
+    assert any(row["kind"] == "tool_failure" for row in errors["incidents"])
+
+
+def test_api_provider_health_flags_estimated_and_failures(serve_module):
+    now = db._utcnow()
+    db.start_run("sess-health-ok", model="m1", platform="cli")
+    db.record_llm_call(
+        "sess-health-ok", now, "m1", "openrouter", 100, 20, 0.01, 100, estimated=False
+    )
+    db.end_run("sess-health-ok", "ok")
+
+    db.start_run("sess-health-warn", model="m2", platform="discord")
+    db.record_llm_call("sess-health-warn", now, "m2", "nous", 120, 40, 0.02, 250, estimated=True)
+    db.record_llm_call("sess-health-warn", now, "m2", "nous", 100, 30, 0.02, 300, estimated=True)
+    db.end_run("sess-health-warn", "error")
+
+    health = serve_module.api_provider_health(window_hours=24)
+    by_provider = {row["provider"]: row for row in health["rows"]}
+    assert by_provider["nous"]["estimated_pct"] == 100.0
+    assert by_provider["nous"]["failed_runs_current"] == 1
+    assert by_provider["nous"]["health"] in {"warn", "error"}
+    assert by_provider["openrouter"]["calls_current"] == 1
