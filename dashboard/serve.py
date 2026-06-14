@@ -366,7 +366,9 @@ def api_budget_update(payload):
     try:
         # Inline atomic write to avoid importing os at module level
         import os
+
         import yaml
+
         tmp = budget_path.with_suffix(".yaml.tmp")
         with open(tmp, "w") as f:
             yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
