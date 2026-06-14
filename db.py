@@ -778,10 +778,35 @@ def record_free_model(model: str, provider: str = "") -> None:
 
 
 def is_known_free_model(model: str, provider: str = "") -> bool:
-    """Return True if this (model, provider) pair was previously seen at $0."""
+    """Return True if this (model, provider) pair was previously seen at $0.
+
+    Also matches rows with provider='' (wildcard sentinel written by
+    backfill_known_free_models for pre-v5 installs that had no per-provider rows).
+    """
     conn = _get_conn()
     row = conn.execute(
-        "SELECT 1 FROM known_free_models WHERE model = ? AND provider = ?",
+        "SELECT 1 FROM known_free_models WHERE model = ? AND (provider = ? OR provider = '')",
         (model, provider),
     ).fetchone()
     return row is not None
+
+
+def backfill_known_free_models(models: list) -> int:
+    """Insert known-free models with provider='' (wildcard) for backward compat.
+
+    Called once at plugin load for models that were explicitly $0 before the
+    known_free_models table existed. INSERT OR IGNORE never overwrites real rows
+    (rows with a specific provider take precedence and are unaffected).
+    Returns the count of rows actually inserted.
+    """
+    conn = _get_conn()
+    now = _utcnow()
+    inserted = 0
+    for model in models:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO known_free_models(model, provider, first_seen_at)"
+            " VALUES (?, '', ?)",
+            (model, now),
+        )
+        inserted += cur.rowcount
+    return inserted

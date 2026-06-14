@@ -645,7 +645,7 @@ def test_record_free_model_is_idempotent():
 
 def test_known_free_model_is_provider_scoped():
     db.record_free_model("owl-alpha", "nous")
-    # Same model under a different provider is NOT known-free
+    # Specific-provider row does NOT match other providers (no wildcard row present)
     assert not db.is_known_free_model("owl-alpha", "openrouter")
     assert not db.is_known_free_model("owl-alpha", "")
 
@@ -659,3 +659,46 @@ def test_schema_v5_recorded():
 
     versions = {row[0] for row in _get_conn().execute("SELECT version FROM schema_version")}
     assert 5 in versions
+
+
+# ---------------------------------------------------------------------------
+# backfill_known_free_models — backward-compat wildcard rows (issue #16)
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_inserts_wildcard_rows():
+    """backfill_known_free_models inserts rows with provider=''."""
+    n = db.backfill_known_free_models(["owl-alpha", "hermes-4-qwen"])
+    assert n == 2
+    conn = db._get_conn()
+    rows = conn.execute(
+        "SELECT provider FROM known_free_models WHERE model IN ('owl-alpha', 'hermes-4-qwen')"
+    ).fetchall()
+    assert all(r[0] == "" for r in rows)
+
+
+def test_backfill_wildcard_matches_any_provider():
+    """After backfill, is_known_free_model returns True regardless of provider."""
+    db.backfill_known_free_models(["owl-alpha"])
+    assert db.is_known_free_model("owl-alpha", "nous")
+    assert db.is_known_free_model("owl-alpha", "openrouter")
+    assert db.is_known_free_model("owl-alpha", "nvidia")
+    assert db.is_known_free_model("owl-alpha", "")
+
+
+def test_backfill_is_idempotent():
+    """Second backfill call returns 0 — INSERT OR IGNORE prevents duplicates."""
+    assert db.backfill_known_free_models(["owl-alpha"]) == 1
+    assert db.backfill_known_free_models(["owl-alpha"]) == 0
+
+
+def test_backfill_does_not_overwrite_specific_provider_row():
+    """Backfill and record_free_model coexist — separate PRIMARY KEY rows."""
+    db.record_free_model("owl-alpha", "nous")
+    db.backfill_known_free_models(["owl-alpha"])
+    conn = db._get_conn()
+    rows = conn.execute(
+        "SELECT provider FROM known_free_models WHERE model = 'owl-alpha'"
+    ).fetchall()
+    providers = {r[0] for r in rows}
+    assert providers == {"nous", ""}

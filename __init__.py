@@ -159,6 +159,21 @@ def register(ctx) -> None:  # noqa: ANN001
     _try_pricing_refresh(tele_log)
 
     # ------------------------------------------------------------------
+    # Backward-compat backfill: seed known_free_models for users upgrading
+    # from pre-v5 installs who have subscription or zero-price models in
+    # their pricing.yaml but no persisted rows yet (INSERT OR IGNORE — safe
+    # to call on every load; only new rows cost anything).
+    # ------------------------------------------------------------------
+    try:
+        _free_models = pricing.get_known_free_models()
+        if _free_models:
+            _n = db.backfill_known_free_models(_free_models)
+            if _n:
+                tele_log.info("backfilled %d known-free model(s) for free→paid alert", _n)
+    except Exception as exc:
+        tele_log.error("known_free_models backfill failed: %s", exc)
+
+    # ------------------------------------------------------------------
     # on_session_start
     # Fired once per new session.
     # kwargs: session_id, model, platform

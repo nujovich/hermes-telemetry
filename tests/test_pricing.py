@@ -840,3 +840,50 @@ def test_is_explicitly_priced_subscription_model(tmp_path, monkeypatch):
     pricing.reload_custom_pricing()
     assert pricing.is_explicitly_priced("hermes-4-qwen-72b") is True
     pricing.reload_custom_pricing()
+
+
+# ---------------------------------------------------------------------------
+# get_known_free_models — backfill list for pre-v5 installs (issue #16)
+# ---------------------------------------------------------------------------
+
+
+def test_get_known_free_models_includes_zero_price_models():
+    """Models with explicit input=0, output=0 in the fixture are returned."""
+    models = pricing.get_known_free_models()
+    assert "owl-alpha" in models
+    assert "openrouter/owl-alpha" in models
+
+
+def test_get_known_free_models_no_duplicates():
+    """Each model appears at most once in the result."""
+    models = pricing.get_known_free_models()
+    assert len(models) == len(set(models))
+
+
+def test_get_known_free_models_excludes_paid_models():
+    """Paid models (input > 0 or output > 0) are NOT returned."""
+    models = pricing.get_known_free_models()
+    assert "claude-sonnet-4-6" not in models
+    assert "gpt-4o" not in models
+
+
+def test_get_known_free_models_includes_subscription_models(tmp_path, monkeypatch):
+    """Subscription models (_subscription: true) appear in the backfill list."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    (tmp_path / "telemetry" / "pricing.yaml").write_text(
+        "models:\n"
+        "  hermes-4-qwen-72b:\n"
+        "    input: 0.0\n"
+        "    output: 0.0\n"
+        "    _subscription: true\n"
+        "  paid-model:\n"
+        "    input: 3.0\n"
+        "    output: 15.0\n"
+        "    _subscription: true\n"
+    )
+    pricing.reload_custom_pricing()
+    models = pricing.get_known_free_models()
+    assert "hermes-4-qwen-72b" in models
+    assert "paid-model" not in models
+    pricing.reload_custom_pricing()
