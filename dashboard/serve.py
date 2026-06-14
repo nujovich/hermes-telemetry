@@ -20,6 +20,8 @@ unreachable from other hosts. To view it from another machine, either:
     internet or to networks that include untrusted hosts.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
