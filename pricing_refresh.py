@@ -293,8 +293,17 @@ def refresh_pricing(dry_run: bool = False) -> tuple[dict[str, dict], list[dict]]
 
     # Update meta
     meta["auto_models"] = sorted(new_auto_models)
+    # Subscription models (manual `_subscription: true`) are a *declared* $0 —
+    # a flat-sub / free-tier rate — and must stay distinguishable from a lookup
+    # failure and from estimated-price models. They are never auto-populated;
+    # they only appear because a user hand-added them (issue #24, Option A).
+    meta["subscription_models"] = sorted(
+        m for m, e in existing_models.items() if e.get("_subscription")
+    )
     meta["estimated_price_models"] = sorted(
-        m for m, e in existing_models.items() if e.get("_estimated_price")
+        m
+        for m, e in existing_models.items()
+        if e.get("_estimated_price") and not e.get("_subscription")
     )
     meta["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     meta["sources"] = [s.name for s in _SOURCES]

@@ -260,7 +260,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 "cache_write_tokens": cache_write_tok,
                 "reasoning_tokens": reasoning_tok,
             }
-            cost = pricing.estimate_cost(full_usage, effective_model)
+            cost = pricing.estimate_cost(full_usage, effective_model, provider)
             latency_ms = int(api_duration * 1000)
 
             db.record_llm_call(

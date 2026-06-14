@@ -605,3 +605,207 @@ def test_google_alt_form_resolves_dated_variant_via_longest_prefix(monkeypatch):
         abs(pricing.estimate_cost(usage, dated_prefixed) - pricing.estimate_cost(usage, dated_bare))
         < 1e-9
     )
+
+
+# ---------------------------------------------------------------------------
+# Provider-aware lookup (issue #24) + NVIDIA NIM seeds (issue #12 Phase 1)
+#
+# An OpenRouter-sourced price must never cost a call another provider served.
+# The guard keys on each entry's _source vs the call's provider. Seeds with no
+# _source (_DEFAULT_PRICING, prefix table, hand-added overrides) stay neutral.
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_entry_blocked_for_nous(tmp_path, monkeypatch, caplog):
+    """An OpenRouter-sourced price is not eligible for a provider=nous call."""
+    import logging
+
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "qwen3.7-plus":
+            input: 0.40
+            output: 1.60
+            _source: openrouter
+    """),
+    )
+    with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
+        cost = pricing.estimate_cost(
+            {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+            "qwen3.7-plus",
+            provider="nous",
+        )
+    assert cost == 0.0  # NOT 0.40+1.60 — OpenRouter price must not leak to Nous
+    assert any("nous" in r.message for r in caplog.records)
+
+
+def test_openrouter_entry_used_for_openrouter(tmp_path, monkeypatch):
+    """The same OpenRouter entry IS eligible for a provider=openrouter call."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "qwen3.7-plus":
+            input: 0.40
+            output: 1.60
+            _source: openrouter
+    """),
+    )
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "qwen3.7-plus",
+        provider="openrouter",
+    )
+    assert abs(cost - (0.40 + 1.60)) < 1e-9
+
+
+def test_empty_provider_keeps_backward_compat(tmp_path, monkeypatch):
+    """provider="" (default) keeps the historical provider-blind behaviour:
+    an OpenRouter entry is still eligible."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "qwen3.7-plus":
+            input: 0.40
+            output: 1.60
+            _source: openrouter
+    """),
+    )
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000}, "qwen3.7-plus"
+    )
+    assert abs(cost - (0.40 + 1.60)) < 1e-9
+
+
+def test_sourceless_override_is_neutral_for_any_provider(tmp_path, monkeypatch):
+    """A hand-added entry with no _source prices any provider's call."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "claude-sonnet-4-6":
+            input: 99.00
+            output: 99.00
+    """),
+    )
+    for prov in ("anthropic", "nous", "openrouter", ""):
+        cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "claude-sonnet-4-6", prov)
+        assert abs(cost - 99.00) < 1e-6, f"failed for provider={prov!r}"
+
+
+def test_subscription_model_zero_cost_no_warning(tmp_path, monkeypatch, caplog):
+    """A _subscription model resolves to $0.00 WITHOUT an unknown-model warning
+    (issue #24, Option A): it is a declared flat-sub rate, not a lookup miss."""
+    import logging
+
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "qwen3.7-plus":
+            input: 0.0
+            output: 0.0
+            _subscription: true
+    """),
+    )
+    with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
+        cost = pricing.estimate_cost(
+            {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+            "qwen3.7-plus",
+            provider="nous",
+        )
+    assert cost == 0.0
+    assert not any("qwen3.7-plus" in r.message for r in caplog.records)
+
+
+def test_subscription_models_tracked_in_loader(tmp_path, monkeypatch):
+    """_load_custom_pricing exposes _subscription flags and _source metadata."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "qwen3.7-plus":
+            input: 0.0
+            output: 0.0
+            _subscription: true
+          "qwen/qwen3.7-plus":
+            input: 0.40
+            output: 1.60
+            _source: openrouter
+    """),
+    )
+    custom = pricing._load_custom_pricing()
+    assert "qwen3.7-plus" in custom["subscription_models"]
+    assert custom["model_sources"]["qwen/qwen3.7-plus"] == "openrouter"
+    # Price-key dict must NOT carry the _-prefixed metadata
+    assert "_subscription" not in custom["models"]["qwen3.7-plus"]
+    assert "_source" not in custom["models"]["qwen/qwen3.7-plus"]
+
+
+# ── NVIDIA NIM seeds + same-id collision with OpenRouter ──
+
+
+def test_nim_seed_used_for_nvidia_provider():
+    """A NIM model resolves to its build.nvidia.com seed (no custom file)."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "nvidia/nemotron-70b-instruct",
+        provider="nvidia",
+    )
+    assert abs(cost - (1.20 + 1.20)) < 1e-9
+
+
+def test_nim_openrouter_collision_excluded_for_nvidia(tmp_path, monkeypatch):
+    """Same model id on both NIM and OpenRouter at different prices: a
+    provider=nvidia call must fall through the OpenRouter entry to the seed."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "nvidia/nemotron-3-super-120b-a12b":
+            input: 0.09
+            output: 0.45
+            _source: openrouter
+    """),
+    )
+    # provider=nvidia → OpenRouter entry excluded → _DEFAULT_PRICING seed (0.10/0.50)
+    cost_nim = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "nvidia/nemotron-3-super-120b-a12b",
+        provider="nvidia",
+    )
+    assert abs(cost_nim - (0.10 + 0.50)) < 1e-9
+    # provider=openrouter → OpenRouter entry eligible (0.09/0.45)
+    cost_or = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "nvidia/nemotron-3-super-120b-a12b",
+        provider="openrouter",
+    )
+    assert abs(cost_or - (0.09 + 0.45)) < 1e-9
+
+
+def test_nim_free_variant_resolves_zero(caplog):
+    """A :free promo variant is unpriced → $0.00 (handled by zero-cost fallback)."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000}, "nvidia/nemotron-3-ultra:free", provider="nvidia"
+    )
+    assert cost == 0.0
+
+
+def test_nim_seed_survives_simulated_refresh():
+    """Seeds live in _DEFAULT_PRICING (code), so they are immune to a YAML
+    sync overwriting the same model id — the seed still resolves for NIM."""
+    # No custom file at all: the seed must answer directly.
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000}, "nvidia/nemotron-nano-9b", provider="nvidia"
+    )
+    assert abs(cost - 0.04) < 1e-9

@@ -540,6 +540,26 @@ defaults:
 
 Prices are auto-fetched from the OpenRouter API and cached locally.
 
+**Provider-aware lookup.** Each candidate is filtered by the call's provider so
+an OpenRouter-sourced price is never applied to a call another provider served
+(e.g. the OpenRouter Qwen rate must not cost a Nous Portal call, and a NIM call
+of `nvidia/...` must not borrow OpenRouter's rate for the same id). Entries
+auto-fetched from OpenRouter carry `_source: openrouter` and are skipped for
+non-OpenRouter calls; built-in and hand-added entries (no `_source`) are
+provider-neutral.
+
+**Subscription / flat-rate models.** If a provider serves a model on a flat
+subscription or free tier (incremental per-token cost = $0), declare it under
+the provider's **native model id** so it stays distinct from a lookup miss:
+
+```yaml
+models:
+  qwen3.7-plus:          # Nous Portal's native id (not the OpenRouter qwen/ form)
+    input: 0.0
+    output: 0.0
+    _subscription: true  # declared $0 — survives every OpenRouter refresh
+```
+
 ### `budget.yaml`
 
 Configure spend guardrails. No file → budgets disabled.
@@ -595,7 +615,9 @@ The plugin can automatically fetch model pricing from OpenRouter’s public API,
   - User overrides in `pricing.yaml` are **always preserved** — manual entries take priority over auto-fetched ones
   - New models from the API are added automatically
   - Previously auto-fetched models are updated when prices change
-  - Models are tagged with `_auto: true` and `_source: openrouter` for traceability
+  - Models are tagged with `_auto: true` and `_source: openrouter` — the `_source` tag is load-bearing: it drives the provider-aware guard above
+
+> **NVIDIA NIM** (`build.nvidia.com`) is supported out of the box: the Nemotron lineup ships as built-in seed prices, so NIM-served calls cost correctly even though NIM has no auto-refresh source. The seeds are immune to OpenRouter syncs, and a NIM call never borrows OpenRouter's rate for a colliding model id. `nvidia/...:free` promo variants resolve to `$0.00`.
 
 ### Estimated-Price Models
 

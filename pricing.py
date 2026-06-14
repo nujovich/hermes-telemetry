@@ -63,6 +63,19 @@ _DEFAULT_PRICING: dict[str, dict] = {
     "owl-alpha": dict(input=0.00, output=0.00),
     "hermes-3-llama-3.1-405b": dict(input=3.00, output=15.00),
     "hermes-3-llama-3.1-70b": dict(input=0.70, output=0.90),
+    # ── NVIDIA NIM (build.nvidia.com direct) ─────────────────────────────────
+    # Hermes canonicalizes the NIM provider to "nvidia" (aliases nim/nvidia-nim/
+    # nemotron normalize to it). Seeds live here, source-neutral and in code, so
+    # they (1) survive an OpenRouter sync untouched and (2) are selected when the
+    # provider-aware guard excludes a same-id OpenRouter entry for a NIM call.
+    # Prices per build.nvidia.com, verified 2026-06. The `:free` promo variants
+    # (e.g. nemotron-3-ultra:free) resolve to $0 via the unknown-model fallback
+    # and need no entry — see issue #12.
+    "nvidia/nemotron-3-super-120b-a12b": dict(input=0.10, output=0.50),
+    "nvidia/nemotron-super-49b": dict(input=0.10, output=0.40),
+    "nvidia/nemotron-70b-instruct": dict(input=1.20, output=1.20),
+    "nvidia/nemotron-nano-12b-vl": dict(input=0.20, output=0.60),
+    "nvidia/nemotron-nano-9b": dict(input=0.04, output=0.16),
     # ── Meta (via OpenRouter / providers) ───────────────────────────────────
     "meta-llama/llama-3.1-405b-instruct": dict(input=2.70, output=2.70),
     "meta-llama/llama-3.1-70b-instruct": dict(input=0.52, output=0.75),
@@ -117,19 +130,34 @@ _PREFIX_PRICING: list[tuple[str, dict]] = [
 _DEFAULT_CACHE_READ_MULTIPLIER = 0.10
 _DEFAULT_CACHE_WRITE_MULTIPLIER = 1.25
 
-_warned_unknown: set[str] = set()
+_warned_unknown: set[tuple[str, str]] = set()
 _custom_pricing: dict | None = None  # parsed YAML data (models + defaults)
 
 
+def _empty_custom_pricing() -> dict:
+    return {"models": {}, "defaults": {}, "model_sources": {}, "subscription_models": set()}
+
+
 def _load_custom_pricing() -> dict:
-    """Load custom pricing YAML. Returns dict with 'models' and 'defaults' keys."""
+    """Load custom pricing YAML.
+
+    Returns a dict with keys:
+      models               — {model_lc: {price keys}}  (``_``-prefixed keys stripped)
+      defaults             — {multiplier name: float}
+      model_sources        — {model_lc: source}  (from each entry's ``_source``)
+      subscription_models  — set of model_lc flagged ``_subscription: true``
+
+    ``model_sources`` is what powers the provider-aware guard (issue #24): the
+    price-key dict has the ``_``-prefixed metadata stripped, so the source has
+    to be captured separately before stripping or the guard can't see it.
+    """
     global _custom_pricing
     if _custom_pricing is not None:
         return _custom_pricing
     hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
     pricing_file = hermes_home / "telemetry" / "pricing.yaml"
     if not pricing_file.exists():
-        _custom_pricing = {"models": {}, "defaults": {}}
+        _custom_pricing = _empty_custom_pricing()
         return _custom_pricing
     try:
         import yaml
@@ -139,33 +167,44 @@ def _load_custom_pricing() -> dict:
 
         models: dict[str, dict] = {}
         defaults: dict[str, float] = {}
+        model_sources: dict[str, str] = {}
+        subscription_models: set[str] = set()
 
-        # New format: top-level "models:" and "defaults:" sections
+        # New format has top-level "models:"/"defaults:"; legacy is a flat map of
+        # model_name -> entry. Either way, entries are dicts whose price keys we
+        # keep and whose ``_``-prefixed metadata (_source, _subscription, ...) we
+        # capture then strip.
         if "models" in data or "defaults" in data:
             raw_models = data.get("models") or {}
             raw_defaults = data.get("defaults") or {}
-            for model, entry in raw_models.items():
-                if isinstance(entry, dict):
-                    models[str(model).lower()] = {
-                        k: float(v)
-                        for k, v in entry.items()
-                        if v is not None and not k.startswith("_")
-                    }
             for k, v in raw_defaults.items():
                 with contextlib.suppress(TypeError, ValueError):
                     defaults[str(k)] = float(v)
         else:
-            # Legacy flat format: model_name: {input: ..., output: ...}
-            for model, entry in data.items():
-                if isinstance(entry, dict):
-                    models[str(model).lower()] = {
-                        k: float(v) for k, v in entry.items() if v is not None
-                    }
+            raw_models = data
 
-        _custom_pricing = {"models": models, "defaults": defaults}
+        for model, entry in raw_models.items():
+            if not isinstance(entry, dict):
+                continue
+            key = str(model).lower()
+            models[key] = {
+                k: float(v) for k, v in entry.items() if v is not None and not k.startswith("_")
+            }
+            src = entry.get("_source")
+            if src:
+                model_sources[key] = str(src).lower()
+            if entry.get("_subscription"):
+                subscription_models.add(key)
+
+        _custom_pricing = {
+            "models": models,
+            "defaults": defaults,
+            "model_sources": model_sources,
+            "subscription_models": subscription_models,
+        }
     except Exception as exc:
         logger.warning("Failed to load custom pricing from %s: %s", pricing_file, exc)
-        _custom_pricing = {"models": {}, "defaults": {}}
+        _custom_pricing = _empty_custom_pricing()
     return _custom_pricing
 
 
@@ -186,17 +225,46 @@ def _google_alt_form(model_lc: str) -> str | None:
     return None
 
 
-def _lookup_form(model_lc: str) -> dict | None:
+def _source_eligible(source: str | None, provider: str) -> bool:
+    """Whether a pricing entry from `source` may cost a call served by `provider`.
+
+    Provider-aware guard (issue #24): an OpenRouter-sourced price must never
+    cost a call a *different* provider actually served — that silently applies
+    the wrong rate (e.g. the OpenRouter Qwen price on a Nous Portal call, or the
+    OpenRouter rate on a same-id NVIDIA NIM call). Rules:
+
+    - Source-less entries (`_DEFAULT_PRICING`, the prefix table, hand-added
+      overrides with no `_source`) are provider-neutral → always eligible.
+    - `_source: openrouter` entries are eligible only when the call has no
+      provider (empty → backward-compat / unknown) or is itself OpenRouter-routed.
+    - Other named sources (e.g. `google-ai`) are not restricted: their prices are
+      direct-provider rates that stay reasonable for any caller of that model id.
+    """
+    if not source or source != "openrouter":
+        return True
+    if not provider:
+        return True
+    return "openrouter" in provider.lower()
+
+
+def _lookup_form(model_lc: str, provider: str = "") -> dict | None:
     """Exact-then-prefix lookup against custom + defaults + prefix tables.
 
     Custom wins over defaults wins over the curated prefix table (matching
     the precedence in `_lookup_base`'s callers). Among equal-length prefixes,
     the stable sort preserves source order so the higher-precedence source
     still wins.
+
+    `provider` drives the source guard (`_source_eligible`): a source-ineligible
+    custom entry is skipped so the lookup falls through to the next candidate
+    (e.g. a NIM call skips the same-id OpenRouter entry and lands on the
+    source-neutral `_DEFAULT_PRICING` seed).
     """
     custom = _load_custom_pricing()
     custom_models = custom.get("models", {})
-    if model_lc in custom_models:
+    model_sources = custom.get("model_sources", {})
+
+    if model_lc in custom_models and _source_eligible(model_sources.get(model_lc), provider):
         return custom_models[model_lc]
     if model_lc in _DEFAULT_PRICING:
         return _DEFAULT_PRICING[model_lc]
@@ -204,19 +272,20 @@ def _lookup_form(model_lc: str) -> dict | None:
     # default exact keys, plus the curated family-prefix table — longest prefix
     # wins. This lets an auto-refreshed key like 'google/gemini-3-flash-preview'
     # cover the dated variants the gateway actually sends, e.g.
-    # 'google/gemini-3-flash-preview-20251217'.
-    candidates: list[tuple[str, dict]] = [
-        *custom_models.items(),
-        *_DEFAULT_PRICING.items(),
-        *_PREFIX_PRICING,
+    # 'google/gemini-3-flash-preview-20251217'. Source-ineligible custom keys are
+    # skipped here too.
+    candidates: list[tuple[str, dict, str | None]] = [
+        *((k, v, model_sources.get(k)) for k, v in custom_models.items()),
+        *((k, v, None) for k, v in _DEFAULT_PRICING.items()),
+        *((k, v, None) for k, v in _PREFIX_PRICING),
     ]
-    for prefix, prices in sorted(candidates, key=lambda x: -len(x[0])):
-        if model_lc.startswith(prefix):
+    for prefix, prices, source in sorted(candidates, key=lambda x: -len(x[0])):
+        if model_lc.startswith(prefix) and _source_eligible(source, provider):
             return prices
     return None
 
 
-def _lookup_base(model: str) -> dict | None:
+def _lookup_base(model: str, provider: str = "") -> dict | None:
     """Return the raw pricing dict for a model (no cache derivation yet).
 
     Two-pass strategy: first try the model id as-is. If that misses, try the
@@ -226,22 +295,22 @@ def _lookup_base(model: str) -> dict | None:
     get this treatment — see `_google_alt_form`.
     """
     model_lc = model.lower()
-    result = _lookup_form(model_lc)
+    result = _lookup_form(model_lc, provider)
     if result is not None:
         return result
     alt = _google_alt_form(model_lc)
     if alt is not None:
-        return _lookup_form(alt)
+        return _lookup_form(alt, provider)
     return None
 
 
-def _resolve_pricing(model: str) -> dict | None:
+def _resolve_pricing(model: str, provider: str = "") -> dict | None:
     """Return a fully-resolved pricing dict with all 5 keys.
 
     Derives cache prices from multipliers if not explicitly set.
     Returns None if model is completely unknown.
     """
-    base = _lookup_base(model)
+    base = _lookup_base(model, provider)
     if base is None:
         return None
 
@@ -291,7 +360,7 @@ def _resolve_pricing(model: str) -> dict | None:
     )
 
 
-def estimate_cost(usage: dict, model: str) -> float:
+def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
     """Return estimated cost in USD for a usage dict.
 
     usage dict keys (all optional/nullable):
@@ -300,6 +369,11 @@ def estimate_cost(usage: dict, model: str) -> float:
       cache_read_tokens   — tokens served from cache (cheaper)
       cache_write_tokens  — tokens written to cache (more expensive)
       reasoning_tokens    — reasoning/thinking tokens (billed as output by default)
+
+    `provider` (verbatim from the gateway, e.g. "nous", "nvidia", "openrouter")
+    makes the lookup provider-aware (issue #24): an OpenRouter-sourced price is
+    never applied to a call another provider served. `provider=""` keeps the
+    historical provider-blind behaviour for backward compatibility.
 
     prompt_tokens is intentionally ignored to avoid double-counting
     (prompt_tokens = input + cache_read + cache_write in Hermes canonical usage).
@@ -326,15 +400,27 @@ def estimate_cost(usage: dict, model: str) -> float:
     ):
         return 0.0
 
-    prices = _resolve_pricing(model)
+    prices = _resolve_pricing(model, provider)
     if prices is None:
-        if model not in _warned_unknown:
-            _warned_unknown.add(model)
-            logger.warning(
-                "hermes-telemetry: unknown model %r — cost recorded as $0.00. "
-                "Add to ~/.hermes/telemetry/pricing.yaml to fix.",
-                model,
-            )
+        # Dedup per (model, provider): the same model id can be unpriced under
+        # one provider yet priced under another, so each pairing warns once.
+        warn_key = (model, provider)
+        if warn_key not in _warned_unknown:
+            _warned_unknown.add(warn_key)
+            if provider:
+                logger.warning(
+                    "hermes-telemetry: no price for model %r under provider %r — "
+                    "cost recorded as $0.00. Add it (under the provider's native "
+                    "model id) to ~/.hermes/telemetry/pricing.yaml to fix.",
+                    model,
+                    provider,
+                )
+            else:
+                logger.warning(
+                    "hermes-telemetry: unknown model %r — cost recorded as $0.00. "
+                    "Add to ~/.hermes/telemetry/pricing.yaml to fix.",
+                    model,
+                )
         return 0.0
 
     cost = (
