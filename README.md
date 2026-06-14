@@ -104,7 +104,7 @@ A standalone HTML dashboard for users who prefer a visual interface over slash c
 
 [![Dashboard overview](https://github.com/nujovich/hermes-telemetry/raw/main/docs/screenshots/dashboard-overview.png)](https://github.com/nujovich/hermes-telemetry/blob/main/docs/screenshots/dashboard-overview.png)
 
-*The dashboard auto-refreshes every 30 seconds. Shows sessions, API calls, tokens, cost, budget status, daily cost trends, top tools, cost by cron job, provider distribution, and recent sessions.*
+*Current dashboard home view with the tabbed layout (`Home / Breakdown / Request / Tool / Error`), header auto-refresh controls, budget windows rendered in the viewer's local timezone, and the refreshed recent-session tables.*
 
 ### Slash Commands
 
@@ -424,19 +424,20 @@ A standalone HTML dashboard for users who prefer a visual interface over slash c
 
 ### Auto-Refresh
 
-The dashboard auto-refreshes every 30 seconds. No manual reload needed.
+The dashboard includes a header auto-refresh selector with `Off / 5s / 10s / 20s / 1min` options. The selected interval is saved in localStorage, and background refreshes keep the current page visible instead of blanking the whole UI.
 
 ### Features
 
-- **Summary cards**: Sessions, OK/failed, API calls, tokens in, cost
-- **Budget bar**: Real-time spend vs limit with progress indicator
-- **Daily cost chart**: 7-day line chart of spending
-- **Top tools chart**: Bar chart of most-used tools
-- **Cost by cron job**: Per-job cost breakdown
-- **Provider distribution**: Donut chart (openrouter)
-- **Cron jobs table**: Runs, tokens, cost, avg duration, last run
-- **Recent sessions table**: All sessions with platform, model, status, cost
-- **Time range selector**: Last 24h / 7 days / 30 days
+- **Home**: summary cards, editable budget bars, daily cost, top tools, cron cost, provider distribution, cron jobs, and recent sessions
+- **Breakdown**: token breakdown, provider cost breakdown, cache efficiency, model efficiency, model usage trends, model share delta, daily token table, and the investigation workspace
+- **Request**: provider health/anomaly signals, request forensics, and request detail drawer
+- **Tool**: tool analytics and tool failure heatmap
+- **Error**: run-status groups, failed tools, recent incidents, and cron failure / waste center
+- **Investigation workspace**: click-through drilldown by provider, model, day, status, platform, cron job, tool, and free-text search
+- **Drawers**: session detail and request detail side drawers with click-back chips into filtered investigation views
+- **Viewer-local timestamps**: rendered dates/times follow the browser's timezone; budget windows are computed for that viewer timezone too
+- **Soft-hidden deleted sessions**: sessions marked deleted in Hermes metadata are hidden from session-facing tables by default, but aggregate historical totals remain intact
+- **Time range selector**: `Last 24h / Last 7 days / Last 30 days / Last 90 days / All time`
 
 ### Usage
 

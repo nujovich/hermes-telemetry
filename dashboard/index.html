@@ -8,14 +8,24 @@
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #c9d1d9; min-height: 100vh; }
-  .header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .header-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
   .header h1 { font-size: 18px; font-weight: 600; color: #e6edf3; }
   .header h1 span { color: #58a6ff; }
-  .header .actions { display: flex; gap: 8px; align-items: center; }
+  .page-tabs { display: flex; gap: 10px; align-items: center; }
+  .page-tab { background: #21262d; color: #c9d1d9; border: 1px solid #3d444d; border-radius: 999px; padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 700; letter-spacing: 0.2px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.03); }
+  .page-tab:hover { background: #30363d; border-color: #58a6ff; }
+  .page-tab.active { color: #ffffff; border-color: #58a6ff; background: linear-gradient(180deg, #1f6feb 0%, #1a4f9c 100%); box-shadow: 0 0 0 1px rgba(88,166,255,0.25), 0 6px 16px rgba(31,111,235,0.18); }
+  .page-title { font-size: 18px; font-weight: 600; color: #e6edf3; margin-bottom: 18px; }
+  .header .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .header select { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
   .header select:focus { outline: none; border-color: #58a6ff; }
   .header .refresh-btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
   .header .refresh-btn:hover { background: #30363d; }
+  .header-label { color: #8b949e; font-size: 12px; }
+  .load-status { min-width: 92px; color: #8b949e; font-size: 12px; text-align: right; }
+  .load-status.is-loading { color: #58a6ff; }
+  .load-status.is-error { color: #f85149; }
 
   .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
 
@@ -98,27 +108,108 @@
   }
 
   .loading { text-align: center; padding: 60px; color: #8b949e; }
+  .loading-shell { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 22px; color: #8b949e; }
+  .loading-title { color: #e6edf3; font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+  .loading-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 18px; }
+  .skeleton { height: 76px; border-radius: 8px; background: linear-gradient(90deg, #161b22 0%, #21262d 45%, #161b22 90%); border: 1px solid #30363d; background-size: 240% 100%; animation: shimmer 1.4s linear infinite; }
+  .skeleton.wide { height: 180px; grid-column: span 2; }
+  @keyframes shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
   .error-box { background: #da363333; border: 1px solid #f85149; color: #f85149; padding: 16px; border-radius: 8px; margin: 24px 0; }
+  .table-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; color: #8b949e; font-size: 12px; }
+  .pager { display: flex; align-items: center; gap: 8px; }
+  .pager-btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  .pager-btn:hover { background: #30363d; }
+  .pager-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .full-width-chart { margin-bottom: 24px; }
+  .full-width-chart canvas { max-height: 420px; min-height: 420px; }
+  .svg-chart-host { height: 420px; width: 100%; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; color: #8b949e; font-size: 12px; }
+  .chart-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .chart-legend-swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  .clickable-row { cursor: pointer; }
+  .clickable-row:hover td { background: #202833; }
+  .subtle-note { color: #8b949e; font-size: 12px; margin-top: 10px; }
+  .insight-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .insight-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
+  .insight-card .label { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .insight-card .value { color: #e6edf3; font-size: 20px; font-weight: 700; }
+  .filter-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .filter-bar-left { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .chip-list { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .filter-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: #1f2937; border: 1px solid #364152; color: #e6edf3; font-size: 12px; font-weight: 600; }
+  .chip-close { background: transparent; border: 0; color: #8b949e; cursor: pointer; font-size: 13px; line-height: 1; padding: 0; }
+  .chip-close:hover { color: #e6edf3; }
+  .inline-btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; max-width: 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+  .inline-btn:hover { background: #30363d; }
+  .segmented-control { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+  .segmented-btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 999px; padding: 6px 10px; cursor: pointer; font-size: 12px; font-weight: 600; }
+  .segmented-btn:hover { background: #30363d; }
+  .segmented-btn.active { background: #1f6feb; border-color: #388bfd; color: #fff; }
+  .usage-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .usage-toolbar-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .usage-toolbar-label { color: #8b949e; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+  .delta-pos { color: #3fb950; }
+  .delta-neg { color: #f85149; }
+  .data-chip { max-width: 240px; }
+  .provider-chip { max-width: 140px; }
+  .model-chip { max-width: 280px; }
+  .search-inline { display: flex; align-items: center; gap: 8px; }
+  .search-inline input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; font-size: 12px; min-width: 220px; }
+  .search-inline input:focus { outline: none; border-color: #58a6ff; }
+  .drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.72); display: none; justify-content: flex-end; z-index: 100000; }
+  .drawer-overlay.open { display: flex !important; }
+  .drawer { width: min(760px, 100vw); height: 100vh; overflow-y: auto; background: #0f1117; border-left: 1px solid #30363d; box-shadow: -12px 0 30px rgba(0,0,0,0.35); padding: 20px; }
+  .drawer-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
+  .drawer-title { font-size: 18px; font-weight: 700; color: #e6edf3; }
+  .drawer-subtitle { color: #8b949e; font-size: 12px; margin-top: 4px; word-break: break-all; }
+  .drawer-close { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  .drawer-section { margin-bottom: 24px; }
+  .drawer-section h4 { font-size: 13px; color: #e6edf3; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.4px; }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>hermes-<span>telemetry</span></h1>
+  <div class="header-left">
+    <h1>hermes-<span>telemetry</span></h1>
+    <div class="page-tabs">
+      <button id="tab-home" class="page-tab active" onclick="switchPage('home')">Home</button>
+      <button id="tab-breakdown" class="page-tab" onclick="switchPage('breakdown')">Breakdown</button>
+      <button id="tab-requests" class="page-tab" onclick="switchPage('requests')">Request</button>
+      <button id="tab-tools" class="page-tab" onclick="switchPage('tools')">Tool</button>
+      <button id="tab-errors" class="page-tab" onclick="switchPage('errors')">Error</button>
+    </div>
+  </div>
   <div class="actions">
-    <select id="windowSelect" onchange="loadAll()">
+    <select id="windowSelect" onchange="loadAll({showShell:true})">
       <option value="24">Last 24h</option>
       <option value="168">Last 7 days</option>
       <option value="720">Last 30 days</option>
       <option value="2160">Last 90 days</option>
       <option value="0" selected>All time</option>
     </select>
-    <button class="refresh-btn" onclick="loadAll()">&#x21bb; Refresh</button>
+    <span class="header-label">Auto</span>
+    <select id="autoRefreshSelect" onchange="setAutoRefresh(this.value)">
+      <option value="0">Off</option>
+      <option value="5000">5s</option>
+      <option value="10000">10s</option>
+      <option value="20000">20s</option>
+      <option value="60000">1min</option>
+    </select>
+    <button class="refresh-btn" onclick="loadAll({showShell:false})">&#x21bb; Refresh</button>
+    <span id="loadStatus" class="load-status">Idle</span>
   </div>
 </div>
 
 <div class="container" id="app">
-  <div class="loading">Loading...</div>
+  <div class="loading-shell">
+    <div class="loading-title">Loading telemetry dashboard…</div>
+    <div>Reading SQLite telemetry, budgets, charts, and session filters. Large all-time ranges can take a few seconds.</div>
+    <div class="loading-grid">
+      <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+      <div class="skeleton wide"></div><div class="skeleton wide"></div>
+    </div>
+  </div>
 </div>
 
 <!-- Budget Modal -->
@@ -169,9 +260,46 @@
   </div>
 </div>
 
+<div class="drawer-overlay" id="sessionDrawer" onclick="if(event.target===this) closeSessionDetail()">
+  <div class="drawer" onclick="event.stopPropagation()">
+    <div class="drawer-header">
+      <div>
+        <div class="drawer-title" id="sessionDrawerTitle">Session detail</div>
+        <div class="drawer-subtitle" id="sessionDrawerSubtitle"></div>
+      </div>
+      <button class="drawer-close" onclick="closeSessionDetail()">Close</button>
+    </div>
+    <div id="sessionDrawerBody" class="text-muted">Loading…</div>
+  </div>
+</div>
+
+<div class="drawer-overlay" id="requestDrawer" onclick="if(event.target===this) closeRequestDetail()">
+  <div class="drawer" onclick="event.stopPropagation()">
+    <div class="drawer-header">
+      <div>
+        <div class="drawer-title" id="requestDrawerTitle">Request detail</div>
+        <div class="drawer-subtitle" id="requestDrawerSubtitle"></div>
+      </div>
+      <button class="drawer-close" onclick="closeRequestDetail()">Close</button>
+    </div>
+    <div id="requestDrawerBody" class="text-muted">Loading…</div>
+  </div>
+</div>
+
 <script>
 const API = '';
 let charts = {};
+let currentDailyTokensPage = 1;
+let lastWindowHours = null;
+let currentPage = 'home';
+let currentUsageGranularity = 'day';
+let currentUsageMetric = 'tokens';
+let currentDrilldown = {};
+let autoRefreshTimer = null;
+let isLoading = false;
+let latestLoadRequestId = 0;
+let latestDrawerRequestId = 0;
+let latestRequestDrawerRequestId = 0;
 
 function $(sel) { return document.querySelector(sel); }
 function escHtml(s) {
@@ -182,6 +310,7 @@ function escHtml(s) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+function jsAttr(v) { return escHtml(JSON.stringify(v)); }
 function nf(n) { return n == null ? '—' : Number(n).toLocaleString(); }
 function fmtCost(v) { return v == null ? '$0.00' : '$' + Number(v).toFixed(4); }
 function fmtMs(v) {
@@ -191,9 +320,88 @@ function fmtMs(v) {
   if (ms >= 1000) return (ms/1000).toFixed(1) + 's';
   return Math.round(ms) + 'ms';
 }
+const viewerTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+function withViewerTimezone(url) {
+  const u = new URL(url, window.location.origin);
+  u.searchParams.set('tz', viewerTimeZone);
+  return `${u.pathname}${u.search}`;
+}
+function parseDashboardTs(value) {
+  if (!value) return null;
+  let text = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text)) text += ':00';
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(text)) text += 'Z';
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+function fmtLocalTs(value, opts = {}) {
+  const d = parseDashboardTs(value);
+  if (!d) return escHtml(value || '—');
+  const options = opts.dateOnly
+    ? { year: 'numeric', month: '2-digit', day: '2-digit' }
+    : { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', ...(opts.seconds ? { second: '2-digit' } : {}), hour12: false };
+  return new Intl.DateTimeFormat(undefined, options).format(d);
+}
+function fmtBudgetWindow(startUtc, endUtc, tzLabel) {
+  if (!startUtc || !endUtc) return '';
+  return `Window: ${fmtLocalTs(startUtc)} → ${fmtLocalTs(endUtc)} (${escHtml(tzLabel || viewerTimeZone)})`;
+}
+function loadingShell() {
+  return `<div class="loading-shell">
+    <div class="loading-title">Loading telemetry dashboard…</div>
+    <div>Reading SQLite telemetry, budget data, charts, and session filters. Keeping this visible so slow loads don't look broken.</div>
+    <div class="loading-grid">
+      <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+      <div class="skeleton wide"></div><div class="skeleton wide"></div>
+    </div>
+  </div>`;
+}
+function setLoadStatus(text, state = '') {
+  const el = $('#loadStatus');
+  if (!el) return;
+  el.textContent = text;
+  const statusState = state ? `is-${state}` : '';
+  el.className = `load-status ${statusState}`.trim();
+}
+function autoLabel(ms) {
+  if (!Number(ms)) return 'Auto off';
+  if (Number(ms) >= 60000) return `Auto ${Number(ms) / 60000}min`;
+  return `Auto ${Number(ms) / 1000}s`;
+}
+function setAutoRefresh(value) {
+  const ms = Number(value || 0);
+  localStorage.setItem('telemetryAutoRefreshMs', String(ms));
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = null;
+  const select = $('#autoRefreshSelect');
+  if (select) select.value = String(ms);
+  setLoadStatus(ms ? autoLabel(ms) : 'Auto off');
+  if (ms) {
+    autoRefreshTimer = setInterval(() => loadAll({showShell:false, reason:'auto'}), ms);
+  }
+}
+function initAutoRefresh() {
+  const saved = localStorage.getItem('telemetryAutoRefreshMs') || '20000';
+  const allowed = new Set(['0', '5000', '10000', '20000', '60000']);
+  const ms = allowed.has(saved) ? saved : '20000';
+  setAutoRefresh(ms);
+}
+function granularityLabel(g) {
+  return ({ day: 'Daily', week: 'Weekly', month: 'Monthly' }[g]) || 'Daily';
+}
+function setUsageGranularity(g) {
+  if (!['day', 'week', 'month'].includes(g) || g === currentUsageGranularity) return;
+  currentUsageGranularity = g;
+  loadAll({showShell:false});
+}
+function setUsageMetric(m) {
+  if (!['tokens', 'cost', 'requests', 'share'].includes(m) || m === currentUsageMetric) return;
+  currentUsageMetric = m;
+  loadAll({showShell:false});
+}
 function badge(v, map) {
   const cls = map[v] || 'cli';
-  return `<span class="badge ${cls}">${v}</span>`;
+  return `<span class="badge ${cls}">${escHtml(v || '—')}</span>`;
 }
 const statusBadge = v => badge(v, { ok: 'ok', error: 'error', interrupted: 'error', running: 'running' });
 const platformBadge = v => badge(v || 'cli', { cron: 'cron', cli: 'cli', telegram: 'cli', discord: 'cli' });
@@ -226,7 +434,7 @@ async function openBudgetModal(scope) {
 
   // Reset fields immediately - no waiting
   $('#budgetScope').value = actualScope;
-  $('#budgetWindow').value = 'daily';  // reset window dropdown to daily
+  $('#budgetWindow').value = actualWindow;
   $('#budgetLimit').value = '';
   $('#budgetSoftPct').value = '';
   $('#budgetHardPct').value = '';
@@ -235,17 +443,15 @@ async function openBudgetModal(scope) {
   $('#budgetModalError').textContent = '';
 
   // Then fetch details for pre-fill (async, non-blocking)
-  // Always fetch window=daily as default — avoids stale dropdown state bug
   try {
-    const res = await fetch(`/api/budget/detail?scope=${encodeURIComponent(actualScope)}&window=daily`);
+    const res = await fetch(withViewerTimezone(`/api/budget/detail?scope=${encodeURIComponent(actualScope)}&window=${encodeURIComponent(actualWindow)}`));
     const data = await res.json();
     if (!data.error) {
+      $('#budgetWindow').value = data.window || actualWindow;
       $('#budgetLimit').value = data.limit_usd !== null && data.limit_usd !== undefined ? data.limit_usd : '';
       $('#budgetSoftPct').value = data.soft_pct !== undefined ? data.soft_pct : '';
       $('#budgetHardPct').value = data.hard_pct !== undefined ? data.hard_pct : '';
       $('#budgetOnEstimated').value = data.on_estimated_mode || 'warn_only';
-      // Set window dropdown to match the fetched data's window if needed
-      // Budget config has separate daily/monthly limits per scope
     }
   } catch {
     // Keep defaults on network error - modal already open with empty fields
@@ -280,7 +486,7 @@ async function saveBudget() {
   $('#budgetModalError').classList.remove('show');
 
   try {
-    const response = await fetch('/api/budget', {
+    const response = await fetch(withViewerTimezone('/api/budget'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -291,7 +497,7 @@ async function saveBudget() {
       return;
     }
     closeBudgetModal();
-    loadAll(); // refresh dashboard
+    loadAll({showShell:false}); // refresh dashboard
   } catch (err) {
     showModalError('Request failed: ' + err.message);
   }
@@ -309,16 +515,17 @@ function renderBudget(data) {
   if (!items.length) return '<div class="budget-bar"><h3>Budgets</h3><div class="budget-disabled">No budget limits defined</div></div>';
   let html = '<div class="budget-bar"><h3>Budgets</h3>';
   for (const s of items) {
-    const cls = s.level;
+    const cls = s.level === 'hard' ? 'hard' : s.level === 'soft' ? 'soft' : 'ok';
     const label = escHtml(s.scope);
-    // Use single quotes in onclick to avoid JSON.stringify double-quote escaping issues
     const safeScope = s.scope.replace(/'/g, "\\'");
+    const windowText = fmtBudgetWindow(s.window_start_utc, s.window_end_utc, s.viewer_timezone);
     html += `<div class="budget-item">
       <div class="info"><span>${label}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal('${safeScope}')">Edit</button></div>
       <div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(s.pct, 100)}%"></div></div>
+      ${windowText ? `<div class="subtle-note">${windowText}</div>` : ''}
     </div>`;
   }
-  html += `<div class="budget-disabled" style="margin-top:8px">on_estimated: ${data.on_estimated}</div></div>`;
+  html += `<div class="budget-disabled" style="margin-top:8px">on_estimated: ${escHtml(data.on_estimated)}</div></div>`;
   return html;
 }
 
@@ -346,8 +553,594 @@ function renderChartCard(id, title, canvasId) {
   return `<div class="chart-card"><h3>${title}</h3><canvas id="${canvasId}"></canvas></div>`;
 }
 
+function renderWideChartCard(title, canvasId) {
+  return `<div class="chart-card full-width-chart"><h3>${title}</h3><canvas id="${canvasId}"></canvas></div>`;
+}
+
+function renderWideSvgCard(title, hostId) {
+  return `<div class="chart-card full-width-chart"><h3>${title}</h3><div id="${hostId}" class="svg-chart-host"></div></div>`;
+}
+
 function renderTableCard(id, title, tableHtml) {
   return `<div class="table-card"><h3>${title}</h3>${tableHtml}</div>`;
+}
+
+function renderSegmentedButtons(options, currentValue, handlerName) {
+  return `<div class="segmented-control">${options.map(opt => `<button class="segmented-btn ${opt.value === currentValue ? 'active' : ''}" onclick="${handlerName}('${opt.value}')">${escHtml(opt.label)}</button>`).join('')}</div>`;
+}
+
+function renderModelUsageTrendCard(trendData, shareData) {
+  const granularityOptions = [
+    { value: 'day', label: 'Daily' },
+    { value: 'week', label: 'Weekly' },
+    { value: 'month', label: 'Monthly' },
+  ];
+  const metricOptions = [
+    { value: 'tokens', label: 'Tokens' },
+    { value: 'cost', label: 'Cost' },
+    { value: 'requests', label: 'Requests' },
+    { value: 'share', label: 'Share %' },
+  ];
+  const currentLabel = shareData?.current_period || 'latest';
+  const previousLabel = shareData?.previous_period || 'previous';
+  const hasRows = !!(trendData?.rows || []).length;
+  const hasPrevious = !!shareData?.previous_period;
+  const note = !hasRows
+    ? `No ${granularityLabel(currentUsageGranularity).toLowerCase()} model usage data for this range yet.`
+    : !hasPrevious
+      ? `${granularityLabel(currentUsageGranularity)} model usage trend for the latest available period. A previous period is needed before delta comparison appears below.`
+      : currentUsageMetric === 'share'
+        ? `${granularityLabel(currentUsageGranularity)} model share by token volume. Compare ${escHtml(currentLabel)} vs ${escHtml(previousLabel)} below.`
+        : `${granularityLabel(currentUsageGranularity)} model usage trend. Compare ${escHtml(currentLabel)} vs ${escHtml(previousLabel)} below.`;
+  return `<div class="chart-card full-width-chart">
+    <div class="usage-toolbar">
+      <div class="usage-toolbar-group">
+        <span class="usage-toolbar-label">Grouping</span>
+        ${renderSegmentedButtons(granularityOptions, currentUsageGranularity, 'setUsageGranularity')}
+      </div>
+      <div class="usage-toolbar-group">
+        <span class="usage-toolbar-label">Metric</span>
+        ${renderSegmentedButtons(metricOptions, currentUsageMetric, 'setUsageMetric')}
+      </div>
+    </div>
+    <h3>Model Usage Trends</h3>
+    ${hasRows ? '<canvas id="model-usage-trend-chart"></canvas>' : '<div class="text-muted" style="padding:24px 0">No trend data available yet.</div>'}
+    <div class="subtle-note">${note}</div>
+  </div>`;
+}
+
+function deltaClass(value) {
+  if (Number(value) > 0) return 'delta-pos';
+  if (Number(value) < 0) return 'delta-neg';
+  return 'text-muted';
+}
+
+function fmtSignedPct(value) {
+  const n = Number(value || 0);
+  return `${n > 0 ? '+' : ''}${n.toFixed(1)}%`;
+}
+
+function renderModelShareComparisonCard(data) {
+  const rows = data?.rows || [];
+  const currentLabel = data?.current_period || 'latest';
+  const previousLabel = data?.previous_period || 'previous';
+  if (!rows.length) {
+    return renderTableCard('modelShareComparison', 'Model Share + Delta', '<div class="text-muted">Not enough period data yet for model share comparison.</div>');
+  }
+  let t = '<table><thead><tr><th>Model</th><th>Tokens</th><th>Share</th><th>Prev Share</th><th>Δ Share</th><th>Cost</th><th>Cost Share</th><th>Calls</th></tr></thead><tbody>';
+  for (const row of rows) {
+    const model = row.model || '—';
+    const tokenDeltaCls = deltaClass(row.token_share_delta_pct);
+    t += `<tr class="clickable-row" onclick='addDrilldown({model:${jsAttr(model)}})'><td class="text-muted"><span class="inline-btn data-chip model-chip" title="${escHtml(model)}">${escHtml(model)}</span></td><td>${nf(row.current_tokens)}</td><td>${Number(row.current_token_share_pct || 0).toFixed(1)}%</td><td>${Number(row.previous_token_share_pct || 0).toFixed(1)}%</td><td class="${tokenDeltaCls}">${fmtSignedPct(row.token_share_delta_pct)}</td><td>${fmtCost(row.current_cost_usd)}</td><td>${Number(row.current_cost_share_pct || 0).toFixed(1)}%</td><td>${nf(row.current_api_calls)}</td></tr>`;
+  }
+  t += `</tbody></table><div class="subtle-note">Current ${granularityLabel(data?.granularity || currentUsageGranularity).toLowerCase()} period: ${escHtml(currentLabel)} · previous: ${escHtml(previousLabel)}. Click a model row to drill into sessions.</div>`;
+  return renderTableCard('modelShareComparison', 'Model Share + Delta', t);
+}
+
+function hasDrilldown() {
+  return !!(currentDrilldown.day || currentDrilldown.model || currentDrilldown.provider || currentDrilldown.platform || currentDrilldown.status || currentDrilldown.cron_job_id || currentDrilldown.tool_name || currentDrilldown.q);
+}
+
+function drilldownLabel() {
+  const parts = [];
+  if (currentDrilldown.day) parts.push(`Day: ${currentDrilldown.day}`);
+  if (currentDrilldown.model) parts.push(`Model: ${currentDrilldown.model}`);
+  if (currentDrilldown.provider) parts.push(`Provider: ${currentDrilldown.provider}`);
+  if (currentDrilldown.platform) parts.push(`Platform: ${currentDrilldown.platform}`);
+  if (currentDrilldown.status) parts.push(`Status: ${currentDrilldown.status}`);
+  if (currentDrilldown.cron_job_id) parts.push(`Cron: ${currentDrilldown.cron_job_id}`);
+  if (currentDrilldown.tool_name) parts.push(`Tool: ${currentDrilldown.tool_name}`);
+  if (currentDrilldown.q) parts.push(`Search: ${currentDrilldown.q}`);
+  return parts.join(' · ');
+}
+
+function removeDrilldownKey(key) {
+  const next = { ...currentDrilldown };
+  delete next[key];
+  currentDrilldown = next;
+  loadAll({showShell:false});
+}
+
+function renderFilterChips() {
+  const defs = [
+    ['provider', 'Provider'],
+    ['model', 'Model'],
+    ['day', 'Day'],
+    ['status', 'Status'],
+    ['platform', 'Platform'],
+    ['cron_job_id', 'Cron'],
+    ['tool_name', 'Tool'],
+    ['q', 'Search'],
+  ];
+  const chips = defs
+    .filter(([key]) => currentDrilldown[key])
+    .map(([key, label]) => `<span class="filter-chip">${escHtml(label)}: ${escHtml(currentDrilldown[key])}<button class="chip-close" title="Remove ${escHtml(label)} filter" onclick="removeDrilldownKey('${key}')">×</button></span>`)
+    .join('');
+  return chips ? `<div class="chip-list">${chips}</div>` : '';
+}
+
+function updatePageTabs(page) {
+  $('#tab-home')?.classList.toggle('active', page === 'home');
+  $('#tab-breakdown')?.classList.toggle('active', page === 'breakdown');
+  $('#tab-requests')?.classList.toggle('active', page === 'requests');
+  $('#tab-tools')?.classList.toggle('active', page === 'tools');
+  $('#tab-errors')?.classList.toggle('active', page === 'errors');
+}
+
+function setDrilldown(filter) {
+  currentDrilldown = { ...(filter || {}) };
+  Object.keys(currentDrilldown).forEach(key => {
+    if (currentDrilldown[key] == null || currentDrilldown[key] === '') delete currentDrilldown[key];
+  });
+  currentPage = 'breakdown';
+  updatePageTabs(currentPage);
+  loadAll({showShell:false});
+}
+
+function addDrilldown(filter) {
+  setDrilldown({ ...currentDrilldown, ...(filter || {}) });
+}
+
+function clearDrilldown() {
+  currentDrilldown = {};
+  loadAll({showShell:false});
+}
+
+function applyInvestigationSearch() {
+  const value = document.getElementById('investigationSearch')?.value?.trim() || '';
+  if (value) setDrilldown({ ...currentDrilldown, q: value });
+  else {
+    const next = { ...currentDrilldown };
+    delete next.q;
+    currentDrilldown = next;
+    loadAll({showShell:false});
+  }
+}
+
+function clearInvestigationSearch() {
+  const input = document.getElementById('investigationSearch');
+  if (input) input.value = '';
+  const next = { ...currentDrilldown };
+  delete next.q;
+  currentDrilldown = next;
+  loadAll({showShell:false});
+}
+
+function buildRunsQuery(hours, limit = 30) {
+  const qs = new URLSearchParams({ hours: String(hours), limit: String(limit) });
+  for (const [key, value] of Object.entries(currentDrilldown)) {
+    if (value != null && value !== '') qs.set(key, value);
+  }
+  return qs.toString();
+}
+
+function renderProviderBreakdownTable(rows) {
+  if (!rows || !rows.length) return renderTableCard('providerBreakdownTable', 'Provider Cost + Token Breakdown', '<div class="text-muted">No provider data for this range.</div>');
+  let t = '<table><thead><tr><th>Provider</th><th>Calls</th><th>Real</th><th>Est</th><th>In</th><th>Out</th><th>Cache Read</th><th>Reasoning</th><th>Total</th><th>Cost</th><th>Avg/Call</th></tr></thead><tbody>';
+  for (const row of rows) {
+    const provider = row.provider || '—';
+    const jsProvider = jsAttr(provider);
+    t += `<tr class="clickable-row" onclick='addDrilldown({provider:${jsProvider}})'><td class="text-muted"><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}">${escHtml(provider)}</span></td><td>${nf(row.total_calls)}</td><td>${nf(row.real_calls)}</td><td>${nf(row.estimated_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtCost(row.avg_cost_per_call)}</td></tr>`;
+  }
+  t += '</tbody></table><div class="subtle-note">Click a provider row to inspect the exact sessions behind it.</div>';
+  return renderTableCard('providerBreakdownTable', 'Provider Cost + Token Breakdown', t);
+}
+
+function renderProviderHealth(data) {
+  const rows = data?.rows || [];
+  let t = '<table><thead><tr><th>Provider</th><th>Health</th><th>Signals</th><th>Calls</th><th>Prev</th><th>Traffic Δ</th><th>Est %</th><th>Fail %</th><th>Latency</th><th>Latency Δ</th><th>Cost</th></tr></thead><tbody>';
+  if (!rows.length) {
+    t += '<tr><td colspan="11" class="text-muted">No provider health data yet.</td></tr>';
+  } else {
+    for (const row of rows) {
+      const provider = row.provider || '—';
+      const healthBadge = row.health === 'warn' ? statusBadge('running') : statusBadge(row.health || 'ok');
+      const anomalies = (row.anomalies || []).length ? row.anomalies.join(', ') : 'normal';
+      t += `<tr class="clickable-row" onclick='addDrilldown({provider:${jsAttr(provider)}})'><td class="text-muted"><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}">${escHtml(provider)}</span></td><td>${healthBadge}</td><td class="text-muted">${escHtml(anomalies)}</td><td>${nf(row.calls_current || 0)}</td><td>${nf(row.calls_previous || 0)}</td><td>${Number(row.traffic_delta_pct || 0).toFixed(1)}%</td><td>${Number(row.estimated_pct || 0).toFixed(1)}%</td><td>${Number(row.failure_pct || 0).toFixed(1)}%</td><td>${fmtMs(row.avg_latency_current)}</td><td>${Number(row.latency_delta_pct || 0).toFixed(1)}%</td><td>${fmtCost(row.cost_current)}</td></tr>`;
+    }
+  }
+  t += '</tbody></table><div class="subtle-note">Compares the current window against the previous equal window. Click a provider row to drill into its sessions.</div>';
+  return renderTableCard('providerHealthTable', 'Provider Health / Anomaly Signals', t);
+}
+
+function renderModelEfficiency(rows) {
+  if (!rows || !rows.length) return renderTableCard('modelEfficiencyTable', 'Model Efficiency Score', '<div class="text-muted">No model efficiency data for this range.</div>');
+  let t = '<table><thead><tr><th>Score</th><th>Provider</th><th>Model</th><th>Calls</th><th>Tokens</th><th>$/1M</th><th>Out/In</th><th>Cache Hit</th><th>Tools/API</th><th>Fail %</th><th>Latency</th></tr></thead><tbody>';
+  for (const row of rows) {
+    const provider = row.provider || '—';
+    const modelRaw = row.model || '—';
+    const score = Number(row.efficiency_score || 0);
+    const scoreBadge = score >= 85 ? statusBadge('ok') : (score >= 60 ? statusBadge('running') : statusBadge('error'));
+    t += `<tr class="clickable-row" onclick='addDrilldown({model:${jsAttr(modelRaw)},provider:${jsAttr(provider)}})'><td>${scoreBadge} <span class="text-muted">${score.toFixed(1)}</span></td><td><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}">${escHtml(provider)}</span></td><td class="text-muted" title="${escHtml(modelRaw)}"><span class="inline-btn data-chip model-chip">${escHtml(modelRaw)}</span></td><td>${nf(row.api_calls || 0)}</td><td>${nf(row.total_tokens || 0)}</td><td>${fmtCost(row.cost_per_1m)}</td><td>${Number(row.output_input_ratio || 0).toFixed(3)}</td><td>${Number(row.cache_hit_share_pct || 0).toFixed(1)}%</td><td>${Number(row.tool_calls_per_api || 0).toFixed(2)}</td><td>${Number(row.failure_pct || 0).toFixed(1)}%</td><td>${fmtMs(row.avg_latency_ms)}</td></tr>`;
+  }
+  t += '</tbody></table><div class="subtle-note">Score penalizes failures, slow average latency, and estimated-heavy usage; cache efficiency gives a small bonus. Click a row to drill into sessions for that provider/model.</div>';
+  return renderTableCard('modelEfficiencyTable', 'Model Efficiency Score', t);
+}
+
+function renderModelTokensTable(rows) {
+  if (!rows || !rows.length) return renderTableCard('modelTokensTable', 'Model Token Usage', '<div class="text-muted">No model token data for this range.</div>');
+  let t = '<table><thead><tr><th>Model</th><th>Calls</th><th>In</th><th>Out</th><th>Cache Read</th><th>Cache Write</th><th>Reasoning</th><th>Total</th><th>Cost</th></tr></thead><tbody>';
+  for (const row of rows) {
+    const modelRaw = row.model || '—';
+    const model = escHtml(modelRaw.substring(0, 48));
+    const jsModel = jsAttr(modelRaw);
+    t += `<tr class="clickable-row" onclick='addDrilldown({model:${jsModel}})'><td class="text-muted" title="${escHtml(modelRaw)}">${model}</td><td>${nf(row.api_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.cache_write_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
+  }
+  t += '</tbody></table><div class="subtle-note">Click a model row to drill into the sessions that used it.</div>';
+  return renderTableCard('modelTokensTable', 'Model Token Usage', t);
+}
+
+function renderDailyTokensTable(data) {
+  const rows = data?.rows || [];
+  let t = '<table><thead><tr><th>Day</th><th>Calls</th><th>In</th><th>Out</th><th>Cache Read</th><th>Cache Write</th><th>Reasoning</th><th>Total</th><th>Cost</th></tr></thead><tbody>';
+  if (!rows.length) {
+    t += '<tr><td colspan="9" class="text-muted">No daily token data for this range.</td></tr>';
+  } else {
+    for (const row of rows) {
+      const jsDay = jsAttr(row.day || '—');
+      t += `<tr class="clickable-row" onclick='addDrilldown({day:${jsDay}})'><td class="text-muted">${escHtml(row.day || '—')}</td><td>${nf(row.api_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.cache_write_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
+    }
+  }
+  t += '</tbody></table>';
+  t += `<div class="table-actions"><div>Showing ${rows.length ? ((data.page - 1) * data.per_page + 1) : 0}-${Math.min(data.page * data.per_page, data.total_days)} of ${nf(data.total_days)} day(s)</div><div class="pager"><button class="pager-btn" onclick="changeDailyTokensPage(-1)" ${data.page <= 1 ? 'disabled' : ''}>Prev</button><span>Page ${nf(data.page)} / ${nf(data.total_pages)}</span><button class="pager-btn" onclick="changeDailyTokensPage(1)" ${data.page >= data.total_pages ? 'disabled' : ''}>Next</button></div></div>`;
+  t += '<div class="subtle-note">Click a day row to inspect sessions from that day.</div>';
+  return renderTableCard('dailyTokensTable', 'Daily Token Usage', t);
+}
+
+function renderCacheEfficiency(data) {
+  const overall = data?.overall || {};
+  const models = data?.by_model || [];
+  let html = '<div class="insight-grid">';
+  html += `<div class="insight-card"><div class="label">Cache hit share</div><div class="value">${Number(overall.cache_hit_share_pct || 0).toFixed(2)}%</div></div>`;
+  html += `<div class="insight-card"><div class="label">Calls with cache</div><div class="value">${nf(overall.calls_with_cache || 0)} <span style="font-size:12px;color:#8b949e">(${Number(overall.cache_calls_pct || 0).toFixed(2)}%)</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">Sessions with cache</div><div class="value">${nf(overall.sessions_with_cache || 0)} / ${nf(overall.sessions || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Estimated saved tokens</div><div class="value">${nf(overall.estimated_cache_saved_tokens || 0)}</div></div>`;
+  html += '</div>';
+  let t = '<table><thead><tr><th>Model</th><th>Calls</th><th>Calls w/ Cache</th><th>Sessions</th><th>In</th><th>Cache Read</th><th>Hit Share</th><th>Cost</th></tr></thead><tbody>';
+  if (!models.length) {
+    t += '<tr><td colspan="8" class="text-muted">No cache data for this range.</td></tr>';
+  } else {
+    for (const row of models) {
+      const modelRaw = row.model || '—';
+      const jsModel = jsAttr(modelRaw);
+      t += `<tr class="clickable-row" onclick='addDrilldown({model:${jsModel}})'><td class="text-muted" title="${escHtml(modelRaw)}">${escHtml(modelRaw.substring(0, 48))}</td><td>${nf(row.api_calls)}</td><td>${nf(row.calls_with_cache || 0)} <span class="text-muted">(${Number(row.cache_calls_pct || 0).toFixed(2)}%)</span></td><td>${nf(row.sessions || 0)}</td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${Number(row.cache_hit_share_pct || 0).toFixed(2)}%</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
+    }
+  }
+  t += '</tbody></table><div class="subtle-note">Click a model row to inspect sessions behind heavy cache use.</div>';
+  return renderTableCard('cacheEfficiencyTable', 'Cache Efficiency Stats', html + t);
+}
+
+function renderRequestForensics(data) {
+  const rows = data?.rows || [];
+  const hiddenDeleted = Number(data?.hidden_deleted_requests || 0);
+  let t = '<table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Platform</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Latency</th><th>Est</th><th>Request ID</th></tr></thead><tbody>';
+  if (!rows.length) {
+    t += '<tr><td colspan="12" class="text-muted">No LLM requests match the current range and filters.</td></tr>';
+  } else {
+    for (const row of rows) {
+      const provider = row.provider || '—';
+      const modelRaw = row.model || '—';
+      const platform = row.platform || 'cli';
+      const status = row.status || 'running';
+      t += `<tr class="clickable-row" onclick='openRequestDetail(${Number(row.id || 0)})'><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}" onclick='event.stopPropagation(); addDrilldown({provider:${jsAttr(provider)}})'>${escHtml(provider)}</span></td><td class="text-muted" title="${escHtml(modelRaw)}"><span class="inline-btn data-chip model-chip" onclick='event.stopPropagation(); addDrilldown({model:${jsAttr(modelRaw)}})'>${escHtml(modelRaw)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${jsAttr(platform)}})'>${platformBadge(platform)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({status:${jsAttr(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td><td>${row.estimated ? statusBadge('running') : statusBadge('ok')}</td><td><code>${nf(row.id || 0)}</code></td></tr>`;
+    }
+  }
+  t += `</tbody></table><div class="table-actions"><div>${nf(rows.length)} shown / ${nf(data?.total_requests || 0)} matching request(s)</div><div class="text-muted">${hiddenDeleted ? `${nf(hiddenDeleted)} request(s) hidden with deleted Hermes sessions.` : 'Click a request row for request-level forensics.'}</div></div>`;
+  return renderTableCard('requestForensicsTable', 'LLM Request Forensics', t);
+}
+
+function renderToolFailureHeatmap(rows) {
+  let t = '<table><thead><tr><th>Tool</th><th>Model</th><th>Platform</th><th>Cron</th><th>Calls</th><th>Fail</th><th>Fail %</th><th>Avg Latency</th><th>Last Seen</th></tr></thead><tbody>';
+  if (!rows || !rows.length) {
+    t += '<tr><td colspan="9" class="text-muted">No tool/model failure combinations for this range.</td></tr>';
+  } else {
+    for (const row of rows) {
+      const tool = row.tool_name || '—';
+      const model = row.model || '—';
+      const platform = row.platform || 'cli';
+      const cron = row.cron_job_id || '';
+      const intensity = Number(row.failure_pct || 0) >= 50 || Number(row.failed_calls || 0) >= 3 ? statusBadge('error') : (Number(row.failed_calls || 0) ? statusBadge('running') : statusBadge('ok'));
+      t += `<tr class="clickable-row" onclick='addDrilldown({tool_name:${jsAttr(tool)},model:${jsAttr(model)}})'><td class="text-muted">${escHtml(tool)}</td><td class="text-muted" title="${escHtml(model)}"><span class="inline-btn data-chip model-chip">${escHtml(model)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${jsAttr(platform)}})'>${platformBadge(platform)}</span></td><td class="text-muted">${cron ? escHtml(cron.substring(0, 16)) : '—'}</td><td>${nf(row.calls || 0)}</td><td>${intensity} ${nf(row.failed_calls || 0)}</td><td>${Number(row.failure_pct || 0).toFixed(1)}%</td><td>${fmtMs(row.avg_latency_ms)}</td><td class="text-muted">${fmtLocalTs(row.last_seen, {seconds:true})}</td></tr>`;
+    }
+  }
+  t += '</tbody></table><div class="subtle-note">Heatmap rows group failures by tool × model × platform × cron. Click a row to inspect matching sessions.</div>';
+  return renderTableCard('toolFailureHeatmapTable', 'Tool Failure Heatmap', t);
+}
+
+function renderToolAnalytics(data) {
+  const overall = data?.overall || {};
+  const rows = data?.by_tool || [];
+  let html = '<div class="insight-grid">';
+  html += `<div class="insight-card"><div class="label">Tool calls</div><div class="value">${nf(overall.tool_calls || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Unique tools</div><div class="value">${nf(overall.unique_tools || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Failed tool calls</div><div class="value">${nf(overall.failed_calls || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Avg latency</div><div class="value">${fmtMs(overall.avg_latency_ms)}</div></div>`;
+  html += '</div>';
+  let t = '<table><thead><tr><th>Tool</th><th>Calls</th><th>Sessions</th><th>OK</th><th>Fail</th><th>Fail %</th><th>Avg</th><th>Max</th><th>Last Seen</th></tr></thead><tbody>';
+  if (!rows.length) {
+    t += '<tr><td colspan="9" class="text-muted">No tool activity matches the current range and filters.</td></tr>';
+  } else {
+    for (const row of rows) {
+      const tool = row.tool_name || '—';
+      t += `<tr class="clickable-row" onclick='addDrilldown({tool_name:${jsAttr(tool)}})'><td class="text-muted">${escHtml(tool)}</td><td>${nf(row.calls || 0)}</td><td>${nf(row.sessions || 0)}</td><td>${nf(row.ok_calls || 0)}</td><td>${nf(row.failed_calls || 0)}</td><td>${Number(row.failure_pct || 0).toFixed(2)}%</td><td>${fmtMs(row.avg_latency_ms)}</td><td>${fmtMs(row.max_latency_ms)}</td><td class="text-muted">${fmtLocalTs(row.last_seen, {seconds:true})}</td></tr>`;
+    }
+  }
+  t += '</tbody></table><div class="subtle-note">Click a tool row to filter the whole breakdown workspace to sessions that used it.</div>';
+  return renderTableCard('toolAnalyticsTable', 'Tool Analytics', html + t);
+}
+
+function renderCronFailureWaste(rows) {
+  let t = '<table><thead><tr><th>Cron Job</th><th>Risk</th><th>Runs</th><th>Fail</th><th>Fail %</th><th>Timeout</th><th>Tool Fail</th><th>Wasted Tokens</th><th>Wasted Cost</th><th>Last Success</th><th>Avg Dur</th></tr></thead><tbody>';
+  if (!rows || !rows.length) {
+    t += '<tr><td colspan="11" class="text-muted">No cron waste/failure data for this range.</td></tr>';
+  } else {
+    for (const row of rows) {
+      const job = row.cron_job_id || '—';
+      const risks = (row.risks || []).length ? row.risks.join(', ') : 'normal';
+      const riskBadge = (row.risks || []).length ? statusBadge('error') : statusBadge('ok');
+      const age = row.last_success_age_hours == null ? 'never' : `${Number(row.last_success_age_hours).toFixed(1)}h`;
+      t += `<tr class="clickable-row" onclick='addDrilldown({cron_job_id:${jsAttr(job)},platform:"cron"})'><td><code title="${escHtml(job)}">${escHtml(job.substring(0, 22))}</code></td><td>${riskBadge} <span class="text-muted">${escHtml(risks)}</span></td><td>${nf(row.runs || 0)}</td><td>${nf(row.failed_runs || 0)}</td><td>${Number(row.failure_pct || 0).toFixed(1)}%</td><td>${nf(row.timeout_runs || 0)}</td><td>${nf(row.failed_tool_calls || 0)}</td><td>${nf(row.wasted_tokens || 0)}</td><td>${fmtCost(row.wasted_cost_usd)}</td><td class="text-muted">${escHtml(age)}</td><td>${fmtMs(row.avg_duration_ms)}</td></tr>`;
+    }
+  }
+  t += '</tbody></table><div class="subtle-note">Waste estimates count tokens/cost from non-ok cron runs. Click a cron row to drill into sessions from that job.</div>';
+  return renderTableCard('cronFailureWasteTable', 'Cron Failure / Waste Center', t);
+}
+
+function renderErrorCenter(data) {
+  const runSummary = data?.summary?.runs || {};
+  const toolSummary = data?.summary?.tools || {};
+  const statuses = data?.status_groups || [];
+  const failedTools = data?.failed_tools || [];
+  const incidents = data?.incidents || [];
+  let html = '<div class="insight-grid">';
+  html += `<div class="insight-card"><div class="label">Failed runs</div><div class="value">${nf(runSummary.failed_runs || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Interrupted runs</div><div class="value">${nf(runSummary.interrupted_runs || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Failed tool calls</div><div class="value">${nf(toolSummary.failed_tool_calls || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Sessions w/ tool failure</div><div class="value">${nf(toolSummary.sessions_with_failed_tools || 0)}</div></div>`;
+  html += '</div>';
+
+  let statusTable = '<table><thead><tr><th>Status</th><th>Runs</th><th>Sessions</th><th>Cost</th><th>Last Seen</th></tr></thead><tbody>';
+  if (!statuses.length) statusTable += '<tr><td colspan="5" class="text-muted">No non-ok session statuses in this range.</td></tr>';
+  else for (const row of statuses) {
+    statusTable += `<tr class="clickable-row" onclick='addDrilldown({status:${jsAttr(row.status || '—')}})'><td>${statusBadge(row.status || '—')}</td><td>${nf(row.runs || 0)}</td><td>${nf(row.sessions || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td class="text-muted">${fmtLocalTs(row.last_seen, {seconds:true})}</td></tr>`;
+  }
+  statusTable += '</tbody></table>';
+
+  let failedToolTable = '<table><thead><tr><th>Tool</th><th>Failed Calls</th><th>Sessions</th><th>Avg Latency</th><th>Last Seen</th></tr></thead><tbody>';
+  if (!failedTools.length) failedToolTable += '<tr><td colspan="5" class="text-muted">No failed tool calls in this range.</td></tr>';
+  else for (const row of failedTools) {
+    failedToolTable += `<tr class="clickable-row" onclick='addDrilldown({tool_name:${jsAttr(row.tool_name || '—')}})'><td class="text-muted">${escHtml(row.tool_name || '—')}</td><td>${nf(row.failed_calls || 0)}</td><td>${nf(row.sessions || 0)}</td><td>${fmtMs(row.avg_latency_ms)}</td><td class="text-muted">${fmtLocalTs(row.last_seen, {seconds:true})}</td></tr>`;
+  }
+  failedToolTable += '</tbody></table>';
+
+  let incidentTable = '<table><thead><tr><th>Time</th><th>Kind</th><th>Platform</th><th>Provider</th><th>Model / Tool</th><th>Status</th><th>Latency</th><th>Cost</th><th>Session</th></tr></thead><tbody>';
+  if (!incidents.length) incidentTable += '<tr><td colspan="9" class="text-muted">No recent incidents for this range.</td></tr>';
+  else for (const row of incidents) {
+    const label = row.kind === 'tool_failure' ? (row.tool_name || '—') : (row.model || '—');
+    incidentTable += `<tr class="clickable-row" onclick='openSessionDetail(${jsAttr(row.session_id || '')})'><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td>${row.kind === 'tool_failure' ? statusBadge('error') : statusBadge(row.status || 'error')}</td><td>${platformBadge(row.platform || 'cli')}</td><td class="text-muted">${escHtml(row.provider || '—')}</td><td class="text-muted" title="${escHtml(label)}">${escHtml(label.substring(0, 36))}</td><td>${statusBadge(row.status || 'error')}</td><td>${fmtMs(row.latency_ms)}</td><td>${fmtCost(row.cost_usd)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml((row.session_id || '').substring(0, 24))}</code></td></tr>`;
+  }
+  incidentTable += '</tbody></table><div class="subtle-note">Click status or tool rows to drill down. Click an incident row for full session detail.</div>';
+  return renderTableCard('errorCenterTable', 'Error Center', html + '<h3 style="margin-top:4px">Run Status Groups</h3>' + statusTable + '<div style="height:16px"></div><h3>Failed Tools</h3>' + failedToolTable + '<div style="height:16px"></div><h3>Recent Incidents</h3>' + incidentTable);
+}
+
+function renderRunsInvestigation(data, title = 'Session Investigation') {
+  const rows = data?.rows || [];
+  let html = '';
+  const activeSearch = currentDrilldown.q || '';
+  const filterChips = renderFilterChips();
+  const hasOnlySearch = !!currentDrilldown.q && Object.keys(currentDrilldown).filter(k => k !== 'q').length === 0;
+  let emptyReason = '';
+  if (!rows.length) {
+    if (hasOnlySearch) emptyReason = `No sessions match search “${activeSearch}”.`;
+    else if (hasDrilldown()) emptyReason = `No sessions match the current filters${activeSearch ? ` and search “${activeSearch}”` : ''}.`;
+    else emptyReason = 'No sessions available for this time range.';
+  }
+  html += `<div class="filter-bar"><div class="filter-bar-left">${filterChips || '<div class="subtle-note" style="margin:0">Click a provider, model, day, status, platform, tool, or chart segment to inspect exact sessions behind the totals.</div>'}${hasDrilldown() ? '<button class="inline-btn" onclick="clearDrilldown()">Clear filters</button>' : ''}</div><div class="search-inline"><input id="investigationSearch" type="text" value="${escHtml(activeSearch)}" placeholder="Search session / model / provider / cron / tool" onkeydown="if(event.key===\'Enter\'){applyInvestigationSearch()}" /><button class="inline-btn" onclick="applyInvestigationSearch()">Search</button><button class="inline-btn" onclick="clearInvestigationSearch()">Clear search</button></div></div>`;
+  const hiddenDeleted = Number(data?.hidden_deleted_runs || 0);
+  const hiddenNote = hiddenDeleted ? `${nf(hiddenDeleted)} deleted Hermes session(s) soft-hidden.` : 'Deleted Hermes sessions are hidden by default.';
+  html += `<div class="table-actions" style="margin-top:0;margin-bottom:12px"><div>${nf(rows.length)} shown / ${nf(data?.total_runs || 0)} matching session(s)</div><div class="text-muted">${escHtml(emptyReason)} ${escHtml(hiddenNote)}</div></div>`;
+  let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Provider</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
+  if (!rows.length) {
+    t += `<tr><td colspan="11" class="text-muted">${escHtml(emptyReason)}</td></tr>`;
+  } else {
+    for (const row of rows) {
+      const sid = row.session_id || '';
+      const sidShort = sid.substring(0, 24);
+      const model = (row.model || '—').substring(0, 28);
+      const provider = (row.provider || '—').substring(0, 18);
+      const platform = row.platform || 'cli';
+      const status = row.status || '—';
+      const platformFilter = jsAttr(platform);
+      const statusFilter = jsAttr(status);
+      const providerFilter = jsAttr(row.provider || '—');
+      const modelFilter = jsAttr(row.model || '—');
+      t += `<tr class="clickable-row" onclick='openSessionDetail(${jsAttr(sid)})'><td class="text-muted">${fmtLocalTs(row.started_at)}</td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${platformFilter}})'>${platformBadge(platform)}</span></td><td class="text-muted"><span class="inline-btn data-chip provider-chip" title="${escHtml(row.provider || '—')}" onclick='event.stopPropagation(); addDrilldown({provider:${providerFilter}})'>${escHtml(row.provider || '—')}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" onclick='event.stopPropagation(); addDrilldown({model:${modelFilter}})'>${escHtml(row.model || '—')}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({status:${statusFilter}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${escHtml(sid)}">${escHtml(sid.substring(0, 20))}</code></td></tr>`;
+    }
+  }
+  t += '</tbody></table>';
+  html += t;
+  html += `<div class="table-actions"><div>${nf(rows.length)} shown / ${nf(data?.total_runs || 0)} matching session(s)</div><div class="text-muted">Click a row for full session detail.</div></div>`;
+  return renderTableCard('runsInvestigationTable', title, html);
+}
+
+function changeDailyTokensPage(delta) {
+  currentDailyTokensPage = Math.max(1, currentDailyTokensPage + delta);
+  loadAll({showShell:false});
+}
+
+function switchPage(page) {
+  currentPage = page;
+  updatePageTabs(page);
+  loadAll({showShell:false});
+}
+
+function closeSessionDetail() {
+  $('#sessionDrawer')?.classList.remove('open');
+}
+
+function renderSessionDetail(data) {
+  if (!data || data.error) {
+    return `<div class="error-box">${escHtml(data?.error || 'Failed to load session detail')}</div>`;
+  }
+  const run = data.run || {};
+  const llm = data.llm_summary || {};
+  const tool = data.tool_summary || {};
+  const providerFilter = jsAttr(run.provider || '—');
+  const modelFilter = jsAttr(run.model || '—');
+  const platformFilter = jsAttr(run.platform || 'cli');
+  const statusFilter = jsAttr(run.status || '—');
+  let html = '<div class="drawer-section"><div class="insight-grid">';
+  html += `<div class="insight-card"><div class="label">Status</div><div class="value"><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({status:${statusFilter}})'>${escHtml(run.status || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">Provider</div><div class="value"><span class="inline-btn data-chip provider-chip" title="${escHtml(run.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${providerFilter}})'>${escHtml(run.provider || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">Model</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(run.model || '—')}" onclick='closeSessionDetail(); addDrilldown({model:${modelFilter}})'>${escHtml(run.model || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">Cost / Duration</div><div class="value">${fmtCost(run.cost_usd)} / ${fmtMs(run.duration_ms)}</div></div>`;
+  html += '</div></div>';
+
+  html += '<div class="drawer-section"><h4>Run totals</h4>';
+  html += '<table><tbody>';
+  html += `<tr><th>Platform</th><td><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({platform:${platformFilter}})'>${escHtml(run.platform || 'cli')}</span></td><th>API calls</th><td>${nf(run.api_calls || 0)}</td></tr>`;
+  html += `<tr><th>Tool calls</th><td>${nf(run.tool_calls || 0)}</td><th>Estimated LLM calls</th><td>${nf(run.estimated_llm_calls || 0)}</td></tr>`;
+  html += `<tr><th>Tokens in</th><td>${nf(run.tokens_in || 0)}</td><th>Tokens out</th><td>${nf(run.tokens_out || 0)}</td></tr>`;
+  html += `<tr><th>Cache read</th><td>${nf(run.cache_read_tokens || 0)}</td><th>Cache write</th><td>${nf(run.cache_write_tokens || 0)}</td></tr>`;
+  html += `<tr><th>Started</th><td>${fmtLocalTs(run.started_at, {seconds:true})}</td><th>Ended</th><td>${fmtLocalTs(run.ended_at, {seconds:true})}</td></tr>`;
+  html += '</tbody></table></div>';
+
+  html += '<div class="drawer-section"><h4>LLM call summary</h4>';
+  html += '<table><tbody>';
+  html += `<tr><th>API calls</th><td>${nf(llm.api_calls || 0)}</td><th>Estimated calls</th><td>${nf(llm.estimated_calls || 0)}</td></tr>`;
+  html += `<tr><th>Tokens in</th><td>${nf(llm.tokens_in || 0)}</td><th>Tokens out</th><td>${nf(llm.tokens_out || 0)}</td></tr>`;
+  html += `<tr><th>Cache read</th><td>${nf(llm.cache_read_tokens || 0)}</td><th>Reasoning</th><td>${nf(llm.reasoning_tokens || 0)}</td></tr>`;
+  html += `<tr><th>Cost</th><td>${fmtCost(llm.cost_usd)}</td><th>Avg latency</th><td>${fmtMs(llm.avg_latency_ms)}</td></tr>`;
+  html += '</tbody></table></div>';
+
+  let pm = '<div class="drawer-section"><h4>Provider / model mix</h4><table><thead><tr><th>Provider</th><th>Model</th><th>Calls</th><th>Total Tokens</th><th>Cost</th></tr></thead><tbody>';
+  for (const row of (data.provider_models || [])) {
+    pm += `<tr><td><span class="inline-btn data-chip provider-chip" title="${escHtml(row.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${jsAttr(row.provider || '—')}})'>${escHtml(row.provider || '—')}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" onclick='closeSessionDetail(); addDrilldown({model:${jsAttr(row.model || '—')}})'>${escHtml(row.model || '—')}</span></td><td>${nf(row.api_calls || 0)}</td><td>${nf(row.total_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
+  }
+  pm += '</tbody></table></div>';
+  html += pm;
+
+  let llmRows = '<div class="drawer-section"><h4>Recent LLM calls</h4><table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cache</th><th>Reasoning</th><th>Cost</th><th>Latency</th></tr></thead><tbody>';
+  for (const row of (data.llm_calls || [])) {
+    llmRows += `<tr><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td><span class="inline-btn data-chip provider-chip" title="${escHtml(row.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${jsAttr(row.provider || '—')}})'>${escHtml(row.provider || '—')}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" onclick='closeSessionDetail(); addDrilldown({model:${jsAttr(row.model || '—')}})'>${escHtml(row.model || '—')}</span></td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${nf(row.reasoning_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
+  }
+  llmRows += '</tbody></table></div>';
+  html += llmRows;
+
+  let toolRows = '<div class="drawer-section"><h4>Tool calls</h4><table><thead><tr><th>Time</th><th>Tool</th><th>Status</th><th>Latency</th></tr></thead><tbody>';
+  for (const row of (data.tool_calls || [])) {
+    toolRows += `<tr><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({tool_name:${jsAttr(row.tool_name || '—')}})'>${escHtml(row.tool_name || '—')}</span></td><td>${row.ok ? statusBadge('ok') : statusBadge('error')}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
+  }
+  toolRows += '</tbody></table></div>';
+  html += toolRows;
+  return html;
+}
+
+async function openSessionDetail(sessionId) {
+  if (!sessionId) return;
+  const requestId = ++latestDrawerRequestId;
+  $('#sessionDrawerTitle').textContent = 'Session detail';
+  $('#sessionDrawerSubtitle').textContent = sessionId;
+  $('#sessionDrawerBody').innerHTML = '<div class="loading" style="padding:24px">Loading…</div>';
+  $('#sessionDrawer')?.classList.add('open');
+  try {
+    const data = await fetchJSON(`/api/session-detail?session_id=${encodeURIComponent(sessionId)}`);
+    if (requestId !== latestDrawerRequestId) return;
+    $('#sessionDrawerTitle').textContent = `Session detail · ${data?.run?.platform || 'session'}`;
+    $('#sessionDrawerSubtitle').textContent = sessionId;
+    $('#sessionDrawerBody').innerHTML = renderSessionDetail(data);
+  } catch (err) {
+    if (requestId !== latestDrawerRequestId) return;
+    $('#sessionDrawerBody').innerHTML = `<div class="error-box">Failed to load session detail: ${escHtml(err.message)}</div>`;
+  }
+}
+
+function closeRequestDetail() {
+  $('#requestDrawer')?.classList.remove('open');
+}
+
+function renderRequestDetail(data) {
+  if (!data || data.error) {
+    return `<div class="error-box">${escHtml(data?.error || 'Failed to load request detail')}</div>`;
+  }
+  const req = data.request || {};
+  const totals = data.session_totals || {};
+  let html = '<div class="drawer-section"><div class="insight-grid">';
+  html += `<div class="insight-card"><div class="label">Provider</div><div class="value"><span class="inline-btn data-chip provider-chip" title="${escHtml(req.provider || '—')}" onclick='closeRequestDetail(); addDrilldown({provider:${jsAttr(req.provider || '—')}})'>${escHtml(req.provider || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">Model</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(req.model || '—')}" onclick='closeRequestDetail(); addDrilldown({model:${jsAttr(req.model || '—')}})'>${escHtml(req.model || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">Cost / Latency</div><div class="value">${fmtCost(req.cost_usd)} / ${fmtMs(req.latency_ms)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Estimated</div><div class="value">${req.estimated ? 'Yes' : 'No'}</div></div>`;
+  html += '</div></div>';
+
+  html += '<div class="drawer-section"><h4>Request metrics</h4><table><tbody>';
+  html += `<tr><th>Request ID</th><td><code>${nf(req.id || 0)}</code></td><th>Time</th><td>${fmtLocalTs(req.ts, {seconds:true})}</td></tr>`;
+  html += `<tr><th>Session</th><td><span class="inline-btn" onclick='closeRequestDetail(); openSessionDetail(${jsAttr(req.session_id || '')})'>${escHtml(req.session_id || '—')}</span></td><th>Platform</th><td>${platformBadge(req.platform || 'cli')}</td></tr>`;
+  html += `<tr><th>Status</th><td>${statusBadge(req.status || 'running')}</td><th>Cron Job</th><td>${escHtml(req.cron_job_id || '—')}</td></tr>`;
+  html += `<tr><th>Input</th><td>${nf(req.tokens_in || 0)}</td><th>Output</th><td>${nf(req.tokens_out || 0)}</td></tr>`;
+  html += `<tr><th>Cache Read</th><td>${nf(req.cache_read_tokens || 0)}</td><th>Cache Write</th><td>${nf(req.cache_write_tokens || 0)}</td></tr>`;
+  html += `<tr><th>Reasoning</th><td>${nf(req.reasoning_tokens || 0)}</td><th>Session Tools</th><td>${nf(req.tool_calls || 0)}</td></tr>`;
+  html += '</tbody></table></div>';
+
+  html += '<div class="drawer-section"><h4>Session totals</h4><table><tbody>';
+  html += `<tr><th>API calls</th><td>${nf(totals.api_calls || 0)}</td><th>Estimated calls</th><td>${nf(totals.estimated_calls || 0)}</td></tr>`;
+  html += `<tr><th>Tokens in</th><td>${nf(totals.tokens_in || 0)}</td><th>Tokens out</th><td>${nf(totals.tokens_out || 0)}</td></tr>`;
+  html += `<tr><th>Cache read</th><td>${nf(totals.cache_read_tokens || 0)}</td><th>Reasoning</th><td>${nf(totals.reasoning_tokens || 0)}</td></tr>`;
+  html += `<tr><th>Cost</th><td>${fmtCost(totals.cost_usd)}</td><th>Avg latency</th><td>${fmtMs(totals.avg_latency_ms)}</td></tr>`;
+  html += '</tbody></table></div>';
+
+  let siblingRows = '<div class="drawer-section"><h4>Session LLM calls</h4><table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Latency</th></tr></thead><tbody>';
+  for (const row of (data.sibling_requests || [])) {
+    siblingRows += `<tr class="clickable-row" onclick='openRequestDetail(${Number(row.id || 0)})'><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td>${escHtml(row.provider || '—')}</td><td class="text-muted" title="${escHtml(row.model || '—')}">${escHtml((row.model || '—').substring(0, 34))}</td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
+  }
+  siblingRows += '</tbody></table></div>';
+  html += siblingRows;
+
+  let toolRows = '<div class="drawer-section"><h4>Session tool activity</h4><table><thead><tr><th>Time</th><th>Tool</th><th>Status</th><th>Latency</th></tr></thead><tbody>';
+  for (const row of (data.session_tools || [])) {
+    toolRows += `<tr><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td><span class="inline-btn" onclick='closeRequestDetail(); addDrilldown({tool_name:${jsAttr(row.tool_name || '—')}})'>${escHtml(row.tool_name || '—')}</span></td><td>${row.ok ? statusBadge('ok') : statusBadge('error')}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
+  }
+  toolRows += '</tbody></table></div>';
+  html += toolRows;
+  return html;
+}
+
+async function openRequestDetail(requestId) {
+  if (!requestId) return;
+  const requestSeq = ++latestRequestDrawerRequestId;
+  $('#requestDrawerTitle').textContent = 'Request detail';
+  $('#requestDrawerSubtitle').textContent = `#${requestId}`;
+  $('#requestDrawerBody').innerHTML = '<div class="loading" style="padding:24px">Loading…</div>';
+  $('#requestDrawer')?.classList.add('open');
+  try {
+    const data = await fetchJSON(`/api/request-detail?id=${encodeURIComponent(requestId)}`);
+    if (requestSeq !== latestRequestDrawerRequestId) return;
+    $('#requestDrawerTitle').textContent = `Request detail · ${data?.request?.provider || 'provider'}`;
+    $('#requestDrawerSubtitle').textContent = `#${requestId} · ${data?.request?.session_id || ''}`;
+    $('#requestDrawerBody').innerHTML = renderRequestDetail(data);
+  } catch (err) {
+    if (requestSeq !== latestRequestDrawerRequestId) return;
+    $('#requestDrawerBody').innerHTML = `<div class="error-box">Failed to load request detail: ${escHtml(err.message)}</div>`;
+  }
 }
 
 function drawLineChart(canvasId, labels, datasets, yLabel) {
@@ -389,7 +1182,117 @@ function drawBarChart(canvasId, labels, data, color, yLabel) {
   });
 }
 
-function drawDoughnutChart(canvasId, labels, data, colors) {
+function drawStackedBarChart(canvasId, labels, datasets, yLabel) {
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  charts[canvasId] = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8b949e', font: { size: 11 } } } },
+      scales: {
+        x: { stacked: true, ticks: { color: '#8b949e', font: { size: 11 } }, grid: { display: false } },
+        y: { stacked: true, ticks: { color: '#8b949e', font: { size: 11 } }, grid: { color: '#21262d' }, title: { display: !!yLabel, text: yLabel, color: '#8b949e' } },
+      },
+    },
+  });
+}
+
+function drawModelUsageTrendChart(canvasId, trendData) {
+  destroyChart(canvasId);
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const rows = trendData?.rows || [];
+  if (!rows.length) return;
+  const labels = rows.map(row => row.period);
+  const palette = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#7ee787', '#8b949e'];
+  const metricKey = currentUsageMetric === 'cost' ? 'cost_usd' : currentUsageMetric === 'requests' ? 'api_calls' : 'total_tokens';
+  const totals = rows.map(row => Number(row?.totals?.[metricKey] || 0));
+  const models = trendData?.models || [];
+  const datasets = models.map((model, idx) => ({
+    label: model,
+    data: rows.map(row => {
+      const value = Number(row?.models?.[model]?.[metricKey] || 0);
+      if (currentUsageMetric === 'share') {
+        const denom = Number(row?.totals?.total_tokens || 0);
+        return denom ? Number(((value / denom) * 100).toFixed(2)) : 0;
+      }
+      return value;
+    }),
+    backgroundColor: palette[idx % palette.length],
+    borderWidth: 0,
+    borderRadius: 4,
+  }));
+  const otherSeries = rows.map(row => {
+    const value = Number(row?.other?.[metricKey] || 0);
+    if (currentUsageMetric === 'share') {
+      const denom = Number(row?.totals?.total_tokens || 0);
+      return denom ? Number(((value / denom) * 100).toFixed(2)) : 0;
+    }
+    return value;
+  });
+  if (otherSeries.some(v => v > 0)) {
+    datasets.push({ label: 'Other', data: otherSeries, backgroundColor: '#8b949e', borderWidth: 0, borderRadius: 4 });
+  }
+  const yLabel = currentUsageMetric === 'cost' ? 'USD' : currentUsageMetric === 'requests' ? 'API calls' : currentUsageMetric === 'share' ? 'Share %' : 'Tokens';
+  const ctx = canvas.getContext('2d');
+  charts[canvasId] = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8b949e', font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (context) => {
+              const raw = Number(context.raw || 0);
+              if (currentUsageMetric === 'cost') return `${context.dataset.label}: ${fmtCost(raw)}`;
+              if (currentUsageMetric === 'requests') return `${context.dataset.label}: ${nf(raw)} calls`;
+              if (currentUsageMetric === 'share') return `${context.dataset.label}: ${raw.toFixed(1)}%`;
+              return `${context.dataset.label}: ${nf(raw)} tokens`;
+            },
+            footer: (items) => {
+              if (!items?.length) return '';
+              const idx = items[0].dataIndex;
+              if (currentUsageMetric === 'share') return `Total: ${nf(totals[idx])} tokens`;
+              return '';
+            },
+          },
+        },
+      },
+      onClick: (_, elements, chart) => {
+        if (currentUsageGranularity !== 'day' || !elements?.length) return;
+        const point = elements[0];
+        const period = chart.data.labels[point.index];
+        const model = chart.data.datasets[point.datasetIndex]?.label;
+        const next = model && model !== 'Other' ? { model } : {};
+        next.day = period;
+        addDrilldown(next);
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: '#8b949e', font: { size: 11 } }, grid: { display: false } },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          max: currentUsageMetric === 'share' ? 100 : undefined,
+          ticks: {
+            color: '#8b949e',
+            font: { size: 11 },
+            callback: (value) => currentUsageMetric === 'share' ? `${value}%` : value,
+          },
+          grid: { color: '#21262d' },
+          title: { display: true, text: yLabel, color: '#8b949e' },
+        },
+      },
+    },
+  });
+}
+
+function drawDoughnutChart(canvasId, labels, data, colors, onSliceClick) {
   destroyChart(canvasId);
   const ctx = document.getElementById(canvasId).getContext('2d');
   charts[canvasId] = new Chart(ctx, {
@@ -401,127 +1304,286 @@ function drawDoughnutChart(canvasId, labels, data, colors) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      onClick: (_, elements, chart) => {
+        if (!elements?.length || !onSliceClick) return;
+        const idx = elements[0].index;
+        onSliceClick(chart.data.labels[idx], idx);
+      },
       plugins: { legend: { position: 'right', labels: { color: '#8b949e', font: { size: 11 }, padding: 12 } } },
     },
   });
 }
 
-async function loadAll() {
-  const hours = $('#windowSelect').value;
+function renderDailyCombinedSvg(hostId, dailyTokenChart, dailyModelChart) {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  const rows = dailyTokenChart || [];
+  const modelRowsByDay = Object.fromEntries((dailyModelChart?.rows || []).map(r => [r.day, r]));
+  const modelNames = dailyModelChart?.models || [];
+  const modelColors = ['#bc8cff', '#8b949e', '#58a6ff', '#3fb950', '#d29922', '#f85149'];
+  const tokenSeries = [
+    { label: 'Input', color: '#58a6ff', key: 'tokens_in' },
+    { label: 'Output', color: '#3fb950', key: 'tokens_out' },
+    { label: 'Cache Read', color: '#d29922', key: 'cache_read_tokens' },
+    { label: 'Reasoning', color: '#f85149', key: 'reasoning_tokens' },
+  ];
+  const legendItems = [
+    ...tokenSeries.map(s => ({ label: s.label, color: s.color })),
+    ...modelNames.map((m, i) => ({ label: `Model: ${(m || '—').replace(/^openrouter\//, '').substring(0, 18)}`, color: modelColors[i % modelColors.length] })),
+  ];
+  if ((dailyModelChart?.rows || []).some(r => (r.other || 0) > 0)) legendItems.push({ label: 'Model: Other', color: '#8b949e' });
+
+  if (!rows.length) {
+    host.innerHTML = '<div class="text-muted">No chart data.</div>';
+    return;
+  }
+
+  const width = Math.max(900, host.clientWidth || 900);
+  const height = 420;
+  const pad = { top: 18, right: 24, bottom: 50, left: 70 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const maxY = Math.max(...rows.map(r => Math.max(
+    (r.tokens_in || 0) + (r.tokens_out || 0) + (r.cache_read_tokens || 0) + (r.reasoning_tokens || 0),
+    Object.values(modelRowsByDay[r.day]?.models || {}).reduce((a, b) => a + b, 0) + (modelRowsByDay[r.day]?.other || 0)
+  )), 1);
+  const ticks = 6;
+  const groupW = plotW / rows.length;
+  const barW = Math.max(10, Math.min(56, groupW * 0.22));
+  const leftX = i => pad.left + groupW * i + (groupW / 2) - barW;
+  const rightX = i => pad.left + groupW * i + (groupW / 2);
+  const y = v => pad.top + plotH - (v / maxY) * plotH;
+
+  let svg = `<div class="chart-legend">${legendItems.map(item => `<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:${item.color}"></span>${escHtml(item.label)}</span>`).join('')}</div>`;
+  svg += `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">`;
+
+  for (let i = 0; i <= ticks; i++) {
+    const val = maxY * (i / ticks);
+    const yy = pad.top + plotH - (plotH * i / ticks);
+    svg += `<line x1="${pad.left}" y1="${yy}" x2="${width - pad.right}" y2="${yy}" stroke="#21262d" stroke-width="1" />`;
+    svg += `<text x="${pad.left - 10}" y="${yy + 4}" text-anchor="end" fill="#8b949e" font-size="11">${nf(Math.round(val))}</text>`;
+  }
+
+  rows.forEach((row, i) => {
+    const dayJs = jsAttr(row.day);
+    let acc = 0;
+    for (const s of tokenSeries) {
+      const v = row[s.key] || 0;
+      if (!v) continue;
+      const h = (v / maxY) * plotH;
+      const yy = y(acc + v);
+      svg += `<rect x="${leftX(i)}" y="${yy}" width="${barW}" height="${h}" fill="${s.color}" style="cursor:pointer" onclick='addDrilldown({day:${dayJs}})'><title>${row.day} · ${s.label}: ${nf(v)}</title></rect>`;
+      acc += v;
+    }
+
+    acc = 0;
+    modelNames.forEach((model, idx) => {
+      const v = modelRowsByDay[row.day]?.models?.[model] || 0;
+      if (!v) return;
+      const h = (v / maxY) * plotH;
+      const yy = y(acc + v);
+      svg += `<rect x="${rightX(i)}" y="${yy}" width="${barW}" height="${h}" fill="${modelColors[idx % modelColors.length]}" style="cursor:pointer" onclick='addDrilldown({day:${dayJs},model:${jsAttr(model)}})'><title>${row.day} · Model: ${escHtml(model)}: ${nf(v)}</title></rect>`;
+      acc += v;
+    });
+    const other = modelRowsByDay[row.day]?.other || 0;
+    if (other) {
+      const h = (other / maxY) * plotH;
+      const yy = y(acc + other);
+      svg += `<rect x="${rightX(i)}" y="${yy}" width="${barW}" height="${h}" fill="#8b949e" style="cursor:pointer" onclick='addDrilldown({day:${dayJs}})'><title>${row.day} · Model: Other: ${nf(other)}</title></rect>`;
+    }
+
+    svg += `<text x="${pad.left + groupW * i + groupW/2}" y="${height - 16}" text-anchor="middle" fill="#8b949e" font-size="11">${row.day}</text>`;
+  });
+
+  svg += `<text x="20" y="${pad.top + plotH / 2}" fill="#8b949e" font-size="12" transform="rotate(-90 20 ${pad.top + plotH / 2})">Tokens</text>`;
+  svg += `</svg>`;
+  host.innerHTML = svg;
+}
+
+async function loadAll(options = {}) {
+  if (isLoading && options.reason === 'auto') return;
+  const requestId = ++latestLoadRequestId;
+  isLoading = true;
+  const showShell = options.showShell ?? !$('#app')?.dataset?.loaded;
   const app = $('#app');
-  app.innerHTML = '<div class="loading">Loading...</div>';
+  const hours = $('#windowSelect').value;
+  if (hours !== lastWindowHours) {
+    currentDailyTokensPage = 1;
+    lastWindowHours = hours;
+  }
+  setLoadStatus(options.reason === 'auto' ? 'Auto loading…' : 'Loading…', 'loading');
+  const startedAt = performance.now();
+  if (showShell || !app.dataset.loaded) app.innerHTML = loadingShell();
 
   try {
-    const [summary, cron, providers, runs, budget, tokenBreakdown] = await Promise.all([
+    const chartHours = hours === '0' ? 2160 : Number(hours);
+    const trendLimit = currentUsageGranularity === 'month' ? 18 : currentUsageGranularity === 'week' ? 24 : 21;
+    const [summary, cron, providers, providerHealth, runsData, budget, tokenBreakdown, modelTokens, modelEfficiency, dailyTokens, dailyTokenChart, dailyModelChart, modelPeriodTrends, modelShareComparison, cacheEfficiency, requestForensics, toolAnalytics, toolFailureHeatmap, errorCenter, cronFailureWaste] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
       fetchJSON(`/api/providers?hours=${hours}`),
-      fetchJSON('/api/runs?limit=30'),
-      fetchJSON('/api/budget'),
+      fetchJSON(`/api/provider-health?hours=${hours === '0' ? 24 : hours}`),
+      fetchJSON(`/api/runs?limit=30&hours=${hours}`),
+      fetchJSON(withViewerTimezone('/api/budget')),
       fetchJSON(`/api/token-breakdown?hours=${hours}`),
+      fetchJSON(`/api/model-tokens?hours=${hours}&limit=100`),
+      fetchJSON(`/api/model-efficiency?hours=${hours}&limit=50`),
+      fetchJSON(`/api/daily-tokens?hours=${hours}&page=${currentDailyTokensPage}&per_page=15`),
+      fetchJSON(`/api/daily-token-chart?hours=${chartHours}&limit_days=90`),
+      fetchJSON(`/api/daily-model-chart?hours=${chartHours}&limit_days=90&top_n=5`),
+      fetchJSON(`/api/model-period-trends?hours=${hours}&granularity=${currentUsageGranularity}&metric=${currentUsageMetric}&top_n=6&limit_periods=${trendLimit}`),
+      fetchJSON(`/api/model-share-comparison?hours=${hours}&granularity=${currentUsageGranularity}&limit=12`),
+      fetchJSON(`/api/cache-efficiency?hours=${hours}`),
+      fetchJSON(`/api/requests?${buildRunsQuery(hours, 60)}`),
+      fetchJSON(`/api/tool-analytics?${buildRunsQuery(hours, 100)}`),
+      fetchJSON(`/api/tool-failure-heatmap?hours=${hours}&limit=80`),
+      fetchJSON(`/api/error-center?${buildRunsQuery(hours, 100)}`),
+      fetchJSON(`/api/cron-failure-waste?hours=${hours}&limit=50`),
     ]);
+    if (requestId !== latestLoadRequestId) return;
 
     const r = summary.runs || {};
     const l = summary.llm || {};
+    const runs = runsData?.rows || [];
+    const investigationRuns = await fetchJSON(`/api/runs?${buildRunsQuery(hours, 40)}`);
+    if (requestId !== latestLoadRequestId) return;
+    currentDailyTokensPage = dailyTokens?.page || 1;
 
-    // --- stat cards ---
-    let html = '<div class="stat-grid">';
-    html += renderStatCard('sessions', nf(r.total_runs), 'Sessions', 'blue');
-    html += renderStatCard('ok', nf(r.ok_runs), 'OK', 'green');
-    html += renderStatCard('failed', nf(r.failed_runs), 'Failed', 'red');
-    html += renderStatCard('api', nf(l.api_calls), 'API Calls', 'purple');
-    html += renderStatCard('tokens', nf(r.tokens_in), 'Tokens In', '');
-    html += renderStatCard('cost', fmtCost(r.cost_usd), 'Cost', 'yellow');
-    html += '</div>';
+    let html = '';
 
-    // --- token breakdown ---
-    if (tokenBreakdown && tokenBreakdown.total_tokens > 0) {
-      html += renderTokenBreakdown(tokenBreakdown);
-    }
+    if (currentPage === 'home') {
+      // --- stat cards ---
+      html += '<div class="stat-grid">';
+      html += renderStatCard('sessions', nf(r.total_runs), 'Sessions', 'blue');
+      html += renderStatCard('ok', nf(r.ok_runs), 'OK', 'green');
+      html += renderStatCard('failed', nf(r.failed_runs), 'Failed', 'red');
+      html += renderStatCard('api', nf(l.api_calls), 'API Calls', 'purple');
+      html += renderStatCard('tokens', nf(r.tokens_in), 'Tokens In', '');
+      html += renderStatCard('cost', fmtCost(r.cost_usd), 'Cost', 'yellow');
+      html += '</div>';
 
-    // --- budget ---
-    html += renderBudget(budget);
+      // --- budget ---
+      html += renderBudget(budget);
 
-    // --- charts row 1: daily cost + top tools ---
-    let dailyTitle;
-    switch (hours) {
-      case '24': dailyTitle = 'Daily Cost (last 24h)'; break;
-      case '168': dailyTitle = 'Daily Cost (last 7 days)'; break;
-      case '720': dailyTitle = 'Daily Cost (last 30 days)'; break;
-      case '2160': dailyTitle = 'Daily Cost (last 90 days)'; break;
-      case '0': dailyTitle = 'Daily Cost (all time)'; break;
-      default: dailyTitle = 'Daily Cost';
-    }
-    html += '<div class="chart-row">';
-    html += renderChartCard('dailyCost', dailyTitle, 'chart-daily');
-    html += renderChartCard('topTools', 'Top Tools by Calls', 'chart-tools');
-    html += '</div>';
-
-    // --- charts row 2: cron cost + providers ---
-    html += '<div class="chart-row">';
-    html += renderChartCard('cronCost', 'Cost by Cron Job', 'chart-cron');
-    html += renderChartCard('providers', 'Provider Distribution', 'chart-providers');
-    html += '</div>';
-    html += '<div style="font-size:11px;color:#8b949e;margin-top:-16px;margin-bottom:24px;padding:0 4px">';
-    html += '<b>Provider key:</b> <code>openrouter</code> = model with <code>openrouter/</code> prefix · <code>nous</code> = model without prefix (direct to Nous Research) · <code>anthropic</code> = direct to Anthropic';
-    html += '</div>';
-
-    // --- cron table ---
-    if (cron.length) {
-      let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
-      for (const row of cron) {
-        const jid = (row.cron_job_id || '?').substring(0, 20);
-        const last = (row.last_run || '').substring(0, 16);
-        t += `<tr><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${last}</td></tr>`;
+      // --- charts row 1: daily cost + top tools ---
+      let dailyTitle;
+      switch (hours) {
+        case '24': dailyTitle = 'Daily Cost (last 24h)'; break;
+        case '168': dailyTitle = 'Daily Cost (last 7 days)'; break;
+        case '720': dailyTitle = 'Daily Cost (last 30 days)'; break;
+        case '2160': dailyTitle = 'Daily Cost (last 90 days)'; break;
+        case '0': dailyTitle = 'Daily Cost (all time)'; break;
+        default: dailyTitle = 'Daily Cost';
       }
-      t += '</tbody></table>';
-      html += renderTableCard('cronTable', 'Cron Jobs', t);
+      html += '<div class="chart-row">';
+      html += renderChartCard('dailyCost', dailyTitle, 'chart-daily');
+      html += renderChartCard('topTools', 'Top Tools by Calls', 'chart-tools');
+      html += '</div>';
+
+      // --- charts row 2: cron cost + providers ---
+      html += '<div class="chart-row">';
+      html += renderChartCard('cronCost', 'Cost by Cron Job', 'chart-cron');
+      html += renderChartCard('providers', 'Provider Distribution', 'chart-providers');
+      html += '</div>';
+      html += '<div style="font-size:11px;color:#8b949e;margin-top:-16px;margin-bottom:24px;padding:0 4px">';
+      html += '<b>Provider key:</b> <code>openrouter</code> = model with <code>openrouter/</code> prefix · <code>nous</code> = model without prefix (direct to Nous Research) · <code>anthropic</code> = direct to Anthropic';
+      html += '</div>';
+
+      // --- cron table ---
+      if (cron.length) {
+        let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
+        for (const row of cron) {
+          const jid = (row.cron_job_id || '?').substring(0, 20);
+          t += `<tr class="clickable-row" onclick='addDrilldown({cron_job_id:${jsAttr(row.cron_job_id || '')},platform:"cron"})'><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${fmtLocalTs(row.last_run)}</td></tr>`;
+        }
+        t += '</tbody></table><div class="subtle-note">Click a cron job row to inspect sessions from that job.</div>';
+        html += renderTableCard('cronTable', 'Cron Jobs', t);
+      }
+
+      // --- runs table ---
+      let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
+      for (const row of runs) {
+        const sid = (row.session_id || '').substring(0, 24);
+        const platform = row.platform || 'cli';
+        const status = row.status || '—';
+        t += `<tr class="clickable-row" onclick='openSessionDetail(${jsAttr(row.session_id || '')})'><td class="text-muted">${fmtLocalTs(row.started_at)}</td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${jsAttr(platform)}})'>${platformBadge(platform)}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" title="${escHtml(row.model || '—')}">${escHtml(row.model || '—')}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({status:${jsAttr(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml(sid)}</code></td></tr>`;
+      }
+      t += '</tbody></table><div class="subtle-note">Click platform or status for a filtered breakdown view. Click row for full session detail.</div>';
+      html += renderTableCard('runsTable', 'Recent Sessions', t);
+    } else if (currentPage === 'breakdown') {
+      if (tokenBreakdown && tokenBreakdown.total_tokens > 0) {
+        html += renderTokenBreakdown(tokenBreakdown);
+      }
+      html += renderProviderBreakdownTable(providers);
+      html += renderCacheEfficiency(cacheEfficiency);
+      html += renderModelEfficiency(modelEfficiency);
+      html += renderModelUsageTrendCard(modelPeriodTrends, modelShareComparison);
+      html += renderModelShareComparisonCard(modelShareComparison);
+      html += renderModelTokensTable(modelTokens);
+      html += renderDailyTokensTable(dailyTokens);
+      html += renderWideSvgCard(hours === '0' ? 'Daily Token + Model Breakdown (last 90 days)' : 'Daily Token + Model Breakdown', 'daily-combined-svg');
+      html += renderRunsInvestigation(investigationRuns, hasDrilldown() ? 'Session Investigation' : 'Investigation Workspace');
+    } else if (currentPage === 'requests') {
+      html += renderProviderHealth(providerHealth);
+      html += renderRequestForensics(requestForensics);
+    } else if (currentPage === 'tools') {
+      html += renderToolAnalytics(toolAnalytics);
+      html += renderToolFailureHeatmap(toolFailureHeatmap);
+    } else if (currentPage === 'errors') {
+      html += renderCronFailureWaste(cronFailureWaste);
+      html += renderErrorCenter(errorCenter);
     }
 
-    // --- runs table ---
-    let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
-    for (const row of runs) {
-      const time = (row.started_at || '').substring(0, 16);
-      const sid = (row.session_id || '').substring(0, 24);
-      const model = (row.model || '—').substring(0, 20);
-      t += `<tr><td class="text-muted">${time}</td><td>${platformBadge(row.platform)}</td><td class="text-muted">${model}</td><td>${statusBadge(row.status)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${row.session_id}">${sid}</code></td></tr>`;
-    }
-    t += '</tbody></table>';
-    html += renderTableCard('runsTable', 'Recent Sessions', t);
-
+    if (requestId !== latestLoadRequestId) return;
     app.innerHTML = html;
+    app.dataset.loaded = '1';
+    const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
+    const autoMs = Number($('#autoRefreshSelect')?.value || 0);
+    setLoadStatus(`Loaded ${elapsed}s${autoMs ? ` · ${autoLabel(autoMs)}` : ''}`);
 
     // --- render charts (after DOM is ready) ---
-    // daily cost
-    const dc = summary.daily_cost || [];
-    drawLineChart('chart-daily', dc.map(d => d.day), [{
-      label: 'Cost ($)', data: dc.map(d => d.cost),
-      borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.15)', fill: true, tension: 0.3, pointRadius: 4,
-    }], 'USD');
+    if (currentPage === 'home') {
+      const dc = summary.daily_cost || [];
+      drawLineChart('chart-daily', dc.map(d => d.day), [{
+        label: 'Cost ($)', data: dc.map(d => d.cost),
+        borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.15)', fill: true, tension: 0.3, pointRadius: 4,
+      }], 'USD');
 
-    // top tools
-    const tools = (summary.top_tools || []).slice(0, 8);
-    drawBarChart('chart-tools', tools.map(t => t.tool_name.split('_').pop().substring(0, 12)), tools.map(t => t.calls), '#3fb950', 'Calls');
+      const tools = (summary.top_tools || []).slice(0, 8);
+      drawBarChart('chart-tools', tools.map(t => t.tool_name.split('_').pop().substring(0, 12)), tools.map(t => t.calls), '#3fb950', 'Calls');
 
-    // cron cost (might be empty)
-    if (cron.length) {
-      drawBarChart('chart-cron', cron.map(c => (c.cron_job_id || '?').substring(0, 16)), cron.map(c => c.cost_usd), '#bc8cff', 'Cost ($)');
-    }
+      if (cron.length) {
+        drawBarChart('chart-cron', cron.map(c => (c.cron_job_id || '?').substring(0, 16)), cron.map(c => c.cost_usd), '#bc8cff', 'Cost ($)');
+      }
 
-    // providers
-    if (providers.length) {
-      const colors = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#8b949e'];
-      drawDoughnutChart('chart-providers', providers.map(p => p.provider || '(unknown)'), providers.map(p => p.total_calls), colors);
+      if (providers.length) {
+        const colors = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#8b949e'];
+        drawDoughnutChart(
+          'chart-providers',
+          providers.map(p => p.provider || '(unknown)'),
+          providers.map(p => p.total_calls),
+          colors,
+          (label) => addDrilldown({ provider: label === '(unknown)' ? '—' : label })
+        );
+
+      }
+    } else if (currentPage === 'breakdown') {
+      drawModelUsageTrendChart('model-usage-trend-chart', modelPeriodTrends);
+      renderDailyCombinedSvg('daily-combined-svg', dailyTokenChart, dailyModelChart);
     }
 
   } catch (err) {
+    if (requestId !== latestLoadRequestId) return;
     app.innerHTML = `<div class="error-box">Error loading data: ${err.message}<br><br>Make sure the dashboard server is running and telemetry DB exists.</div>`;
+    setLoadStatus('Load error', 'error');
+  } finally {
+    if (requestId === latestLoadRequestId) isLoading = false;
   }
 }
 
-// initial load + auto-refresh every 30s
-loadAll();
-setInterval(loadAll, 30000);
+// initial load + configurable auto-refresh
+initAutoRefresh();
+loadAll({showShell:true});
 </script>
 </body>
 </html>
