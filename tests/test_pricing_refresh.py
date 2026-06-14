@@ -156,3 +156,60 @@ def test_google_ai_source_fetch_returns_copies_not_references():
     assert second[first_model]["input"] != 99999.0, (
         "fetch() should return fresh copies, not references to class state"
     )
+
+
+# ---------------------------------------------------------------------------
+# Subscription-model meta + survival across refresh (issue #24, Option A)
+# ---------------------------------------------------------------------------
+
+
+def _StubSource(models: dict[str, dict]):
+    class _S(PricingSource):
+        name = "openrouter"  # impersonate OpenRouter so entries carry that source
+
+        def fetch(self) -> dict[str, dict]:
+            return {k: dict(v) for k, v in models.items()}
+
+    return _S
+
+
+def test_manual_subscription_entry_survives_refresh(tmp_path, monkeypatch):
+    """A hand-added `_subscription` entry under the provider-native (bare) id is
+    never returned by OpenRouter, so a refresh leaves it untouched and records
+    it in _meta.subscription_models — not in estimated_price_models."""
+    import yaml
+
+    import pricing_refresh
+
+    pfile = tmp_path / "pricing.yaml"
+    pfile.write_text(
+        yaml.safe_dump(
+            {
+                "models": {
+                    "qwen3.7-plus": {"input": 0.0, "output": 0.0, "_subscription": True},
+                },
+                "defaults": {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25},
+            }
+        )
+    )
+    monkeypatch.setattr(pricing_refresh, "PRICING_FILE", pfile)
+    # OpenRouter returns the PREFIXED form — a different key, so no collision.
+    monkeypatch.setattr(
+        pricing_refresh,
+        "_SOURCES",
+        [_StubSource({"qwen/qwen3.7-plus": {"input": 0.40, "output": 1.60}})],
+    )
+
+    changes, _overrides = pricing_refresh.refresh_pricing()
+
+    written = yaml.safe_load(pfile.read_text())
+    models = written["models"]
+    meta = written["_meta"]
+    # Manual subscription entry preserved verbatim
+    assert models["qwen3.7-plus"]["_subscription"] is True
+    assert models["qwen3.7-plus"]["input"] == 0.0
+    # OpenRouter prefixed form added alongside (different key — no clobber)
+    assert models["qwen/qwen3.7-plus"]["input"] == 0.40
+    # Meta classifies the subscription model correctly
+    assert "qwen3.7-plus" in meta["subscription_models"]
+    assert "qwen3.7-plus" not in meta.get("estimated_price_models", [])

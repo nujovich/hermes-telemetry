@@ -51,7 +51,7 @@ def test_schema_creates_tables():
 def test_schema_idempotent():
     """Calling _ensure_schema twice must not raise or duplicate version rows.
 
-    With schema v2 applied, there are exactly 2 rows (v1 and v2).
+    There is exactly one row per applied migration (v1..v_SCHEMA_VERSION).
     Repeated calls must not add more rows.
     """
     conn = db._get_conn()
@@ -59,7 +59,7 @@ def test_schema_idempotent():
     db._ensure_schema(conn)
     db._ensure_schema(conn)
     count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
-    # One row per schema version: v1 + v2 = 2
+    # One row per schema version
     assert count == _SCHEMA_VERSION
 
 
