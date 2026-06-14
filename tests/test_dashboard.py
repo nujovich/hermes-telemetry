@@ -337,6 +337,7 @@ def test_model_period_trends_week_groups_by_monday_start(serve_module):
     assert trends["rows"][0]["models"]["gpt-5.4"]["total_tokens"] == 300
 
 
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="zoneinfo requires Python 3.9+")
 def test_budget_window_bounds_follow_viewer_timezone_daily(serve_module):
     bounds = serve_module._budget_window_bounds_utc(
         "daily",
@@ -348,6 +349,7 @@ def test_budget_window_bounds_follow_viewer_timezone_daily(serve_module):
     assert bounds["window_end_utc"] == "2026-06-14T18:00:00+00:00"
 
 
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="zoneinfo requires Python 3.9+")
 def test_budget_window_bounds_follow_viewer_timezone_monthly(serve_module):
     bounds = serve_module._budget_window_bounds_utc(
         "monthly",
