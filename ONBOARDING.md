@@ -80,7 +80,7 @@ hermes-telemetry/
 │   └── serve.py         ← stdlib HTTP server, port 8765, --host flag.
 ├── tests/
 │   ├── conftest.py      ← Autouse HERMES_HOME isolation (see Test Isolation).
-│   └── test_*.py        ← 115 tests. All in-memory SQLite, no live gateway.
+│   └── test_*.py        ← 233 tests. All in-memory SQLite, no live gateway.
 ├── config.example.yaml  ← Annotated pricing.yaml example.
 └── budget.example.yaml  ← Annotated budget.yaml example.
 ```

@@ -14,7 +14,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 210 passing](https://img.shields.io/badge/Tests-210%20passing-green.svg)](https://img.shields.io/badge/Tests-210%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 233 passing](https://img.shields.io/badge/Tests-233%20passing-green.svg)](https://img.shields.io/badge/Tests-233%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -899,7 +899,7 @@ global    $0.1812 / $2.00    9%  [daily]
 |Pricing auto-refresh (OpenRouter API)|✅ 320 models fetched, manual overrides preserved   |
 |Estimated-price model handling       |✅ Negative prices → $0.00, budget degradation      |
 |Dashboard (HTML, auto-refresh 30s)   |✅ Charts, tables, budget bar, provider distribution|
-|210 tests pass                       |✅                                                  |
+|233 tests pass                       |✅                                                  |
 
 -----
 
@@ -926,20 +926,20 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (210 tests):**
+**Test suite (233 tests):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
-|`test_pricing.py`                |40   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, unknown model handling          |
+|`test_pricing.py`                |50   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds, subscription tag, unknown model handling|
 |`test_telemetry_cli.py`          |32   |CLI subcommands (stats/budget), all window variants, text + `--json` output, entry point smoke test                            |
-|`test_db.py`                     |29   |Schema v1→v3 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes)                                     |
+|`test_db.py`                     |29   |Schema v1→v4 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes)                                     |
 |`test_setup.py`                  |21   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |
+|`test_dashboard.py`              |21   |HTML dashboard rendering, auto-refresh, chart data endpoints, viewer-timezone budget windows                                   |
 |`test_budget.py`                 |20   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload|
 |`test_stats_providers.py`        |14   |Real vs estimated per provider, `/stats providers` output format, Nous warning dedup                                           |
-|`test_pricing_refresh.py`        |13   |Auto-refresh from OpenRouter API, change detection, manual override preservation                                               |
+|`test_pricing_refresh.py`        |14   |Auto-refresh from OpenRouter API, change detection, manual override preservation, subscription-model metadata                  |
 |`test_init.py`                   |10   |Cron session ID regex, tool success/failure parsing                                                                            |
 |`test_subagent_reconciliation.py`|9    |Parent + child hook sequence, token reconciliation, no double-counting                                                         |
-|`test_dashboard.py`              |9    |HTML dashboard rendering, auto-refresh, chart data endpoints                                                                   |
 |`test_stats_models.py`           |8    |Per-model breakdown, `/stats models` output format                                                                             |
 |`test_pricing_hot_reload.py`     |3    |In-process cache invalidation on pricing update                                                                                |
 |`test_isolation.py`              |2    |HERMES_HOME redirect, no writes to real `~/.hermes`                                                                            |
