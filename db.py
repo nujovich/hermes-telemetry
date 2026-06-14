@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -352,7 +352,16 @@ def record_llm_call(
             provider          = COALESCE(provider, ?)
         WHERE session_id = ?
         """,
-        (tokens_in, tokens_out, cache_read_tokens, cache_write_tokens, cost_usd, model, provider, session_id),
+        (
+            tokens_in,
+            tokens_out,
+            cache_read_tokens,
+            cache_write_tokens,
+            cost_usd,
+            model,
+            provider,
+            session_id,
+        ),
     )
     if estimated:
         conn.execute(

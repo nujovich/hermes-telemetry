@@ -356,6 +356,12 @@ table before applying.
 | v1 | Base tables: `runs`, `llm_calls`, `tool_calls`, `schema_version` |
 | v2 | `llm_calls`: `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `estimated`. `runs`: `parent_session_id`, `estimated_llm_calls` |
 | v3 | `runs.sender_id`. New table: `budget_alerts` (anti-spam ledger) |
+| v4 | `runs`: `cache_read_tokens`, `cache_write_tokens` (per-session/cron cache breakdown) |
+
+`_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
+with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
+`schema_version` rows equals `_SCHEMA_VERSION`, so adding a migration without
+bumping the constant (or vice versa) fails CI.
 
 ### `_ensure_run_row` — lazy insert (added v0.3.1)
 
@@ -388,7 +394,7 @@ already uses `INSERT OR IGNORE`).
 
 ### Lookup priority chain
 
-`estimate_cost(usage, model)` resolves a price by trying these in order:
+`estimate_cost(usage, model, provider="")` resolves a price by trying these in order:
 
 1. **Custom YAML** (`~/.hermes/telemetry/pricing.yaml`, `models:` section) — exact match, case-insensitive
 2. **Built-in table** (`_DEFAULT_PRICING`) — exact match
@@ -396,9 +402,65 @@ already uses `INSERT OR IGNORE`).
 4. **Google symmetric form** — if the above misses, tries `gemini-X` ↔ `google/gemini-X`
 5. **Unknown** → returns `$0.00`, logs a one-time WARNING
 
+Every candidate is first filtered by the **provider-aware guard** (below), so a
+source-ineligible entry is skipped and the chain falls through to the next one.
+
 **Why longest-prefix-wins:** `gpt-4o-mini` must not be matched by `gpt-4o` or
 `gpt-4`. `o1-mini` must not be matched by `o1`. The sorted-by-length approach
 (candidates sorted by `-len(prefix)`) ensures specific prefixes take precedence.
+
+### Provider-aware lookup guard (added v0.4.1, issue #24)
+
+**Problem:** `pricing.yaml` is auto-populated from the OpenRouter catalog —
+every fetched entry carries `_source: openrouter`. But the same model name can
+be served by a *different* provider at a *different* price. Two real cases:
+
+- **Nous Portal** serves `qwen3.7-plus` (bare id) on a flat subscription ($0),
+  while OpenRouter lists `qwen/qwen3.7-plus` (prefixed) at a real per-token rate.
+- **NVIDIA NIM** serves `nvidia/nemotron-3-super-120b-a12b` at $0.10/$0.50 while
+  OpenRouter lists the **same exact id** at $0.09/$0.45 (a true key collision).
+
+A provider-blind, model-name-only lookup silently costs a Nous/NIM call with the
+OpenRouter rate — a plausible-but-wrong number. `_source` was decorative until
+this guard made it load-bearing.
+
+**Rule** (`_source_eligible(source, provider)`):
+
+| Entry source | Eligible for which calls |
+|--------------|--------------------------|
+| `_source: openrouter` | only `provider==""` (backward-compat/unknown) or a provider containing `"openrouter"` |
+| no `_source` (`_DEFAULT_PRICING`, `_PREFIX_PRICING`, hand-added overrides) | **always** (provider-neutral) |
+| other named source (e.g. `google-ai`) | **always** (direct-provider rate, reasonable for any caller of that id) |
+
+`provider` is the verbatim string from `post_api_request` (e.g. `"nous"`,
+`"openrouter"`; NIM **canonicalizes to `"nvidia"`** — aliases `nim`/`nvidia-nim`/
+`nemotron` are normalized by Hermes `normalize_provider()` before the hook fires,
+verified against `hermes_cli/providers.py`).
+
+**Why NIM seeds live in `_DEFAULT_PRICING` (code), not the YAML:** for the
+same-id collision, the OpenRouter entry in `models:` is excluded for a
+`provider="nvidia"` call, and the lookup falls through to the source-neutral
+seed in `_DEFAULT_PRICING`. Keeping seeds in code also makes them immune to an
+OpenRouter sync overwriting the shared key. The `:free` promo variants
+(`nvidia/...:free`) carry no seed — they resolve to `$0.00` via the
+unknown-model fallback (issue #12).
+
+### Pricing metadata tags (`_`-prefixed)
+
+Three `_`-prefixed keys live on pricing entries and are **stripped from the
+price dict** by `_load_custom_pricing` (captured into parallel structures
+`model_sources` / `subscription_models` so the price math never sees them):
+
+| Tag | Meaning | Effect |
+|-----|---------|--------|
+| `_source` | Which source wrote the entry (`openrouter`, `google-ai`, ...) | Drives the provider-aware guard |
+| `_estimated_price` | OpenRouter model with no fixed price (negative→$0) | Counted by `estimated_price_share`; degrades hard budget verdicts to soft under `warn_only` |
+| `_subscription` | A **declared** $0 (flat-sub / free-tier) rate, hand-added | Distinguishes a genuine $0 from a lookup miss; tracked in `_meta.subscription_models`; **excluded** from `estimated_price_models` |
+
+**Adding a subscription/flat-rate model:** enter it under the provider's
+**native (bare) id** with `input: 0.0`, `output: 0.0`, `_subscription: true`.
+The bare id is never returned by OpenRouter, so it never collides with an
+auto-fetched entry and survives every refresh untouched.
 
 ### Google-symmetric normalization (added v0.4.0)
 
@@ -695,6 +757,27 @@ with `pytest --basetemp=DIR`.
   `google/gemini-X` resolve to the same entry. Two-pass: try the literal ID
   first, then `_google_alt_form(model_lc)`. This is deliberately Google-specific
   — other provider prefixes carry distinct pricing semantics and must not be stripped.
+
+### v0.4.1 — Provider-aware pricing + NVIDIA NIM seeds
+
+- **Provider-aware lookup guard** (issue #24): `estimate_cost` gains an optional
+  `provider` arg threaded through `_resolve_pricing` → `_lookup_base` →
+  `_lookup_form`. `_source_eligible` rejects an `_source: openrouter` entry for a
+  non-OpenRouter call so the OpenRouter rate never leaks onto a Nous/NIM call.
+  `provider=""` preserves the old provider-blind behaviour (backward compatible).
+  See [Provider-aware lookup guard](#provider-aware-lookup-guard-added-v041-issue-24).
+- **`_subscription` tag** (Option A for Nous flat-sub): declared $0, kept distinct
+  from a lookup miss and from `_estimated_price`. Tracked in
+  `_meta.subscription_models`.
+- **NVIDIA NIM seeds** (issue #12 Phase 1): five Nemotron models added to
+  `_DEFAULT_PRICING` (source-neutral, immune to OpenRouter sync). The same-id
+  OpenRouter collision is resolved by the guard falling through to the seed.
+  Phase 2 (`NVIDIANIMPricingSource` API auto-sync) was deliberately dropped — NIM
+  bills against account tier, not a uniform public per-token list, so the seed
+  table is the durable answer.
+- **`_SCHEMA_VERSION` bump 3→4**: the `_migrate_v4` migration (cache tokens on
+  `runs`) shipped without bumping the constant, leaving `test_schema_idempotent`
+  red. Fixed here as part of documenting schema v4.
 
 ---
 

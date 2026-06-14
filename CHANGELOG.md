@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Provider-aware pricing lookup guard (issue #24). A pricing entry tagged
+  `_source: openrouter` in `pricing.yaml` is now only applied to calls the
+  OpenRouter provider actually served (or calls with no provider, for
+  backward compatibility). This stops an OpenRouter rate from silently
+  costing a call another provider served — e.g. the OpenRouter Qwen price
+  leaking onto a Nous Portal call. Source-less entries (`_DEFAULT_PRICING`,
+  the prefix table, hand-added overrides) stay provider-neutral.
+- NVIDIA NIM seed prices in `_DEFAULT_PRICING` (issue #12, Phase 1): five
+  Nemotron models (`nemotron-3-super-120b-a12b`, `nemotron-super-49b`,
+  `nemotron-70b-instruct`, `nemotron-nano-12b-vl`, `nemotron-nano-9b`).
+  Seeds are source-neutral and live in code, so they survive an OpenRouter
+  refresh and win over a same-id OpenRouter entry for `provider=nvidia`
+  calls. `:free` promo variants resolve to `$0` via the unknown-model
+  fallback and need no entry.
+- `_subscription: true` pricing tag — flags a flat-rate / subscription model
+  so it resolves to `$0` **without** the unknown-model warning, distinct
+  from a missing price. Lets users price e.g. a Nous-served model at `$0`
+  even when an OpenRouter entry for the same id exists.
+- `provider` parameter on `pricing.estimate_cost()` (threaded through
+  `_resolve_pricing` / `_lookup_base` / `_lookup_form`), passed from the
+  `post_api_request` hook. Defaults to `""`, preserving the previous
+  provider-blind behaviour for existing callers.
+
+### Changed
+- `pricing_refresh.py` now emits `subscription_models` in the YAML `_meta`
+  block and excludes those models from `estimated_price_models`.
+- Unknown-model pricing warnings are now de-duplicated per `(model,
+  provider)` pair instead of per model, so the same id can warn separately
+  under each provider that lacks a price for it.
+
+### Fixed
+- `_SCHEMA_VERSION` was stuck at `3` despite the `_migrate_v4` migration
+  (adds `cache_read_tokens` / `cache_write_tokens` to `runs`), so the
+  recorded schema version never matched the applied migrations. Bumped to
+  `4`.
+- Dashboard failed to import on Python 3.8/3.9 due to PEP 604 `str | None`
+  union syntax — added `from __future__ import annotations` to
+  `dashboard/serve.py`.
+
 ## [0.4.0] - 2026-06-09
 
 ### Added

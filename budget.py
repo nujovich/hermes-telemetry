@@ -43,14 +43,15 @@ logger = logging.getLogger(__name__)
 _budget_observer = None
 _budget_watcher_started = False
 
+
 def start_budget_watcher() -> None:
     """Start a background file watcher on budget.yaml to auto-reload config on changes."""
     global _budget_observer, _budget_watcher_started
     if _budget_watcher_started:
         return
     try:
+        from watchdog.events import FileModifiedEvent, FileSystemEventHandler
         from watchdog.observers import Observer
-        from watchdog.events import FileSystemEventHandler, FileModifiedEvent
     except Exception as exc:
         logger.debug("budget watcher unavailable (watchdog not installed): %s", exc)
         return
@@ -80,6 +81,7 @@ def start_budget_watcher() -> None:
     _budget_observer.start()
     _budget_watcher_started = True
     logger.info("Budget file watcher started on %s", path)
+
 
 def stop_budget_watcher() -> None:
     """Stop the budget file watcher (for cleanup/tests)."""
@@ -490,6 +492,7 @@ def _cron_block() -> str:
 def _set_budget(scope: str, window: str, usd: float) -> str:
     """Persist a limit to budget.yaml and hot-reload."""
     import os
+
     import yaml
 
     if scope not in ("global", "cron_job", "sender"):
