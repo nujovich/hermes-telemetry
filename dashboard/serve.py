@@ -1405,7 +1405,9 @@ def api_daily_model_chart(window_hours=24, limit_days=90, top_n=5):
     }
 
 
-def api_model_period_trends(window_hours=24, granularity="day", metric="tokens", top_n=6, limit_periods=24):
+def api_model_period_trends(
+    window_hours=24, granularity="day", metric="tokens", top_n=6, limit_periods=24
+):
     granularity = _normalize_granularity(granularity)
     metric = (metric or "tokens").strip().lower()
     if metric not in {"tokens", "cost", "requests", "share"}:
@@ -1469,14 +1471,18 @@ def api_model_period_trends(window_hours=24, granularity="day", metric="tokens",
             period_map[period] = {
                 "period": period,
                 "period_start": row["period_start"],
-                "models": {m: {"api_calls": 0, "total_tokens": 0, "cost_usd": 0.0} for m in model_names},
+                "models": {
+                    m: {"api_calls": 0, "total_tokens": 0, "cost_usd": 0.0} for m in model_names
+                },
                 "other": {"api_calls": 0, "total_tokens": 0, "cost_usd": 0.0},
                 "totals": {"api_calls": 0, "total_tokens": 0, "cost_usd": 0.0},
             }
         bucket = period_map[period]["models"].get(row["model"]) or period_map[period]["other"]
         bucket["api_calls"] += int(row.get("api_calls") or 0)
         bucket["total_tokens"] += int(row.get("total_tokens") or 0)
-        bucket["cost_usd"] = round(float(bucket["cost_usd"] or 0) + float(row.get("cost_usd") or 0), 6)
+        bucket["cost_usd"] = round(
+            float(bucket["cost_usd"] or 0) + float(row.get("cost_usd") or 0), 6
+        )
         period_map[period]["totals"]["api_calls"] += int(row.get("api_calls") or 0)
         period_map[period]["totals"]["total_tokens"] += int(row.get("total_tokens") or 0)
         period_map[period]["totals"]["cost_usd"] = round(
@@ -1519,7 +1525,12 @@ def api_model_share_comparison(window_hours=24, granularity="day", limit=12):
         """
     )
     if not rows:
-        return {"granularity": granularity, "current_period": None, "previous_period": None, "rows": []}
+        return {
+            "granularity": granularity,
+            "current_period": None,
+            "previous_period": None,
+            "rows": [],
+        }
 
     periods = []
     period_models = {}
@@ -1527,7 +1538,10 @@ def api_model_share_comparison(window_hours=24, granularity="day", limit=12):
         period = row["period"]
         if period not in period_models:
             periods.append(period)
-            period_models[period] = {"models": {}, "totals": {"total_tokens": 0, "cost_usd": 0.0, "api_calls": 0}}
+            period_models[period] = {
+                "models": {},
+                "totals": {"total_tokens": 0, "cost_usd": 0.0, "api_calls": 0},
+            }
         period_models[period]["models"][row["model"]] = {
             "total_tokens": int(row.get("total_tokens") or 0),
             "cost_usd": float(row.get("cost_usd") or 0),
@@ -1535,7 +1549,8 @@ def api_model_share_comparison(window_hours=24, granularity="day", limit=12):
         }
         period_models[period]["totals"]["total_tokens"] += int(row.get("total_tokens") or 0)
         period_models[period]["totals"]["cost_usd"] = round(
-            float(period_models[period]["totals"]["cost_usd"] or 0) + float(row.get("cost_usd") or 0),
+            float(period_models[period]["totals"]["cost_usd"] or 0)
+            + float(row.get("cost_usd") or 0),
             6,
         )
         period_models[period]["totals"]["api_calls"] += int(row.get("api_calls") or 0)
@@ -1560,10 +1575,26 @@ def api_model_share_comparison(window_hours=24, granularity="day", limit=12):
     for model in all_models:
         cur = current["models"].get(model, {"total_tokens": 0, "cost_usd": 0.0, "api_calls": 0})
         prev = previous["models"].get(model, {"total_tokens": 0, "cost_usd": 0.0, "api_calls": 0})
-        current_token_share = round((cur["total_tokens"] / current_total_tokens) * 100, 2) if current["totals"]["total_tokens"] else 0.0
-        previous_token_share = round((prev["total_tokens"] / prev_total_tokens) * 100, 2) if previous["totals"]["total_tokens"] else 0.0
-        current_cost_share = round((float(cur["cost_usd"] or 0.0) / current_total_cost) * 100, 2) if current["totals"]["cost_usd"] else 0.0
-        previous_cost_share = round((float(prev["cost_usd"] or 0.0) / prev_total_cost) * 100, 2) if previous["totals"]["cost_usd"] else 0.0
+        current_token_share = (
+            round((cur["total_tokens"] / current_total_tokens) * 100, 2)
+            if current["totals"]["total_tokens"]
+            else 0.0
+        )
+        previous_token_share = (
+            round((prev["total_tokens"] / prev_total_tokens) * 100, 2)
+            if previous["totals"]["total_tokens"]
+            else 0.0
+        )
+        current_cost_share = (
+            round((float(cur["cost_usd"] or 0.0) / current_total_cost) * 100, 2)
+            if current["totals"]["cost_usd"]
+            else 0.0
+        )
+        previous_cost_share = (
+            round((float(prev["cost_usd"] or 0.0) / prev_total_cost) * 100, 2)
+            if previous["totals"]["cost_usd"]
+            else 0.0
+        )
         out_rows.append(
             {
                 "model": model,
@@ -1582,7 +1613,10 @@ def api_model_share_comparison(window_hours=24, granularity="day", limit=12):
                 "api_calls_delta": cur["api_calls"] - prev["api_calls"],
             }
         )
-    out_rows.sort(key=lambda r: (r["current_tokens"], r["current_cost_usd"], r["current_api_calls"]), reverse=True)
+    out_rows.sort(
+        key=lambda r: (r["current_tokens"], r["current_cost_usd"], r["current_api_calls"]),
+        reverse=True,
+    )
     return {
         "granularity": granularity,
         "current_period": current_period,
@@ -1762,7 +1796,9 @@ def _dashboard_viewer_tz(tz_name: str | None):
     return local_tz, label
 
 
-def _budget_window_bounds_utc(window: str, tz_name: str | None = None, now_utc: datetime | None = None):
+def _budget_window_bounds_utc(
+    window: str, tz_name: str | None = None, now_utc: datetime | None = None
+):
     tzinfo, tz_label = _dashboard_viewer_tz(tz_name)
     now_utc = now_utc or datetime.now(timezone.utc)
     now_local = now_utc.astimezone(tzinfo)
