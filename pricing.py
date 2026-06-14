@@ -434,6 +434,17 @@ def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
     return cost
 
 
+def is_explicitly_priced(model: str, provider: str = "") -> bool:
+    """Return True if *model* has an explicit pricing entry (even if $0).
+
+    Distinguishes genuinely-free models (explicit zero price or _subscription)
+    from unknown models (no entry at all, which also produce cost==0 via the
+    fallback). Only explicitly-priced-at-$0 models are recorded in
+    known_free_models and can trigger the free→paid transition alert.
+    """
+    return _resolve_pricing(model, provider) is not None
+
+
 def reload_custom_pricing() -> None:
     """Force-reload the user pricing file (useful in tests)."""
     global _custom_pricing

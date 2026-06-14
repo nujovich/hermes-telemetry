@@ -624,3 +624,38 @@ def test_orphan_session_appears_in_stats_summary():
     assert summary["total_runs"] >= 1
     assert summary["tokens_in"] >= 1000
     assert summary["cost_usd"] >= 0.005
+
+
+# ---------------------------------------------------------------------------
+# known_free_models — free→paid tracking (issue #16)
+# ---------------------------------------------------------------------------
+
+
+def test_record_and_detect_known_free_model():
+    assert not db.is_known_free_model("owl-alpha", "nous")
+    db.record_free_model("owl-alpha", "nous")
+    assert db.is_known_free_model("owl-alpha", "nous")
+
+
+def test_record_free_model_is_idempotent():
+    db.record_free_model("owl-alpha", "nous")
+    db.record_free_model("owl-alpha", "nous")  # should not raise
+    assert db.is_known_free_model("owl-alpha", "nous")
+
+
+def test_known_free_model_is_provider_scoped():
+    db.record_free_model("owl-alpha", "nous")
+    # Same model under a different provider is NOT known-free
+    assert not db.is_known_free_model("owl-alpha", "openrouter")
+    assert not db.is_known_free_model("owl-alpha", "")
+
+
+def test_unknown_model_is_not_known_free():
+    assert not db.is_known_free_model("completely-unknown-model-xyz", "nvidia")
+
+
+def test_schema_v5_recorded():
+    from db import _get_conn
+
+    versions = {row[0] for row in _get_conn().execute("SELECT version FROM schema_version")}
+    assert 5 in versions

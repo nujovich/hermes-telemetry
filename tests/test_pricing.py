@@ -809,3 +809,34 @@ def test_nim_seed_survives_simulated_refresh():
         {"input_tokens": 1_000_000}, "nvidia/nemotron-nano-9b", provider="nvidia"
     )
     assert abs(cost - 0.04) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# is_explicitly_priced — distinguishes genuine-free from unknown (issue #16)
+# ---------------------------------------------------------------------------
+
+
+def test_is_explicitly_priced_known_model():
+    assert pricing.is_explicitly_priced("claude-sonnet-4-6") is True
+    assert pricing.is_explicitly_priced("gpt-4o") is True
+    assert pricing.is_explicitly_priced("nvidia/nemotron-70b-instruct", "nvidia") is True
+
+
+def test_is_explicitly_priced_zero_price_model():
+    assert pricing.is_explicitly_priced("owl-alpha") is True  # input=0, output=0
+
+
+def test_is_explicitly_priced_unknown_model():
+    assert pricing.is_explicitly_priced("completely-unknown-xyz-model") is False
+    assert pricing.is_explicitly_priced("nvidia/nemotron-3-ultra:free") is False
+
+
+def test_is_explicitly_priced_subscription_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    (tmp_path / "telemetry" / "pricing.yaml").write_text(
+        "models:\n  hermes-4-qwen-72b:\n    input: 0.0\n    output: 0.0\n    _subscription: true\n"
+    )
+    pricing.reload_custom_pricing()
+    assert pricing.is_explicitly_priced("hermes-4-qwen-72b") is True
+    pricing.reload_custom_pricing()

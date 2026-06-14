@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -141,6 +141,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v2(conn)
     _migrate_v3(conn)
     _migrate_v4(conn)
+    _migrate_v5(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -228,6 +229,27 @@ def _migrate_v4(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (4, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v5(conn: sqlite3.Connection) -> None:
+    """Add v5 schema: known_free_models table for free→paid transition alerts."""
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 5")
+    if cur.fetchone() is not None:
+        return
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS known_free_models (
+            model         TEXT NOT NULL,
+            provider      TEXT NOT NULL DEFAULT '',
+            first_seen_at TEXT NOT NULL,
+            PRIMARY KEY (model, provider)
+        )
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (5, ?)",
         (_utcnow(),),
     )
 
@@ -736,3 +758,30 @@ def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
     total = row["total"] or 0
     est = row["est_calls"] or 0
     return est / total if total else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Free→paid model tracking (issue #16)
+# ---------------------------------------------------------------------------
+def record_free_model(model: str, provider: str = "") -> None:
+    """Persist a (model, provider) pair as known-free.
+
+    Called whenever a call resolves to cost==0 with explicit pricing (not an
+    unknown model). Subsequent calls to the same pair that cost >0 trigger the
+    free→paid alert. INSERT OR IGNORE so we never overwrite first_seen_at.
+    """
+    conn = _get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO known_free_models(model, provider, first_seen_at) VALUES (?, ?, ?)",
+        (model, provider, _utcnow()),
+    )
+
+
+def is_known_free_model(model: str, provider: str = "") -> bool:
+    """Return True if this (model, provider) pair was previously seen at $0."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT 1 FROM known_free_models WHERE model = ? AND provider = ?",
+        (model, provider),
+    ).fetchone()
+    return row is not None
