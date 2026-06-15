@@ -417,3 +417,44 @@ def test_budget_detail_restores_default_thresholds(serve_module, tmp_path):
     assert detail["soft_pct"] == 0.8
     assert detail["hard_pct"] == 1.0
     assert detail["on_estimated_mode"] == "warn_only"
+
+
+def test_daily_token_chart_includes_requests_cost_and_savings(serve_module, monkeypatch):
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-10T10:00:00+00:00")
+
+    db.start_run("trend-a", model="gpt-5.4", platform="cli")
+    db.record_tool_call("trend-a", "2026-06-10T10:05:00+00:00", "read_file", True, 20)
+    db.record_tool_call("trend-a", "2026-06-10T10:06:00+00:00", "terminal", True, 30)
+    db.record_llm_call(
+        "trend-a",
+        "2026-06-10T10:00:00+00:00",
+        "gpt-5.4",
+        "openai-codex",
+        100,
+        50,
+        0.03,
+        120,
+        cache_read_tokens=150,
+        cache_write_tokens=20,
+        reasoning_tokens=10,
+    )
+    db.end_run("trend-a", "ok", ended_at="2026-06-10T10:10:00+00:00")
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-10T11:00:00+00:00")
+    db.start_run("trend-cron", model="gpt-5.4", platform="cron")
+    db.record_tool_call("trend-cron", "2026-06-10T11:05:00+00:00", "browser_navigate", True, 25)
+    db.end_run("trend-cron", "ok", ended_at="2026-06-10T11:10:00+00:00")
+
+    rows = serve_module.api_daily_token_chart(window_hours=0, limit_days=10)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["day"] == "2026-06-10"
+    assert row["api_calls"] == 1
+    assert row["request_runs"] == 2
+    assert row["tool_calls"] == 3
+    assert row["cron_job_runs"] == 1
+    assert row["message_runs"] == 1
+    assert row["cost_usd"] == pytest.approx(0.03, abs=1e-6)
+    assert row["total_tokens"] == 330
+    assert row["estimated_savings_usd"] == pytest.approx(0.025, abs=1e-6)
+    assert row["savings_pct"] == pytest.approx(45.45, abs=0.01)

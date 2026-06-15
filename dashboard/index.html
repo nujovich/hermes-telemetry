@@ -148,6 +148,29 @@
   .usage-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
   .usage-toolbar-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .usage-toolbar-label { color: #8b949e; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+  .metric-trend-card { padding: 0; overflow: hidden; }
+  .metric-trend-header { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); border-bottom: 1px solid #2b3642; background: linear-gradient(180deg, #1a2430 0%, #141c25 100%); box-shadow: inset 0 -1px 0 rgba(255,255,255,0.04); }
+  .metric-trend-stat { min-width: 0; padding: 13px 10px 11px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #c9d1d9; text-align: left; cursor: pointer; transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease; }
+  .metric-trend-stat + .metric-trend-stat { border-left: 1px solid rgba(255,255,255,0.06); }
+  .metric-trend-stat:hover { background: rgba(255,255,255,0.025); }
+  .metric-trend-stat.active { border-bottom-color: #22d3ee; background: linear-gradient(180deg, rgba(34,211,238,0.11) 0%, rgba(34,211,238,0.03) 100%); box-shadow: inset 0 -1px 0 rgba(34,211,238,0.22); }
+  .metric-trend-label-row { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+  .metric-trend-label { color: #a9b7c7; font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .metric-trend-info { color: #7b8794; font-size: 10px; }
+  .metric-trend-value-row { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0; }
+  .metric-trend-value { color: #f8fafc; font-size: 16px; font-weight: 800; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .metric-trend-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 7px; background: rgba(34,211,238,0.16); color: #67e8f9; font-size: 10px; font-weight: 700; }
+  .metric-trend-body { padding: 10px 12px 16px; }
+  .metric-trend-svg-wrap { position: relative; height: 350px; overflow: visible; }
+  .metric-trend-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  .metric-trend-tooltip { position: absolute; z-index: 3; min-width: 128px; transform: translate(-50%, -110%); background: rgba(0,0,0,0.86); border: 1px solid rgba(88,166,255,0.45); border-radius: 5px; color: #f8fafc; padding: 8px 10px; pointer-events: none; box-shadow: 0 8px 20px rgba(0,0,0,0.32); }
+  .metric-trend-tooltip-title { font-size: 13px; font-weight: 700; margin-bottom: 5px; }
+  .metric-trend-tooltip-row { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; }
+  .metric-trend-tooltip-box { width: 12px; height: 12px; background: #58a6ff; border: 1px solid #d9fbff; display: inline-block; }
+  .metric-trend-footer { display: none; }
+  .metric-trend-date { color: #d6e3f0; font-weight: 600; }
+  .metric-trend-series { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; color: #d6e3f0; font-weight: 600; min-width: 0; }
+  .metric-trend-dot { width: 8px; height: 8px; border-radius: 999px; background: #22d3ee; }
   .delta-pos { color: #3fb950; }
   .delta-neg { color: #f85149; }
   .data-chip { max-width: 240px; }
@@ -294,6 +317,7 @@ let lastWindowHours = null;
 let currentPage = 'home';
 let currentUsageGranularity = 'day';
 let currentUsageMetric = 'tokens';
+let currentMetricTrendMetric = 'api_calls';
 let currentDrilldown = {};
 let autoRefreshTimer = null;
 let isLoading = false;
@@ -397,6 +421,11 @@ function setUsageGranularity(g) {
 function setUsageMetric(m) {
   if (!['tokens', 'cost', 'requests', 'share'].includes(m) || m === currentUsageMetric) return;
   currentUsageMetric = m;
+  loadAll({showShell:false});
+}
+function setMetricTrendMetric(metric) {
+  if (!['messages', 'api_calls', 'request_runs', 'tool_calls', 'cron_job_runs', 'cost', 'tokens', 'savings'].includes(metric) || metric === currentMetricTrendMetric) return;
+  currentMetricTrendMetric = metric;
   loadAll({showShell:false});
 }
 function badge(v, map) {
@@ -567,6 +596,82 @@ function renderTableCard(id, title, tableHtml) {
 
 function renderSegmentedButtons(options, currentValue, handlerName) {
   return `<div class="segmented-control">${options.map(opt => `<button class="segmented-btn ${opt.value === currentValue ? 'active' : ''}" onclick="${handlerName}('${opt.value}')">${escHtml(opt.label)}</button>`).join('')}</div>`;
+}
+
+function trendMetricMeta(metric) {
+  return {
+    messages: { label: 'Messages', field: 'message_runs', info: '', footer: 'Messages', color: '#22d3ee' },
+    api_calls: { label: 'API calls', field: 'api_calls', info: '', footer: 'API calls', color: '#22d3ee' },
+    request_runs: { label: 'Requests', field: 'request_runs', info: '', footer: 'Requests', color: '#22d3ee' },
+    tool_calls: { label: 'Tool calls', field: 'tool_calls', info: '', footer: 'Tool calls', color: '#22d3ee' },
+    cron_job_runs: { label: 'Cron job runs', field: 'cron_job_runs', info: '', footer: 'Cron job runs', color: '#22d3ee' },
+    cost: { label: 'Cost', field: 'cost_usd', info: '', footer: 'Cost', color: '#22d3ee' },
+    tokens: { label: 'Token usage', field: 'total_tokens', info: 'ⓘ', footer: 'Token usage', color: '#22d3ee' },
+    savings: { label: 'Savings', field: 'estimated_savings_usd', info: 'ⓘ', footer: 'Savings', color: '#22d3ee' },
+  }[metric] || { label: 'Messages', field: 'message_runs', info: '', footer: 'Messages', color: '#22d3ee' };
+}
+
+function fmtCompactMetricValue(metric, value) {
+  const n = Number(value || 0);
+  if (metric === 'cost' || metric === 'savings') {
+    return n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${n.toFixed(2)}`;
+  }
+  if (metric === 'tokens') {
+    if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+    return nf(n);
+  }
+  return nf(n);
+}
+
+function fmtTrendPointValue(metric, value) {
+  const n = Number(value || 0);
+  if (metric === 'cost' || metric === 'savings') return `$${n.toFixed(2)}`;
+  if (metric === 'tokens') return `${nf(n)} tokens`;
+  return nf(n);
+}
+
+function fmtShortDayLabel(day) {
+  const d = parseDashboardTs(`${day}T00:00:00Z`);
+  return d ? new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(d) : day;
+}
+
+function buildMetricTrendSummary(rows) {
+  const summary = { messages: 0, api_calls: 0, request_runs: 0, tool_calls: 0, cron_job_runs: 0, cost_usd: 0, total_tokens: 0, estimated_savings_usd: 0, savings_pct: 0 };
+  for (const row of (rows || [])) {
+    summary.messages += Number(row.message_runs || 0);
+    summary.api_calls += Number(row.api_calls || 0);
+    summary.request_runs += Number(row.request_runs || 0);
+    summary.tool_calls += Number(row.tool_calls || 0);
+    summary.cron_job_runs += Number(row.cron_job_runs || 0);
+    summary.cost_usd += Number(row.cost_usd || 0);
+    summary.total_tokens += Number(row.total_tokens || 0);
+    summary.estimated_savings_usd += Number(row.estimated_savings_usd || 0);
+  }
+  const spendBase = summary.cost_usd + summary.estimated_savings_usd;
+  summary.savings_pct = spendBase > 0 ? (summary.estimated_savings_usd / spendBase) * 100 : 0;
+  return summary;
+}
+
+function renderMetricTrendCard(rows) {
+  const trendRows = rows || [];
+  const summary = buildMetricTrendSummary(trendRows);
+  const metrics = ['messages', 'api_calls', 'request_runs', 'tool_calls', 'cron_job_runs', 'cost', 'tokens', 'savings'];
+  const stats = metrics.map(metric => {
+    const meta = trendMetricMeta(metric);
+    const raw = Number(summary[meta.field] ?? summary[metric] ?? 0);
+    const pill = metric === 'savings'
+      ? `<span class="metric-trend-pill">${Math.round(summary.savings_pct || 0)}%</span>`
+      : '';
+    return `<button class="metric-trend-stat ${metric === currentMetricTrendMetric ? 'active' : ''}" onclick="setMetricTrendMetric('${metric}')"><div class="metric-trend-label-row"><span class="metric-trend-label">${meta.label}</span>${meta.info ? `<span class="metric-trend-info">${meta.info}</span>` : ''}</div><div class="metric-trend-value-row"><span class="metric-trend-value">${fmtCompactMetricValue(metric, raw)}</span>${pill}</div></button>`;
+  }).join('');
+  return `<div class="chart-card full-width-chart metric-trend-card">
+    <div class="metric-trend-header">${stats}</div>
+    <div class="metric-trend-body">
+      ${trendRows.length ? `<div id="home-metric-trend-chart" class="metric-trend-svg-wrap"></div>` : '<div class="text-muted" style="padding:24px 0">No daily trend data available yet.</div>'}
+    </div>
+  </div>`;
 }
 
 function renderModelUsageTrendCard(trendData, shareData) {
@@ -1161,6 +1266,60 @@ function drawLineChart(canvasId, labels, datasets, yLabel) {
   });
 }
 
+function drawMetricTrendChart(canvasId, rows) {
+  destroyChart(canvasId);
+  const wrap = document.getElementById(canvasId);
+  if (!wrap || !(rows || []).length) return;
+  const meta = trendMetricMeta(currentMetricTrendMetric);
+  const labels = rows.map(row => fmtShortDayLabel(row.day));
+  const fullLabels = rows.map(row => row.day || fmtShortDayLabel(row.day));
+  const values = rows.map(row => Number(row?.[meta.field] || 0));
+  const maxValue = Math.max(...values, 0);
+  const niceMax = maxValue <= 0 ? 1 : Math.ceil((maxValue * 1.12) / 1000) * 1000;
+  const ticks = [0, niceMax / 2, niceMax];
+  const width = Math.max(900, Math.round(wrap.clientWidth || 900));
+  const height = Math.max(320, Math.round(wrap.clientHeight || 350));
+  const pad = { top: 18, right: 18, bottom: 36, left: 58 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const xFor = (i) => pad.left + (values.length === 1 ? plotW / 2 : (i * plotW) / (values.length - 1));
+  const yFor = (v) => pad.top + plotH - ((Number(v || 0) / niceMax) * plotH);
+  const points = values.map((v, i) => ({ x: xFor(i), y: yFor(v), value: v, label: labels[i], fullLabel: fullLabels[i] }));
+  const linePath = points.map((p, i) => `${i ? 'L' : 'M'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+  const areaPath = `${linePath} L ${points[points.length - 1].x.toFixed(1)} ${(pad.top + plotH).toFixed(1)} L ${points[0].x.toFixed(1)} ${(pad.top + plotH).toFixed(1)} Z`;
+  const fmtAxis = (v) => currentMetricTrendMetric === 'cost' || currentMetricTrendMetric === 'savings'
+    ? `$${Number(v || 0).toFixed(2)}`
+    : (currentMetricTrendMetric === 'tokens' && v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M` : Number(v || 0).toLocaleString());
+  const grid = ticks.map(v => {
+    const y = yFor(v);
+    return `<line x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}" stroke="rgba(148,163,184,0.16)"/><text x="${pad.left - 10}" y="${y + 4}" text-anchor="end" fill="#e6edf3" font-size="12" font-weight="600">${escHtml(fmtAxis(v))}</text>`;
+  }).join('');
+  const xGrid = points.map(p => `<line x1="${p.x}" y1="${pad.top}" x2="${p.x}" y2="${pad.top + plotH}" stroke="rgba(148,163,184,0.09)"/><text x="${p.x}" y="${height - 8}" text-anchor="middle" fill="#e6edf3" font-size="12" font-weight="600">${escHtml(p.label)}</text>`).join('');
+  const circles = points.map((p, i) => `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#38bdf8" stroke="#f8fafc" stroke-width="1.5" data-idx="${i}"/>`).join('');
+  wrap.innerHTML = `<svg class="metric-trend-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escHtml(meta.footer)} trend">
+    <defs><linearGradient id="metricTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#38bdf8" stop-opacity="0.30"/><stop offset="100%" stop-color="#38bdf8" stop-opacity="0.05"/></linearGradient></defs>
+    <rect x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}" fill="transparent"/>
+    ${grid}${xGrid}
+    <path d="${areaPath}" fill="url(#metricTrendFill)"/>
+    <path d="${linePath}" fill="none" stroke="#22d3ee" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    ${circles}
+  </svg><div class="metric-trend-tooltip" id="metric-trend-tooltip"><div class="metric-trend-tooltip-title"></div><div class="metric-trend-tooltip-row"><span class="metric-trend-tooltip-box"></span><span></span></div></div>`;
+  const tooltip = wrap.querySelector('#metric-trend-tooltip');
+  const setHoverIndex = (idx) => {
+    const p = points[Math.max(0, Math.min(points.length - 1, idx))];
+    if (!p || !tooltip) return;
+    tooltip.querySelector('.metric-trend-tooltip-title').textContent = p.fullLabel;
+    tooltip.querySelector('.metric-trend-tooltip-row span:last-child').textContent = `${meta.footer}: ${fmtTrendPointValue(currentMetricTrendMetric, p.value)}`;
+    tooltip.style.left = `${(p.x / width) * 100}%`;
+    tooltip.style.top = `${(p.y / height) * 100}%`;
+  };
+  wrap.querySelectorAll('[data-idx]').forEach(el => {
+    el.addEventListener('mouseenter', () => setHoverIndex(Number(el.dataset.idx)));
+    el.addEventListener('mousemove', () => setHoverIndex(Number(el.dataset.idx)));
+  });
+  setHoverIndex(points.length - 1);
+}
+
 function drawBarChart(canvasId, labels, data, color, yLabel) {
   destroyChart(canvasId);
   const ctx = document.getElementById(canvasId).getContext('2d');
@@ -1462,6 +1621,8 @@ async function loadAll(options = {}) {
       html += renderStatCard('cost', fmtCost(r.cost_usd), 'Cost', 'yellow');
       html += '</div>';
 
+      html += renderMetricTrendCard(dailyTokenChart, hours);
+
       // --- budget ---
       html += renderBudget(budget);
 
@@ -1544,6 +1705,7 @@ async function loadAll(options = {}) {
     // --- render charts (after DOM is ready) ---
     if (currentPage === 'home') {
       const dc = summary.daily_cost || [];
+      drawMetricTrendChart('home-metric-trend-chart', dailyTokenChart);
       drawLineChart('chart-daily', dc.map(d => d.day), [{
         label: 'Cost ($)', data: dc.map(d => d.cost),
         borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.15)', fill: true, tension: 0.3, pointRadius: 4,

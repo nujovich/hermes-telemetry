@@ -1311,13 +1311,17 @@ def api_daily_tokens(window_hours=24, page=1, per_page=15):
 
 def api_daily_token_chart(window_hours=24, limit_days=90):
     since_clause_ts = _since_clause(window_hours, "ts")
+    since_clause_runs = _since_clause(window_hours, "started_at")
     limit_days = max(1, min(180, int(limit_days)))
-    rows = _rows(
+
+    llm_rows = _rows(
         f"""
         SELECT *
         FROM (
             SELECT
                 DATE(ts) AS day,
+                COUNT(*) AS api_calls,
+                ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
                 COALESCE(SUM(tokens_in), 0) AS tokens_in,
                 COALESCE(SUM(tokens_out), 0) AS tokens_out,
                 COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
@@ -1338,6 +1342,75 @@ def api_daily_token_chart(window_hours=24, limit_days=90):
         """,
         (limit_days,),
     )
+    run_rows = _rows(
+        f"""
+        SELECT *
+        FROM (
+            SELECT
+                DATE(started_at) AS day,
+                COUNT(*) AS request_runs,
+                COALESCE(SUM(tool_calls), 0) AS tool_calls,
+                SUM(CASE WHEN platform = 'cron' THEN 1 ELSE 0 END) AS cron_job_runs
+            FROM runs
+            WHERE {since_clause_runs}
+            GROUP BY DATE(started_at)
+            ORDER BY day DESC
+            LIMIT ?
+        ) d
+        ORDER BY day ASC
+        """,
+        (limit_days,),
+    )
+
+    merged = {}
+    for row in llm_rows:
+        day = row["day"]
+        merged[day] = dict(row)
+    for row in run_rows:
+        day = row["day"]
+        target = merged.setdefault(
+            day,
+            {
+                "day": day,
+                "api_calls": 0,
+                "cost_usd": 0.0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        target["request_runs"] = int(row.get("request_runs") or 0)
+        target["tool_calls"] = int(row.get("tool_calls") or 0)
+        target["cron_job_runs"] = int(row.get("cron_job_runs") or 0)
+
+    rows = [merged[day] for day in sorted(merged.keys())][-limit_days:]
+    for row in rows:
+        row.setdefault("request_runs", 0)
+        row.setdefault("tool_calls", 0)
+        row.setdefault("cron_job_runs", 0)
+        row["message_runs"] = max(
+            0, int(row.get("request_runs") or 0) - int(row.get("cron_job_runs") or 0)
+        )
+        billable_tokens = (
+            int(row.get("tokens_in") or 0)
+            + int(row.get("tokens_out") or 0)
+            + int(row.get("cache_write_tokens") or 0)
+            + int(row.get("reasoning_tokens") or 0)
+        )
+        cache_read_tokens = int(row.get("cache_read_tokens") or 0)
+        cost_usd = float(row.get("cost_usd") or 0.0)
+        effective_cost_per_token = (cost_usd / billable_tokens) if billable_tokens > 0 else 0.0
+        estimated_savings_usd = cache_read_tokens * effective_cost_per_token
+        row["estimated_savings_usd"] = round(estimated_savings_usd, 6)
+        total_effective_spend = cost_usd + estimated_savings_usd
+        row["savings_pct"] = (
+            round((estimated_savings_usd / total_effective_spend) * 100, 2)
+            if total_effective_spend > 0
+            else 0.0
+        )
     return rows
 
 
