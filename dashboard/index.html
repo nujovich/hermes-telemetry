@@ -7,7 +7,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #c9d1d9; min-height: 100vh; }
+  body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #c9d1d9; min-height: 100vh; }
   .header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   .header-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
   .header h1 { font-size: 18px; font-weight: 600; color: #e6edf3; }
@@ -17,7 +17,7 @@
   .page-tab:hover { background: #30363d; border-color: #58a6ff; }
   .page-tab.active { color: #ffffff; border-color: #58a6ff; background: linear-gradient(180deg, #1f6feb 0%, #1a4f9c 100%); box-shadow: 0 0 0 1px rgba(88,166,255,0.25), 0 6px 16px rgba(31,111,235,0.18); }
   .page-title { font-size: 18px; font-weight: 600; color: #e6edf3; margin-bottom: 18px; }
-  .header .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .header .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-left: auto; }
   .header select { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
   .header select:focus { outline: none; border-color: #58a6ff; }
   .header .refresh-btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
@@ -26,6 +26,20 @@
   .load-status { min-width: 92px; color: #8b949e; font-size: 12px; text-align: right; }
   .load-status.is-loading { color: #58a6ff; }
   .load-status.is-error { color: #f85149; }
+  .settings-menu { position: relative; }
+  .settings-btn { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; background: linear-gradient(180deg, #202833 0%, #161d26 100%); color: #e6edf3; border: 1px solid #344252; border-radius: 10px; cursor: pointer; font-size: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 18px rgba(0,0,0,0.22); transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease; }
+  .settings-btn:hover, .settings-btn.open { background: linear-gradient(180deg, #243141 0%, #19222d 100%); border-color: #67e8f9; box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 10px 22px rgba(0,0,0,0.28); transform: translateY(-1px); }
+  .settings-panel { position: absolute; top: calc(100% + 10px); right: 0; width: 236px; background: linear-gradient(180deg, rgba(23,30,39,0.98) 0%, rgba(16,22,30,0.985) 100%); border: 1px solid #334255; border-radius: 14px; padding: 10px; box-shadow: 0 20px 48px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04); display: none; z-index: 50; }
+  .settings-panel.open { display: block; }
+  .settings-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 2px 8px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .settings-panel-title { color: #f8fafc; font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+  .settings-panel-subtitle { color: #7f8b99; font-size: 10px; }
+  .settings-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; padding: 2px 0; }
+  .settings-group:last-child { margin-bottom: 0; }
+  .settings-group label { font-size: 10px; color: #8ea2b5; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 800; }
+  .settings-group select { width: 100%; background: linear-gradient(180deg, #111821 0%, #0d141c 100%); color: #e6edf3; border: 1px solid #2e3948; border-radius: 9px; padding: 8px 10px; font-size: 12px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.03); color-scheme: dark; appearance: none; -webkit-appearance: none; }
+  .settings-group select option { background: #0f141b; color: #e6edf3; }
+  .settings-group select:focus { outline: none; border-color: #67e8f9; box-shadow: 0 0 0 3px rgba(34,211,238,0.12); }
 
   .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
 
@@ -102,12 +116,20 @@
   .text-right { text-align: right; }
   .text-muted { color: #8b949e; }
 
+  @media (max-width: 1200px) {
+    .metric-trend-header { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
+
   @media (max-width: 768px) {
     .chart-row { grid-template-columns: 1fr; }
     .stat-grid { grid-template-columns: repeat(2, 1fr); }
+    .header { flex-direction: column; align-items: flex-start; }
+    .actions { width: 100%; justify-content: flex-start; margin-left: 0; }
+    .metric-trend-header { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .metric-trend-stat { padding: 12px 10px 10px; }
+    .metric-trend-value { font-size: 15px; }
   }
-
-  .loading { text-align: center; padding: 60px; color: #8b949e; }
+  .loading { text-align: center; color: #8b949e; }
   .loading-shell { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 22px; color: #8b949e; }
   .loading-title { color: #e6edf3; font-size: 16px; font-weight: 700; margin-bottom: 8px; }
   .loading-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 18px; }
@@ -150,27 +172,18 @@
   .usage-toolbar-label { color: #8b949e; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
   .metric-trend-card { padding: 0; overflow: hidden; }
   .metric-trend-header { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); border-bottom: 1px solid #2b3642; background: linear-gradient(180deg, #1a2430 0%, #141c25 100%); box-shadow: inset 0 -1px 0 rgba(255,255,255,0.04); }
-  .metric-trend-stat { min-width: 0; padding: 13px 10px 11px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #c9d1d9; text-align: left; cursor: pointer; transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease; }
+  .metric-trend-stat { min-width: 0; padding: 14px 12px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #c9d1d9; text-align: left; cursor: pointer; transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease; }
   .metric-trend-stat + .metric-trend-stat { border-left: 1px solid rgba(255,255,255,0.06); }
   .metric-trend-stat:hover { background: rgba(255,255,255,0.025); }
   .metric-trend-stat.active { border-bottom-color: #22d3ee; background: linear-gradient(180deg, rgba(34,211,238,0.11) 0%, rgba(34,211,238,0.03) 100%); box-shadow: inset 0 -1px 0 rgba(34,211,238,0.22); }
-  .metric-trend-label-row { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
-  .metric-trend-label { color: #a9b7c7; font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .metric-trend-label-row { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; min-width: 0; }
+  .metric-trend-label { color: #a9b7c7; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .metric-trend-info { color: #7b8794; font-size: 10px; }
   .metric-trend-value-row { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0; }
-  .metric-trend-value { color: #f8fafc; font-size: 16px; font-weight: 800; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .metric-trend-value { color: #f8fafc; font-size: 17px; font-weight: 800; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .metric-trend-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 7px; background: rgba(34,211,238,0.16); color: #67e8f9; font-size: 10px; font-weight: 700; }
-  .metric-trend-body { padding: 10px 12px 16px; }
-  .metric-trend-svg-wrap { position: relative; height: 350px; overflow: visible; }
-  .metric-trend-svg { width: 100%; height: 100%; display: block; overflow: visible; }
-  .metric-trend-tooltip { position: absolute; z-index: 3; min-width: 128px; transform: translate(-50%, -110%); background: rgba(0,0,0,0.86); border: 1px solid rgba(88,166,255,0.45); border-radius: 5px; color: #f8fafc; padding: 8px 10px; pointer-events: none; box-shadow: 0 8px 20px rgba(0,0,0,0.32); }
-  .metric-trend-tooltip-title { font-size: 13px; font-weight: 700; margin-bottom: 5px; }
-  .metric-trend-tooltip-row { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; }
-  .metric-trend-tooltip-box { width: 12px; height: 12px; background: #58a6ff; border: 1px solid #d9fbff; display: inline-block; }
-  .metric-trend-footer { display: none; }
-  .metric-trend-date { color: #d6e3f0; font-weight: 600; }
-  .metric-trend-series { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; color: #d6e3f0; font-weight: 600; min-width: 0; }
-  .metric-trend-dot { width: 8px; height: 8px; border-radius: 999px; background: #22d3ee; }
+  .metric-trend-body { padding: 14px 16px 18px; }
+  .metric-trend-canvas-wrap { position: relative; height: 380px; }
   .delta-pos { color: #3fb950; }
   .delta-neg { color: #f85149; }
   .data-chip { max-width: 240px; }
@@ -204,23 +217,59 @@
     </div>
   </div>
   <div class="actions">
-    <select id="windowSelect" onchange="loadAll({showShell:true})">
-      <option value="24">Last 24h</option>
-      <option value="168">Last 7 days</option>
-      <option value="720">Last 30 days</option>
-      <option value="2160">Last 90 days</option>
-      <option value="0" selected>All time</option>
-    </select>
-    <span class="header-label">Auto</span>
-    <select id="autoRefreshSelect" onchange="setAutoRefresh(this.value)">
-      <option value="0">Off</option>
-      <option value="5000">5s</option>
-      <option value="10000">10s</option>
-      <option value="20000">20s</option>
-      <option value="60000">1min</option>
-    </select>
-    <button class="refresh-btn" onclick="loadAll({showShell:false})">&#x21bb; Refresh</button>
     <span id="loadStatus" class="load-status">Idle</span>
+    <button class="refresh-btn" onclick="loadAll({showShell:false})">&#x21bb; Refresh</button>
+    <div class="settings-menu">
+      <button id="settingsToggle" class="settings-btn" onclick="toggleSettingsMenu(event)" aria-label="Dashboard settings" title="Dashboard settings">⚙</button>
+      <div id="settingsPanel" class="settings-panel">
+        <div class="settings-panel-head">
+          <div class="settings-panel-title">Dashboard view</div>
+          <div class="settings-panel-subtitle">Home controls</div>
+        </div>
+        <div class="settings-group">
+          <label for="windowSelect">View time</label>
+          <select id="windowSelect" onchange="closeSettingsMenu(); loadAll({showShell:true})">
+            <option value="0" selected>All time</option>
+            <option value="24">Today</option>
+            <option value="168">This week</option>
+            <option value="720">This month</option>
+            <option value="0.25">Last 15m</option>
+            <option value="0.5">Last 30m</option>
+            <option value="1">Last 1h</option>
+            <option value="3">Last 3h</option>
+            <option value="24">Last 24h</option>
+            <option value="48">Last 2 days</option>
+            <option value="2160">Last 90 days</option>
+            <option value="8760">Last 1 year</option>
+          </select>
+        </div>
+        <div class="settings-group">
+          <label for="dayBoundarySelect">Day boundary</label>
+          <select id="dayBoundarySelect" onchange="closeSettingsMenu(); setDayBoundaryMode(this.value)">
+            <option value="local">Local time</option>
+            <option value="utc">UTC</option>
+          </select>
+        </div>
+        <div class="settings-group">
+          <label for="homeTrendGranularitySelect">Chart view</label>
+          <select id="homeTrendGranularitySelect" onchange="closeSettingsMenu(); setHomeTrendGranularity(this.value)">
+            <option value="day">Daily</option>
+            <option value="week">Weekly</option>
+            <option value="month">Monthly</option>
+          </select>
+        </div>
+        <div class="settings-group">
+          <label for="autoRefreshSelect">Auto refresh</label>
+          <select id="autoRefreshSelect" onchange="closeSettingsMenu(); setAutoRefresh(this.value)">
+            <option value="0">Off</option>
+            <option value="5000">5s</option>
+            <option value="10000">10s</option>
+            <option value="20000">20s</option>
+            <option value="60000">1min</option>
+          </select>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -312,18 +361,26 @@
 <script>
 const API = '';
 let charts = {};
+if (window.Chart?.defaults) {
+  Chart.defaults.font.family = "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  Chart.defaults.color = '#c9d1d9';
+}
 let currentDailyTokensPage = 1;
 let lastWindowHours = null;
 let currentPage = 'home';
 let currentUsageGranularity = 'day';
+let currentHomeTrendGranularity = 'day';
 let currentUsageMetric = 'tokens';
-let currentMetricTrendMetric = 'api_calls';
+let currentMetricTrendMetric = 'tokens';
 let currentDrilldown = {};
 let autoRefreshTimer = null;
 let isLoading = false;
 let latestLoadRequestId = 0;
 let latestDrawerRequestId = 0;
 let latestRequestDrawerRequestId = 0;
+const viewerTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const DAY_BOUNDARY_STORAGE_KEY = 'telemetryDayBoundaryMode';
+let currentDayBoundaryMode = localStorage.getItem(DAY_BOUNDARY_STORAGE_KEY) || 'local';
 
 function $(sel) { return document.querySelector(sel); }
 function escHtml(s) {
@@ -344,10 +401,12 @@ function fmtMs(v) {
   if (ms >= 1000) return (ms/1000).toFixed(1) + 's';
   return Math.round(ms) + 'ms';
 }
-const viewerTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+function dashboardTimezoneParam() {
+  return currentDayBoundaryMode === 'utc' ? 'UTC' : viewerTimeZone;
+}
 function withViewerTimezone(url) {
   const u = new URL(url, window.location.origin);
-  u.searchParams.set('tz', viewerTimeZone);
+  u.searchParams.set('tz', dashboardTimezoneParam());
   return `${u.pathname}${u.search}`;
 }
 function parseDashboardTs(value) {
@@ -410,6 +469,33 @@ function initAutoRefresh() {
   const ms = allowed.has(saved) ? saved : '20000';
   setAutoRefresh(ms);
 }
+function setDayBoundaryMode(value) {
+  const mode = value === 'utc' ? 'utc' : 'local';
+  currentDayBoundaryMode = mode;
+  localStorage.setItem(DAY_BOUNDARY_STORAGE_KEY, mode);
+  const select = $('#dayBoundarySelect');
+  if (select) select.value = mode;
+  loadAll({showShell:false});
+}
+function initDayBoundaryMode() {
+  const mode = currentDayBoundaryMode === 'utc' ? 'utc' : 'local';
+  currentDayBoundaryMode = mode;
+  const select = $('#dayBoundarySelect');
+  if (select) select.value = mode;
+}
+function toggleSettingsMenu(event) {
+  event?.stopPropagation?.();
+  const panel = $('#settingsPanel');
+  const btn = $('#settingsToggle');
+  if (!panel || !btn) return;
+  const open = !panel.classList.contains('open');
+  panel.classList.toggle('open', open);
+  btn.classList.toggle('open', open);
+}
+function closeSettingsMenu() {
+  $('#settingsPanel')?.classList.remove('open');
+  $('#settingsToggle')?.classList.remove('open');
+}
 function granularityLabel(g) {
   return ({ day: 'Daily', week: 'Weekly', month: 'Monthly' }[g]) || 'Daily';
 }
@@ -428,6 +514,13 @@ function setMetricTrendMetric(metric) {
   currentMetricTrendMetric = metric;
   loadAll({showShell:false});
 }
+function setHomeTrendGranularity(g) {
+  if (!['day', 'week', 'month'].includes(g) || g === currentHomeTrendGranularity) return;
+  currentHomeTrendGranularity = g;
+  const select = $('#homeTrendGranularitySelect');
+  if (select) select.value = g;
+  loadAll({showShell:false});
+}
 function badge(v, map) {
   const cls = map[v] || 'cli';
   return `<span class="badge ${cls}">${escHtml(v || '—')}</span>`;
@@ -436,7 +529,7 @@ const statusBadge = v => badge(v, { ok: 'ok', error: 'error', interrupted: 'erro
 const platformBadge = v => badge(v || 'cli', { cron: 'cron', cli: 'cli', telegram: 'cli', discord: 'cli' });
 
 async function fetchJSON(url) {
-  const r = await fetch(url);
+  const r = await fetch(withViewerTimezone(url));
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -600,15 +693,15 @@ function renderSegmentedButtons(options, currentValue, handlerName) {
 
 function trendMetricMeta(metric) {
   return {
+    tokens: { label: 'Token usage', field: 'total_tokens', info: '', footer: 'Token usage', color: '#22d3ee' },
+    api_calls: { label: 'LLM calls', field: 'api_calls', info: '', footer: 'LLM calls', color: '#22d3ee' },
+    request_runs: { label: 'Sessions', field: 'request_runs', info: '', footer: 'Sessions', color: '#22d3ee' },
     messages: { label: 'Messages', field: 'message_runs', info: '', footer: 'Messages', color: '#22d3ee' },
-    api_calls: { label: 'API calls', field: 'api_calls', info: '', footer: 'API calls', color: '#22d3ee' },
-    request_runs: { label: 'Requests', field: 'request_runs', info: '', footer: 'Requests', color: '#22d3ee' },
     tool_calls: { label: 'Tool calls', field: 'tool_calls', info: '', footer: 'Tool calls', color: '#22d3ee' },
-    cron_job_runs: { label: 'Cron job runs', field: 'cron_job_runs', info: '', footer: 'Cron job runs', color: '#22d3ee' },
+    cron_job_runs: { label: 'Cron runs', field: 'cron_job_runs', info: '', footer: 'Cron runs', color: '#22d3ee' },
     cost: { label: 'Cost', field: 'cost_usd', info: '', footer: 'Cost', color: '#22d3ee' },
-    tokens: { label: 'Token usage', field: 'total_tokens', info: 'ⓘ', footer: 'Token usage', color: '#22d3ee' },
-    savings: { label: 'Savings', field: 'estimated_savings_usd', info: 'ⓘ', footer: 'Savings', color: '#22d3ee' },
-  }[metric] || { label: 'Messages', field: 'message_runs', info: '', footer: 'Messages', color: '#22d3ee' };
+    savings: { label: 'Savings', field: 'estimated_savings_usd', info: '', footer: 'Savings', color: '#22d3ee' },
+  }[metric] || { label: 'Token usage', field: 'total_tokens', info: '', footer: 'Token usage', color: '#22d3ee' };
 }
 
 function fmtCompactMetricValue(metric, value) {
@@ -632,9 +725,29 @@ function fmtTrendPointValue(metric, value) {
   return nf(n);
 }
 
+function fmtMetricAxisValue(metric, value) {
+  const n = Number(value || 0);
+  if (metric === 'cost' || metric === 'savings') return `$${n.toFixed(2)}`;
+  if (metric === 'tokens') {
+    if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
+  }
+  return nf(n);
+}
+
 function fmtShortDayLabel(day) {
   const d = parseDashboardTs(`${day}T00:00:00Z`);
   return d ? new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(d) : day;
+}
+
+function fmtTrendPeriodLabel(value, granularity = currentHomeTrendGranularity) {
+  if (!value) return '—';
+  if (granularity === 'month') {
+    const d = parseDashboardTs(`${value}-01T00:00:00Z`);
+    return d ? new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric' }).format(d) : value;
+  }
+  return fmtShortDayLabel(value);
 }
 
 function buildMetricTrendSummary(rows) {
@@ -654,10 +767,11 @@ function buildMetricTrendSummary(rows) {
   return summary;
 }
 
-function renderMetricTrendCard(rows) {
+function renderMetricTrendCard(rows, hours, summaryOverrides = {}) {
   const trendRows = rows || [];
-  const summary = buildMetricTrendSummary(trendRows);
-  const metrics = ['messages', 'api_calls', 'request_runs', 'tool_calls', 'cron_job_runs', 'cost', 'tokens', 'savings'];
+  const summary = { ...buildMetricTrendSummary(trendRows), ...(summaryOverrides || {}) };
+  const metrics = ['tokens', 'api_calls', 'request_runs', 'messages', 'tool_calls', 'cron_job_runs', 'cost', 'savings'];
+  const chartRows = getMetricTrendRows(trendRows, currentMetricTrendMetric);
   const stats = metrics.map(metric => {
     const meta = trendMetricMeta(metric);
     const raw = Number(summary[meta.field] ?? summary[metric] ?? 0);
@@ -666,12 +780,31 @@ function renderMetricTrendCard(rows) {
       : '';
     return `<button class="metric-trend-stat ${metric === currentMetricTrendMetric ? 'active' : ''}" onclick="setMetricTrendMetric('${metric}')"><div class="metric-trend-label-row"><span class="metric-trend-label">${meta.label}</span>${meta.info ? `<span class="metric-trend-info">${meta.info}</span>` : ''}</div><div class="metric-trend-value-row"><span class="metric-trend-value">${fmtCompactMetricValue(metric, raw)}</span>${pill}</div></button>`;
   }).join('');
+  const emptyLabel = granularityLabel(currentHomeTrendGranularity).toLowerCase();
   return `<div class="chart-card full-width-chart metric-trend-card">
     <div class="metric-trend-header">${stats}</div>
     <div class="metric-trend-body">
-      ${trendRows.length ? `<div id="home-metric-trend-chart" class="metric-trend-svg-wrap"></div>` : '<div class="text-muted" style="padding:24px 0">No daily trend data available yet.</div>'}
+      ${chartRows.length ? `<div class="metric-trend-canvas-wrap"><canvas id="home-metric-trend-chart"></canvas></div>` : `<div class="text-muted" style="padding:24px 0">No ${emptyLabel} trend data available yet.</div>`}
     </div>
   </div>`;
+}
+
+function metricTrendValueForRow(row, metric) {
+  if (!row) return 0;
+  if (metric === 'tokens') {
+    return Number(row.total_tokens || row.tokens_in || row.tokens_out || row.cache_read_tokens || 0);
+  }
+  if (metric === 'savings') return Number(row.estimated_savings_usd || 0);
+  const meta = trendMetricMeta(metric);
+  return Number(row?.[meta.field] || 0);
+}
+
+function getMetricTrendRows(rows, metric = currentMetricTrendMetric) {
+  const trendRows = Array.isArray(rows) ? rows : [];
+  if (!trendRows.length) return trendRows;
+  const firstActiveIdx = trendRows.findIndex(row => metricTrendValueForRow(row, metric) > 0);
+  if (firstActiveIdx === -1 || firstActiveIdx === 0) return trendRows;
+  return trendRows.slice(Math.max(0, firstActiveIdx - 1));
 }
 
 function renderModelUsageTrendCard(trendData, shareData) {
@@ -1268,56 +1401,103 @@ function drawLineChart(canvasId, labels, datasets, yLabel) {
 
 function drawMetricTrendChart(canvasId, rows) {
   destroyChart(canvasId);
-  const wrap = document.getElementById(canvasId);
-  if (!wrap || !(rows || []).length) return;
+  const canvas = document.getElementById(canvasId);
+  const chartRows = getMetricTrendRows(rows, currentMetricTrendMetric);
+  if (!canvas || !chartRows.length) return;
   const meta = trendMetricMeta(currentMetricTrendMetric);
-  const labels = rows.map(row => fmtShortDayLabel(row.day));
-  const fullLabels = rows.map(row => row.day || fmtShortDayLabel(row.day));
-  const values = rows.map(row => Number(row?.[meta.field] || 0));
-  const maxValue = Math.max(...values, 0);
-  const niceMax = maxValue <= 0 ? 1 : Math.ceil((maxValue * 1.12) / 1000) * 1000;
-  const ticks = [0, niceMax / 2, niceMax];
-  const width = Math.max(900, Math.round(wrap.clientWidth || 900));
-  const height = Math.max(320, Math.round(wrap.clientHeight || 350));
-  const pad = { top: 18, right: 18, bottom: 36, left: 58 };
-  const plotW = width - pad.left - pad.right;
-  const plotH = height - pad.top - pad.bottom;
-  const xFor = (i) => pad.left + (values.length === 1 ? plotW / 2 : (i * plotW) / (values.length - 1));
-  const yFor = (v) => pad.top + plotH - ((Number(v || 0) / niceMax) * plotH);
-  const points = values.map((v, i) => ({ x: xFor(i), y: yFor(v), value: v, label: labels[i], fullLabel: fullLabels[i] }));
-  const linePath = points.map((p, i) => `${i ? 'L' : 'M'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
-  const areaPath = `${linePath} L ${points[points.length - 1].x.toFixed(1)} ${(pad.top + plotH).toFixed(1)} L ${points[0].x.toFixed(1)} ${(pad.top + plotH).toFixed(1)} Z`;
-  const fmtAxis = (v) => currentMetricTrendMetric === 'cost' || currentMetricTrendMetric === 'savings'
-    ? `$${Number(v || 0).toFixed(2)}`
-    : (currentMetricTrendMetric === 'tokens' && v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M` : Number(v || 0).toLocaleString());
-  const grid = ticks.map(v => {
-    const y = yFor(v);
-    return `<line x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}" stroke="rgba(148,163,184,0.16)"/><text x="${pad.left - 10}" y="${y + 4}" text-anchor="end" fill="#e6edf3" font-size="12" font-weight="600">${escHtml(fmtAxis(v))}</text>`;
-  }).join('');
-  const xGrid = points.map(p => `<line x1="${p.x}" y1="${pad.top}" x2="${p.x}" y2="${pad.top + plotH}" stroke="rgba(148,163,184,0.09)"/><text x="${p.x}" y="${height - 8}" text-anchor="middle" fill="#e6edf3" font-size="12" font-weight="600">${escHtml(p.label)}</text>`).join('');
-  const circles = points.map((p, i) => `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#38bdf8" stroke="#f8fafc" stroke-width="1.5" data-idx="${i}"/>`).join('');
-  wrap.innerHTML = `<svg class="metric-trend-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escHtml(meta.footer)} trend">
-    <defs><linearGradient id="metricTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#38bdf8" stop-opacity="0.30"/><stop offset="100%" stop-color="#38bdf8" stop-opacity="0.05"/></linearGradient></defs>
-    <rect x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}" fill="transparent"/>
-    ${grid}${xGrid}
-    <path d="${areaPath}" fill="url(#metricTrendFill)"/>
-    <path d="${linePath}" fill="none" stroke="#22d3ee" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-    ${circles}
-  </svg><div class="metric-trend-tooltip" id="metric-trend-tooltip"><div class="metric-trend-tooltip-title"></div><div class="metric-trend-tooltip-row"><span class="metric-trend-tooltip-box"></span><span></span></div></div>`;
-  const tooltip = wrap.querySelector('#metric-trend-tooltip');
-  const setHoverIndex = (idx) => {
-    const p = points[Math.max(0, Math.min(points.length - 1, idx))];
-    if (!p || !tooltip) return;
-    tooltip.querySelector('.metric-trend-tooltip-title').textContent = p.fullLabel;
-    tooltip.querySelector('.metric-trend-tooltip-row span:last-child').textContent = `${meta.footer}: ${fmtTrendPointValue(currentMetricTrendMetric, p.value)}`;
-    tooltip.style.left = `${(p.x / width) * 100}%`;
-    tooltip.style.top = `${(p.y / height) * 100}%`;
-  };
-  wrap.querySelectorAll('[data-idx]').forEach(el => {
-    el.addEventListener('mouseenter', () => setHoverIndex(Number(el.dataset.idx)));
-    el.addEventListener('mousemove', () => setHoverIndex(Number(el.dataset.idx)));
+  const labels = chartRows.map(row => fmtTrendPeriodLabel(row.day, currentHomeTrendGranularity));
+  const fullLabels = chartRows.map(row => currentHomeTrendGranularity === 'week' ? `Week of ${row.day}` : currentHomeTrendGranularity === 'month' ? fmtTrendPeriodLabel(row.day, 'month') : (row.day || fmtTrendPeriodLabel(row.day, 'day')));
+  const tokenDatasets = [
+    { key: 'total_tokens', label: 'Total', borderColor: '#22d3ee', backgroundColor: 'rgba(34,211,238,0.16)', fill: true, tension: 0.32, pointRadius: 3, pointHoverRadius: 5, borderWidth: 3, yAxisID: 'y' },
+    { key: 'tokens_in', label: 'Input', borderColor: '#4f8cff', backgroundColor: 'rgba(79,140,255,0)', fill: false, tension: 0.28, pointRadius: 2, pointHoverRadius: 4, borderWidth: 2.5, yAxisID: 'y1' },
+    { key: 'tokens_out', label: 'Output', borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0)', fill: false, tension: 0.24, pointRadius: 2, pointHoverRadius: 4, borderWidth: 2.5, yAxisID: 'y1', borderDash: [6, 4] },
+    { key: 'cache_read_tokens', label: 'Cache read', borderColor: '#7dd3a0', backgroundColor: 'rgba(125,211,160,0)', fill: false, tension: 0.26, pointRadius: 2, pointHoverRadius: 4, borderWidth: 2.5, yAxisID: 'y', borderDash: [10, 5] },
+  ];
+  const chosen = currentMetricTrendMetric === 'tokens'
+    ? tokenDatasets
+    : [{ key: meta.field, label: meta.footer, borderColor: '#22d3ee', backgroundColor: 'rgba(34,211,238,0.18)', fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 5, borderWidth: 3, yAxisID: 'y' }];
+  const datasets = chosen.map(series => ({
+    label: series.label,
+    data: chartRows.map(row => Number(row?.[series.key] || 0)),
+    borderColor: series.borderColor,
+    backgroundColor: series.backgroundColor,
+    fill: series.fill,
+    tension: series.tension,
+    pointRadius: series.pointRadius,
+    pointHoverRadius: series.pointHoverRadius,
+    pointBackgroundColor: series.borderColor,
+    pointBorderColor: '#dbeafe',
+    pointBorderWidth: 1.5,
+    borderWidth: series.borderWidth,
+    borderDash: series.borderDash || [],
+    yAxisID: series.yAxisID,
+  }));
+  const ctx = canvas.getContext('2d');
+  const showAllXTicks = labels.length <= 14;
+  charts[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { top: 8, right: 10, bottom: 24, left: 4 } },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: currentMetricTrendMetric === 'tokens',
+          labels: { color: '#a9b7c7', font: { size: 11, weight: '600' }, boxWidth: 14, boxHeight: 3, padding: 14, usePointStyle: false },
+        },
+        tooltip: {
+          backgroundColor: 'rgba(8,12,19,0.98)',
+          borderColor: 'rgba(88,166,255,0.40)',
+          borderWidth: 1,
+          titleColor: '#f8fafc',
+          bodyColor: '#f8fafc',
+          titleFont: { size: 12, weight: '700' },
+          bodyFont: { size: 11, weight: '600' },
+          cornerRadius: 10,
+          caretPadding: 8,
+          boxPadding: 4,
+          displayColors: true,
+          padding: 10,
+          callbacks: {
+            title(items) {
+              const idx = items?.[0]?.dataIndex ?? 0;
+              return fullLabels[idx] || '';
+            },
+            label(item) {
+              return `${item.dataset.label}: ${fmtTrendPointValue(currentMetricTrendMetric, item.parsed.y)}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          offset: false,
+          ticks: { color: '#dce6f2', font: { size: 12, weight: '600' }, autoSkip: !showAllXTicks, maxTicksLimit: showAllXTicks ? labels.length : 12, maxRotation: 0, minRotation: 0, padding: 4 },
+          grid: { color: 'rgba(148,163,184,0.09)' },
+        },
+        y: {
+          ticks: {
+            color: '#e6edf3',
+            font: { size: 12, weight: '600' },
+            callback: (value) => fmtMetricAxisValue(currentMetricTrendMetric, value),
+          },
+          grid: { color: 'rgba(148,163,184,0.16)' },
+        },
+        y1: {
+          display: currentMetricTrendMetric === 'tokens',
+          position: 'right',
+          ticks: {
+            color: '#8b949e',
+            font: { size: 11 },
+            callback: (value) => fmtMetricAxisValue('tokens', value),
+          },
+          grid: { display: false },
+        },
+      },
+    },
   });
-  setHoverIndex(points.length - 1);
 }
 
 function drawBarChart(canvasId, labels, data, color, yLabel) {
@@ -1476,7 +1656,7 @@ function drawDoughnutChart(canvasId, labels, data, colors, onSliceClick) {
 function renderDailyCombinedSvg(hostId, dailyTokenChart, dailyModelChart) {
   const host = document.getElementById(hostId);
   if (!host) return;
-  const rows = dailyTokenChart || [];
+  const rawRows = dailyTokenChart || [];
   const modelRowsByDay = Object.fromEntries((dailyModelChart?.rows || []).map(r => [r.day, r]));
   const modelNames = dailyModelChart?.models || [];
   const modelColors = ['#bc8cff', '#8b949e', '#58a6ff', '#3fb950', '#d29922', '#f85149'];
@@ -1486,6 +1666,14 @@ function renderDailyCombinedSvg(hostId, dailyTokenChart, dailyModelChart) {
     { label: 'Cache Read', color: '#d29922', key: 'cache_read_tokens' },
     { label: 'Reasoning', color: '#f85149', key: 'reasoning_tokens' },
   ];
+  const rowTotal = (row) => {
+    const tokenTotal = tokenSeries.reduce((sum, s) => sum + Number(row?.[s.key] || 0), 0);
+    const modelRow = modelRowsByDay[row?.day] || {};
+    const modelTotal = Object.values(modelRow.models || {}).reduce((sum, value) => sum + Number(value || 0), 0) + Number(modelRow.other || 0);
+    return tokenTotal + modelTotal;
+  };
+  const firstActiveIdx = rawRows.findIndex(row => rowTotal(row) > 0);
+  const rows = firstActiveIdx <= 1 ? rawRows : rawRows.slice(firstActiveIdx - 1);
   const legendItems = [
     ...tokenSeries.map(s => ({ label: s.label, color: s.color })),
     ...modelNames.map((m, i) => ({ label: `Model: ${(m || '—').replace(/^openrouter\//, '').substring(0, 18)}`, color: modelColors[i % modelColors.length] })),
@@ -1566,6 +1754,8 @@ async function loadAll(options = {}) {
   const showShell = options.showShell ?? !$('#app')?.dataset?.loaded;
   const app = $('#app');
   const hours = $('#windowSelect').value;
+  const homeTrendGranularitySelect = $('#homeTrendGranularitySelect');
+  if (homeTrendGranularitySelect) homeTrendGranularitySelect.value = currentHomeTrendGranularity;
   if (hours !== lastWindowHours) {
     currentDailyTokensPage = 1;
     lastWindowHours = hours;
@@ -1575,7 +1765,8 @@ async function loadAll(options = {}) {
   if (showShell || !app.dataset.loaded) app.innerHTML = loadingShell();
 
   try {
-    const chartHours = hours === '0' ? 2160 : Number(hours);
+    const chartHours = Number(hours);
+    const chartLimitDays = hours === '0' ? 3650 : Math.max(14, Math.ceil(Number(hours) / 24) + 2);
     const trendLimit = currentUsageGranularity === 'month' ? 18 : currentUsageGranularity === 'week' ? 24 : 21;
     const [summary, cron, providers, providerHealth, runsData, budget, tokenBreakdown, modelTokens, modelEfficiency, dailyTokens, dailyTokenChart, dailyModelChart, modelPeriodTrends, modelShareComparison, cacheEfficiency, requestForensics, toolAnalytics, toolFailureHeatmap, errorCenter, cronFailureWaste] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
@@ -1588,13 +1779,13 @@ async function loadAll(options = {}) {
       fetchJSON(`/api/model-tokens?hours=${hours}&limit=100`),
       fetchJSON(`/api/model-efficiency?hours=${hours}&limit=50`),
       fetchJSON(`/api/daily-tokens?hours=${hours}&page=${currentDailyTokensPage}&per_page=15`),
-      fetchJSON(`/api/daily-token-chart?hours=${chartHours}&limit_days=90`),
-      fetchJSON(`/api/daily-model-chart?hours=${chartHours}&limit_days=90&top_n=5`),
+      fetchJSON(`/api/daily-token-chart?hours=${chartHours}&limit_days=${chartLimitDays}&include_deleted=1&granularity=${currentHomeTrendGranularity}`),
+      fetchJSON(`/api/daily-model-chart?hours=${chartHours}&limit_days=${chartLimitDays}&top_n=5&include_deleted=1`),
       fetchJSON(`/api/model-period-trends?hours=${hours}&granularity=${currentUsageGranularity}&metric=${currentUsageMetric}&top_n=6&limit_periods=${trendLimit}`),
       fetchJSON(`/api/model-share-comparison?hours=${hours}&granularity=${currentUsageGranularity}&limit=12`),
       fetchJSON(`/api/cache-efficiency?hours=${hours}`),
       fetchJSON(`/api/requests?${buildRunsQuery(hours, 60)}`),
-      fetchJSON(`/api/tool-analytics?${buildRunsQuery(hours, 100)}`),
+      fetchJSON(`/api/tool-analytics?${buildRunsQuery(hours, 100)}&include_deleted=1`),
       fetchJSON(`/api/tool-failure-heatmap?hours=${hours}&limit=80`),
       fetchJSON(`/api/error-center?${buildRunsQuery(hours, 100)}`),
       fetchJSON(`/api/cron-failure-waste?hours=${hours}&limit=50`),
@@ -1621,7 +1812,8 @@ async function loadAll(options = {}) {
       html += renderStatCard('cost', fmtCost(r.cost_usd), 'Cost', 'yellow');
       html += '</div>';
 
-      html += renderMetricTrendCard(dailyTokenChart, hours);
+      const cronSummaryRuns = (cron || []).reduce((sum, row) => sum + Number(row.runs || 0), 0);
+      html += renderMetricTrendCard(dailyTokenChart, hours, { cron_job_runs: cronSummaryRuns });
 
       // --- budget ---
       html += renderBudget(budget);
@@ -1652,12 +1844,14 @@ async function loadAll(options = {}) {
 
       // --- cron table ---
       if (cron.length) {
-        let t = '<table><thead><tr><th>Job ID</th><th>Runs</th><th>OK</th><th>Fail</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
+        let t = '<table><thead><tr><th>Job</th><th>Schedule</th><th>Runs</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
         for (const row of cron) {
-          const jid = (row.cron_job_id || '?').substring(0, 20);
-          t += `<tr class="clickable-row" onclick='addDrilldown({cron_job_id:${jsAttr(row.cron_job_id || '')},platform:"cron"})'><td><code>${jid}</code></td><td>${nf(row.runs)}</td><td>${nf(row.ok_runs)}</td><td>${nf(row.failed_runs)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${fmtLocalTs(row.last_run)}</td></tr>`;
+          const jid = row.cron_job_id || '?';
+          const jobLabel = row.job_name || jid;
+          const status = row.last_status || '—';
+          t += `<tr class="clickable-row" onclick='addDrilldown({cron_job_id:${jsAttr(row.cron_job_id || '')},platform:"cron"})'><td><div style="display:flex;flex-direction:column;gap:3px"><code title="${escHtml(jid)}">${escHtml(jid.substring(0, 20))}</code><span class="text-muted" title="${escHtml(jobLabel)}">${escHtml(jobLabel)}</span></div></td><td class="text-muted">${escHtml(row.schedule_display || '—')}</td><td>${nf(row.runs)}</td><td>${statusBadge(status)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${fmtLocalTs(row.last_run)}</td></tr>`;
         }
-        t += '</tbody></table><div class="subtle-note">Click a cron job row to inspect sessions from that job.</div>';
+        t += '</tbody></table><div class="subtle-note">Runs now follow Hermes scheduler history, so script-only cron jobs count too. Token and cost columns still show telemetry-backed usage only.</div>';
         html += renderTableCard('cronTable', 'Cron Jobs', t);
       }
 
@@ -1744,6 +1938,12 @@ async function loadAll(options = {}) {
 }
 
 // initial load + configurable auto-refresh
+document.addEventListener('click', (event) => {
+  const menu = document.querySelector('.settings-menu');
+  if (!menu || menu.contains(event.target)) return;
+  closeSettingsMenu();
+});
+initDayBoundaryMode();
 initAutoRefresh();
 loadAll({showShell:true});
 </script>
