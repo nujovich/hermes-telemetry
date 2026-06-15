@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Free→paid model transition alert (issue #16, Block A). When a model that
+  was previously seen at explicit `$0` (subscription or zero-price entry in
+  `pricing.yaml`) starts incurring cost, a one-shot warning is injected into
+  the next `pre_llm_call` context so the agent can surface it to the user.
+  The alert fires once per session per transition and is cleared immediately
+  after injection.
+- `known_free_models` SQLite table (schema v5) persists every `(model,
+  provider)` pair observed at explicit `$0`, enabling cross-session detection.
+  `is_explicitly_priced(model, provider)` distinguishes genuinely-free models
+  from unknown-model `$0` fallbacks so only real free-tier models are tracked.
+- Backward-compatible backfill: on every plugin load, `register()` scans all
+  explicitly-`$0` models from `pricing.yaml` and `_DEFAULT_PRICING` and seeds
+  `known_free_models` with a `provider=''` wildcard row. Pre-v5 users who
+  already had subscription models are covered automatically on first upgrade
+  without requiring a prior `$0` call in the new version.
+- `pricing.get_known_free_models()` — returns all model names with explicit
+  `input=0.0 AND output=0.0` from custom and default pricing; used by the
+  backfill and available for external inspection.
+- `db.backfill_known_free_models(models)` — inserts `(model, provider='')` 
+  wildcard rows; `INSERT OR IGNORE` makes it safe to call on every load.
+
 ## [0.4.1] - 2026-06-14
 
 ### Added

@@ -34,6 +34,13 @@ _approx_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 _nous_estimated_warned: set = set()
 
+# Free→paid transition alerts (issue #16).
+# Maps session_id → (model, cost_usd) for the first paid call after a series
+# of $0 calls on the same (model, provider). Injected into context by
+# pre_llm_call and cleared immediately after injection so it fires only once.
+_pending_free_paid_alerts: dict[str, tuple[str, float]] = {}
+_pending_free_paid_lock = threading.Lock()
+
 # Characters per token estimate (used when usage=None)
 _CHARS_PER_TOKEN = 4
 
@@ -152,6 +159,21 @@ def register(ctx) -> None:  # noqa: ANN001
     _try_pricing_refresh(tele_log)
 
     # ------------------------------------------------------------------
+    # Backward-compat backfill: seed known_free_models for users upgrading
+    # from pre-v5 installs who have subscription or zero-price models in
+    # their pricing.yaml but no persisted rows yet (INSERT OR IGNORE — safe
+    # to call on every load; only new rows cost anything).
+    # ------------------------------------------------------------------
+    try:
+        _free_models = pricing.get_known_free_models()
+        if _free_models:
+            _n = db.backfill_known_free_models(_free_models)
+            if _n:
+                tele_log.info("backfilled %d known-free model(s) for free→paid alert", _n)
+    except Exception as exc:
+        tele_log.error("known_free_models backfill failed: %s", exc)
+
+    # ------------------------------------------------------------------
     # on_session_start
     # Fired once per new session.
     # kwargs: session_id, model, platform
@@ -262,6 +284,24 @@ def register(ctx) -> None:  # noqa: ANN001
             }
             cost = pricing.estimate_cost(full_usage, effective_model, provider)
             latency_ms = int(api_duration * 1000)
+
+            # Free→paid transition detection (issue #16).
+            # Only models with explicit pricing (not unknown-model fallback) are
+            # tracked: an unknown model at $0 is not "free by design" and should
+            # not trigger a false alert when it later gets a real price entry.
+            if cost == 0.0 and pricing.is_explicitly_priced(effective_model, provider):
+                db.record_free_model(effective_model, provider)
+            elif cost > 0.0 and db.is_known_free_model(effective_model, provider):
+                with _pending_free_paid_lock:
+                    if session_id not in _pending_free_paid_alerts:
+                        _pending_free_paid_alerts[session_id] = (effective_model, cost)
+                tele_log.info(
+                    "free→paid transition detected: model=%r provider=%r cost=%.6f session=%s",
+                    effective_model,
+                    provider,
+                    cost,
+                    session_id,
+                )
 
             db.record_llm_call(
                 session_id=session_id,
@@ -408,10 +448,29 @@ def register(ctx) -> None:  # noqa: ANN001
                 return None
             verdicts = budget.evaluate_run(run)
             budget.enforce_cron_pause(verdicts)
+            ctx_parts: list[str] = []
             ctx_text = budget.alert_context(verdicts)
             if ctx_text:
                 tele_log.info("budget alert injected for session=%s", session_id)
-                return {"context": ctx_text}
+                ctx_parts.append(ctx_text)
+            with _pending_free_paid_lock:
+                alert = _pending_free_paid_alerts.pop(session_id, None)
+            if alert:
+                alert_model, alert_cost = alert
+                ctx_parts.append(
+                    f"⚠️ [hermes-telemetry] Model `{alert_model}` was previously $0.00 "
+                    f"— this call cost ${alert_cost:.4f}. "
+                    f"If this is unexpected, check your pricing config or `_subscription` "
+                    f"tag in ~/.hermes/telemetry/pricing.yaml."
+                )
+                tele_log.info(
+                    "free→paid alert injected for session=%s model=%r cost=%.6f",
+                    session_id,
+                    alert_model,
+                    alert_cost,
+                )
+            if ctx_parts:
+                return {"context": "\n\n".join(ctx_parts)}
         except Exception as exc:
             tele_log.error("pre_llm_call (budget) hook failed: %s", exc)
         return None

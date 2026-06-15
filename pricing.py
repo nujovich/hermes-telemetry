@@ -434,6 +434,53 @@ def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
     return cost
 
 
+def is_explicitly_priced(model: str, provider: str = "") -> bool:
+    """Return True if *model* has an explicit pricing entry (even if $0).
+
+    Distinguishes genuinely-free models (explicit zero price or _subscription)
+    from unknown models (no entry at all, which also produce cost==0 via the
+    fallback). Only explicitly-priced-at-$0 models are recorded in
+    known_free_models and can trigger the free→paid transition alert.
+    """
+    return _resolve_pricing(model, provider) is not None
+
+
+def get_known_free_models() -> list:
+    """Return all model names that are explicitly priced at input=0 AND output=0.
+
+    Used at plugin load to backfill known_free_models for pre-v5 installs that
+    had subscription or zero-price models but no persistent free-model rows yet.
+    Only models that would actually produce cost==0 via estimate_cost are included —
+    this mirrors the condition in post_api_request that calls record_free_model.
+    Subscription models with nonzero prices are excluded (they cost money and
+    should never appear in known_free_models).
+    """
+    result: list[str] = []
+    seen: set[str] = set()
+    custom = _load_custom_pricing()
+    custom_models = custom.get("models", {})
+
+    for model, prices in custom_models.items():
+        if (
+            model not in seen
+            and float(prices.get("input", -1)) == 0.0
+            and float(prices.get("output", -1)) == 0.0
+        ):
+            result.append(model)
+            seen.add(model)
+
+    for model, prices in _DEFAULT_PRICING.items():
+        if (
+            model not in seen
+            and float(prices.get("input", -1)) == 0.0
+            and float(prices.get("output", -1)) == 0.0
+        ):
+            result.append(model)
+            seen.add(model)
+
+    return result
+
+
 def reload_custom_pricing() -> None:
     """Force-reload the user pricing file (useful in tests)."""
     global _custom_pricing
