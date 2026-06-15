@@ -581,6 +581,74 @@ delegated work.
 
 ---
 
+## Free→Paid Model Transition Alert
+
+When a model that was previously seen as free (explicit $0 in pricing) starts
+incurring cost, the plugin injects a one-shot warning into the conversation so
+the operator is aware of the change.
+
+### Detection flow (live)
+
+1. `post_api_request` fires with `cost == 0.0` AND `is_explicitly_priced(model,
+   provider)` returns `True` → `record_free_model(model, provider)` inserts the
+   pair into `known_free_models` (INSERT OR IGNORE).
+2. A later `post_api_request` fires with `cost > 0.0`. The plugin checks
+   `is_known_free_model(model, provider)` — if `True`, it queues a pending alert
+   in `_pending_free_paid_alerts: dict[str, tuple[str, float]]` (module-level in
+   `__init__.py`), mapping `session_id → (model, cost)`.
+3. The next `pre_llm_call` for that session pops the pending alert and injects a
+   one-shot warning into the conversation context. The alert fires exactly once per
+   detection event (pop-on-consume).
+
+`pre_llm_call` now handles two independent injection paths: budget alerts (one per
+window per scope, anti-spam via `budget_alerts` table) and free→paid alerts (one
+per detection event, state held in `_pending_free_paid_alerts`).
+
+### `known_free_models` table schema
+
+```
+model       TEXT  — model identifier (as received from post_api_request)
+provider    TEXT  — provider identifier, or '' for wildcard rows
+first_seen_at TEXT — ISO-8601 UTC timestamp of first $0 observation
+PRIMARY KEY (model, provider)
+```
+
+Every `(model, provider)` pair that is ever seen at an explicit $0 cost is
+recorded here. A `provider=''` wildcard row is used for the backfill path (see
+below).
+
+### `is_known_free_model` lookup semantics
+
+`is_known_free_model(model, provider)` returns `True` if either of these rows
+exists in `known_free_models`:
+
+- An exact `(model, provider)` row (live-recorded pair)
+- A wildcard `(model, '')` row (backfill-seeded pair)
+
+The wildcard covers sessions from before the model was first seen live, and
+handles cases where the same model is served by multiple providers and all are
+expected to be free.
+
+### Backfill mechanism (pre-v5 upgrade path)
+
+On every plugin load, `register()` calls `get_known_free_models()` (from
+`pricing.py`) to retrieve all models with explicit `input=0.0` AND `output=0.0`
+in the pricing table, then calls `backfill_known_free_models(models)` (from
+`db.py`) which inserts `(model, provider='')` wildcard rows for each — INSERT OR
+IGNORE, so it's safe to call on every load. Users who upgrade from pre-v5 get
+immediate coverage without needing to replay historical sessions.
+
+### `is_explicitly_priced` distinction
+
+`is_explicitly_priced(model, provider) -> bool` in `pricing.py` returns `True`
+only when the model has an explicit pricing entry in the pricing table (even if
+that entry is $0). This distinguishes a genuine free model from an unknown model
+that fell through to the `$0.00` unknown-model fallback. Without this guard, any
+unrecognized model would be recorded as "free" and trigger spurious alerts when
+the pricing table is later populated.
+
+---
+
 ## Pricing Auto-Refresh
 
 ### Architecture
@@ -783,6 +851,29 @@ with `pytest --basetemp=DIR`.
   `runs`) shipped without bumping the constant, leaving `test_schema_idempotent`
   red. Fixed here as part of documenting schema v4.
 
+### v0.5.0 — Free→paid model transition alert (issue #16, Block A)
+
+- **`known_free_models` table** (schema v5): records every `(model, provider)`
+  pair seen at explicit $0 cost. INSERT OR IGNORE — append-only, never deleted.
+- **`is_explicitly_priced(model, provider)`** in `pricing.py`: distinguishes a
+  genuine $0 entry from an unknown-model `$0.00` fallback. Without this, every
+  unrecognized model would be flagged as "free" and generate spurious alerts.
+- **`record_free_model` / `is_known_free_model`** in `db.py`: write and read
+  the `known_free_models` table respectively. `is_known_free_model` checks both
+  the exact `(model, provider)` row and a wildcard `(model, '')` row.
+- **Backfill on load**: `register()` seeds `known_free_models` with `provider=''`
+  wildcard rows for all explicitly-$0 models from the pricing table. INSERT OR
+  IGNORE, runs every load. Covers pre-v5 installs automatically.
+- **`_pending_free_paid_alerts`** (module-level `dict` in `__init__.py`): maps
+  `session_id → (model, cost)`. Populated by `post_api_request` when a
+  previously-free model is seen at cost > 0. Consumed (popped) by `pre_llm_call`.
+- **`pre_llm_call`** now handles two injection paths: budget soft-alerts (anti-spam
+  via `budget_alerts` table) and free→paid one-shot alert (pop-on-consume from
+  `_pending_free_paid_alerts`). Both inject via the `{"context": "..."}` return.
+- **253 tests** (was 233): `test_init.py` gained free→paid detection, queueing,
+  injection, and backfill tests; `test_db.py` and `test_pricing.py` gained
+  corresponding unit tests.
+
 ---
 
 ## Metrics: Real vs Estimated
@@ -886,7 +977,7 @@ manual cleanup.
 
 ```
 ~/.hermes/telemetry/
-├── telemetry.db          ← SQLite (WAL, schema v3)
+├── telemetry.db          ← SQLite (WAL, schema v5)
 ├── telemetry.log         ← Plugin log (DEBUG+, includes one-time warnings)
 ├── pricing.yaml          ← User price overrides + auto-refreshed models
 ├── budget.yaml           ← Guardrails config
