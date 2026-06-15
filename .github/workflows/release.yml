@@ -24,8 +24,27 @@ jobs:
             exit 1
           fi
           echo "Version OK: $PYVER"
+      - name: Extract release notes from CHANGELOG
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"; VERSION="${VERSION#v}"
+          python - "$VERSION" <<'PY' > release-notes.md
+          import re
+          import sys
+
+          version = sys.argv[1]
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          # Capture everything under "## [VERSION] ..." up to the next "## [" header.
+          pattern = rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)"
+          m = re.search(pattern, text, re.DOTALL | re.MULTILINE)
+          if not m or not m.group(1).strip():
+              sys.exit(f"::error::no CHANGELOG.md section found for {version}")
+          print(m.group(1).strip())
+          PY
+          echo "----- release notes -----"
+          cat release-notes.md
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-notes.md
           generate_release_notes: false
           draft: false
