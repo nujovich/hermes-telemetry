@@ -14,7 +14,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 233 passing](https://img.shields.io/badge/Tests-233%20passing-green.svg)](https://img.shields.io/badge/Tests-233%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 253 passing](https://img.shields.io/badge/Tests-253%20passing-green.svg)](https://img.shields.io/badge/Tests-253%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -140,6 +140,7 @@ A standalone HTML dashboard for users who prefer a visual interface over slash c
 |Platform (cli / cron / telegram / …)     |`on_session_start.platform`    |✅ Real                  |
 |Cron job ID                              |Parsed from `session_id`       |✅ Real                  |
 |Subagent invocation count                |`subagent_stop` hook           |✅ Real (proxy)          |
+|Free→paid model transition alert         |`known_free_models` table + `post_api_request` cost check|✅ Real                  |
 |**Cost (USD)**                           |Local pricing table × tokens   |⚠️ **Estimated**         |
 |Tokens when provider returns `usage=None`|Fallback approximation         |⚠️ **Estimated, flagged**|
 
@@ -704,7 +705,7 @@ post_llm_call             Refresh session end timestamp
 subagent_stop             Record delegate_task proxy on parent
 on_session_end            Set final status (ok/error/interrupted)
 on_session_finalize       Safety net: ensure run is closed
-pre_llm_call              Soft budget alerts + capture sender_id
+pre_llm_call              Soft budget alerts, free→paid model transition alerts + capture sender_id
 pre_tool_call             Hard budget enforcement (tool-gate)
 ```
 
@@ -714,7 +715,7 @@ pre_tool_call             Hard budget enforcement (tool-gate)
 
 ### Database Schema
 
-SQLite with WAL mode, per-thread connections, schema v3:
+SQLite with WAL mode, per-thread connections, schema v5:
 
 **`runs`** — one row per session (CLI session or cron job execution):
 
@@ -747,6 +748,10 @@ All of `runs` token/cost columns, plus `cache_read_tokens`, `cache_write_tokens`
 
 `scope`, `scope_id`, `window`, `period_key`, `level`, `fired_at`, `spent_usd`, `limit_usd`. Unique constraint prevents duplicate alerts.
 
+**`known_free_models`** — free→paid transition tracking (schema v5):
+
+`model TEXT`, `provider TEXT`, `first_seen_at TEXT`. Primary key is `(model, provider)`. Every `(model, provider)` pair seen at explicit $0 is recorded here. A `provider=''` wildcard row is inserted at plugin load for all explicitly-$0 models in the pricing table, covering sessions started before a model was first seen live.
+
 ### Concurrency Model
 
 Cron jobs run in a `ThreadPoolExecutor` (Hermes `cron/scheduler.py`). Multiple jobs can write to the DB simultaneously from different threads.
@@ -765,7 +770,7 @@ Cron jobs run in a `ThreadPoolExecutor` (Hermes `cron/scheduler.py`). Multiple j
 
 Every time the agent is about to do work, the plugin checks:
 
-1. **`pre_llm_call`** (fires once per turn): evaluates all applicable budget scopes. If any has a `soft` or `hard` verdict that hasn’t been alerted yet this window, injects a one-time notice into the conversation context (anti-spam via `budget_alerts` table). Captures `sender_id`.
+1. **`pre_llm_call`** (fires once per turn): evaluates all applicable budget scopes. If any has a `soft` or `hard` verdict that hasn’t been alerted yet this window, injects a one-time notice into the conversation context (anti-spam via `budget_alerts` table). Also injects a one-shot warning when the current model was previously seen as free but is now incurring cost (free→paid transition). Captures `sender_id`.
 1. **`pre_tool_call`** (fires before every tool): re-evaluates budgets. If any scope is in `hard` breach, returns `{"action":"block","message":...}` which aborts the tool call.
 1. **For cron jobs with `hard` breach:** additionally calls `cron.jobs.pause_job` to pause future runs.
 
@@ -899,7 +904,7 @@ global    $0.1812 / $2.00    9%  [daily]
 |Pricing auto-refresh (OpenRouter API)|✅ 320 models fetched, manual overrides preserved   |
 |Estimated-price model handling       |✅ Negative prices → $0.00, budget degradation      |
 |Dashboard (HTML, auto-refresh 30s)   |✅ Charts, tables, budget bar, provider distribution|
-|233 tests pass                       |✅                                                  |
+|253 tests pass                       |✅                                                  |
 
 -----
 
@@ -926,19 +931,19 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (233 tests):**
+**Test suite (253 tests):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
-|`test_pricing.py`                |50   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds, subscription tag, unknown model handling|
+|`test_pricing.py`                |57   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds, subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`|
 |`test_telemetry_cli.py`          |32   |CLI subcommands (stats/budget), all window variants, text + `--json` output, entry point smoke test                            |
-|`test_db.py`                     |29   |Schema v1→v4 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes)                                     |
+|`test_db.py`                     |38   |Schema v1→v5 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes), `known_free_models` CRUD, `backfill_known_free_models`|
 |`test_setup.py`                  |21   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |
 |`test_dashboard.py`              |21   |HTML dashboard rendering, auto-refresh, chart data endpoints, viewer-timezone budget windows                                   |
 |`test_budget.py`                 |20   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload|
 |`test_stats_providers.py`        |14   |Real vs estimated per provider, `/stats providers` output format, Nous warning dedup                                           |
 |`test_pricing_refresh.py`        |14   |Auto-refresh from OpenRouter API, change detection, manual override preservation, subscription-model metadata                  |
-|`test_init.py`                   |10   |Cron session ID regex, tool success/failure parsing                                                                            |
+|`test_init.py`                   |23   |Cron session ID regex, tool success/failure parsing, free→paid transition alert (detection, queueing, injection, backfill)     |
 |`test_subagent_reconciliation.py`|9    |Parent + child hook sequence, token reconciliation, no double-counting                                                         |
 |`test_stats_models.py`           |8    |Per-model breakdown, `/stats models` output format                                                                             |
 |`test_pricing_hot_reload.py`     |3    |In-process cache invalidation on pricing update                                                                                |

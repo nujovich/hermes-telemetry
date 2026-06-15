@@ -80,7 +80,7 @@ hermes-telemetry/
 │   └── serve.py         ← stdlib HTTP server, port 8765, --host flag.
 ├── tests/
 │   ├── conftest.py      ← Autouse HERMES_HOME isolation (see Test Isolation).
-│   └── test_*.py        ← 233 tests. All in-memory SQLite, no live gateway.
+│   └── test_*.py        ← 253 tests. All in-memory SQLite, no live gateway.
 ├── config.example.yaml  ← Annotated pricing.yaml example.
 └── budget.example.yaml  ← Annotated budget.yaml example.
 ```
@@ -159,6 +159,9 @@ on_session_finalize     Safety net for true session teardown (CLI atexit, gatewa
 pre_llm_call            (1) Attaches sender_id to the run for per-sender budgets.
                         (2) Injects one-time-per-window soft budget alert into
                         the conversation context.
+                        (3) Injects one-shot free→paid transition warning when
+                        the current model was previously seen as free but is
+                        now incurring cost.
 
 pre_tool_call           Hard budget enforcement. Returns {"action":"block",...}
                         if any scope is in hard breach. Also triggers cron pause.
@@ -357,6 +360,7 @@ table before applying.
 | v2 | `llm_calls`: `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `estimated`. `runs`: `parent_session_id`, `estimated_llm_calls` |
 | v3 | `runs.sender_id`. New table: `budget_alerts` (anti-spam ledger) |
 | v4 | `runs`: `cache_read_tokens`, `cache_write_tokens` (per-session/cron cache breakdown) |
+| v5 | New table: `known_free_models` (free→paid transition tracking) |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
