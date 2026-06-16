@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-16
+
+### Added — Hermes dashboard plugin surface
+
+`hermes-telemetry` now ships as a **Hermes dashboard plugin** in addition
+to the existing standalone HTML dashboard. The Hermes web dashboard
+auto-discovers the plugin from the same install path — a `git pull`
+brings both surfaces up to date in lockstep. Verified against
+`NousResearch/hermes-agent@main` (`hermes_cli/web_server.py` loader and
+`extending-the-dashboard.md` SDK contract).
+
+- **Dedicated `/telemetry` tab** with six sub-views: Summary, Runs,
+  Requests, Providers, Cron, Budgets. Rendered as a single IIFE
+  (`dashboard/dist/index.js`) using the Hermes Plugin SDK — no build
+  step, no bundler, no new dependencies.
+- **Four shell slots** populated via `registerSlot()`:
+  - `sessions:top` — pinned card with the last run that had real
+    activity (cost, tokens, model). Skips empty / aborted sessions.
+  - `cron:top` — 7-day cron cost + `N FAILED` destructive badge.
+  - `header-right` — compact 24h spend with semáforo against the global
+    daily cap (badge variant flips to `destructive` on hard breach).
+  - `analytics:bottom` — daily cost chart (Chart.js loaded from CDN with
+    graceful degradation when unreachable).
+- **Read-only FastAPI router** at `/api/plugins/hermes-telemetry/*`:
+  `/health`, `/summary`, `/token-breakdown`, `/runs`, `/requests`,
+  `/providers`, `/cron`, `/session/{id}`, `/budget`. Opens
+  `telemetry.db` with `PRAGMA query_only=ON`; the plugin never writes.
+- **Theme-aware** by design: uses SDK components and shadcn-tokenised
+  Tailwind classes, so a user's installed theme / skin repaints the tab
+  and slots automatically.
+
+### Added — tooling
+
+- `tools/seed_demo_data.py` — seeds an isolated `HERMES_HOME` with
+  ~56 realistic sessions for screenshots / demos. Refuses to run against
+  `~/.hermes` to protect production data.
+
+### Changed
+
+- `.github/workflows/ci.yml` gains a **version-sync check** that
+  enforces `pyproject.toml == __init__.py == plugin.yaml ==
+  dashboard/manifest.json`, plus `node --check` over the plugin IIFE so
+  a JS syntax error fails CI.
+- `.github/workflows/release.yml` extends the tag-vs-pyproject guard to
+  all four version sources — a release tag cannot ship with a stale
+  `dashboard/manifest.json`.
+- README grows a "Hermes Dashboard Plugin" section with embedded
+  screenshots (`docs/plugin/01-…` through `09-…`) and a side-by-side
+  comparison of the two dashboard surfaces.
+- ONBOARDING grows a "Dashboard Plugin Surface" section with verified
+  source references for the loader contract and the
+  `_safe_plugin_api_relpath` security rule (GHSA-5qr3-c538-wm9j).
+
+### Decisions / non-goals
+
+- The standalone dashboard (`dashboard/serve.py`, port 8765) is
+  untouched — it remains the headless-friendly surface for cron-only
+  deployments and SSH workflows. The two surfaces share the SQLite DB
+  and **zero Python code**; enforced by
+  `tests/test_dashboard_plugin_isolation.py`.
+- `dashboard/plugin_api.py` is a single self-contained file. The Hermes
+  loader imports it via `importlib.util.spec_from_file_location`, so
+  relative imports are not available at load time.
+- The `slots` array in `manifest.json` is documentation only — the real
+  binding happens in the JS bundle via `registerSlot()`.
+
 ## [0.5.1] - 2026-06-16
 
 ### Added

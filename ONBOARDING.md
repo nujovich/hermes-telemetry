@@ -26,6 +26,7 @@
 15. [Known Limitations](#known-limitations)
 16. [PluginContext API](#plugincontext-api)
 17. [Valid Hooks Reference](#valid-hooks-reference)
+18. [Dashboard Plugin Surface](#dashboard-plugin-surface)
 
 ---
 
@@ -1122,3 +1123,123 @@ This plugin uses 10 of these. Hooks not used (and why):
 *Source references verified against `git clone --depth=1 https://github.com/NousResearch/hermes-agent`.*  
 *Inspected: `hermes_cli/plugins.py`, `agent/conversation_loop.py`, `model_tools.py`,*
 *`cron/scheduler.py`, `tools/delegate_tool.py`, `agent/usage_pricing.py`.*
+
+---
+
+## Dashboard Plugin Surface
+
+In addition to the standalone HTML dashboard (`dashboard/serve.py`, port 8765),
+`hermes-telemetry` also ships as a plugin for the official Hermes web
+dashboard. The two surfaces co-exist; they share the SQLite DB but **zero
+Python code**.
+
+### File layout (verified against the Hermes loader)
+
+The Hermes dashboard discovers plugins by scanning
+`~/.hermes/plugins/<name>/dashboard/manifest.json`
+(`hermes_cli/web_server.py::_discover_dashboard_plugins`, lines 11333-11434
+of `NousResearch/hermes-agent@main`). Because this repo is cloned into
+`~/.hermes/plugins/hermes-telemetry/`, the plugin files MUST live inside
+`dashboard/` — the same directory as `serve.py` and `index.html`. The
+discovery rule is non-negotiable.
+
+```
+dashboard/
+├── serve.py         ← standalone surface (stdlib http.server, port 8765)
+├── index.html       ← standalone SPA (Chart.js via CDN)
+├── manifest.json    ← plugin manifest
+├── plugin_api.py    ← plugin backend (FastAPI APIRouter; loaded by Hermes)
+└── dist/index.js    ← plugin frontend (IIFE; no build step)
+```
+
+### Why a single file for the plugin backend
+
+The Hermes loader imports `plugin_api.py` via
+`importlib.util.spec_from_file_location(module_name, api_path)`
+(`hermes_cli/web_server.py:11856-11881`). The module is **not** registered
+as part of any package, so relative imports (`from . import _db`) fail at
+load time. Hence `plugin_api.py` is self-contained — all DB helpers,
+budget math, and FastAPI routes live in one file. No `_db.py` sibling.
+
+### Why the standalone and plugin share no code
+
+The user contract is: the standalone dashboard MUST keep working unchanged
+when the plugin evolves. Co-locating in `dashboard/` was forced by the
+loader, but the two are independent products:
+
+| Surface | Entry point | Server | Auth |
+|---------|-------------|--------|------|
+| Standalone | `dashboard/serve.py` | stdlib `BaseHTTPRequestHandler` | none (loopback default) |
+| Plugin | `dashboard/plugin_api.py` | Hermes FastAPI app | Hermes session cookie |
+
+`tests/test_dashboard_plugin_isolation.py` enforces:
+- `plugin_api.py` does not import `serve` (in any module form).
+- `serve.py` does not import `plugin_api`.
+- No third Python file in `dashboard/` is imported by both surfaces (would
+  re-couple them).
+- Manifest `version` equals the package `__version__` (lockstep release).
+
+### Read-only DB access
+
+`plugin_api.py` opens `telemetry.db` with `PRAGMA query_only=ON`. The
+plugin is observability-only — capture still flows through the runtime
+hooks (`__init__.py`). The test `test_db_connection_is_read_only` asserts
+that any `INSERT` via the plugin connection raises `OperationalError`.
+
+### Manifest contract
+
+```json
+{
+  "name": "hermes-telemetry",
+  "label": "Telemetry",
+  "icon": "Activity",
+  "version": "<must equal __version__>",
+  "tab": { "path": "/telemetry", "position": "after:analytics" },
+  "slots": ["sessions:top", "cron:top", "header-right", "analytics:bottom"],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
+```
+
+Verified fields:
+- `tab.position` accepts `"end"`, `"after:<path>"`, `"before:<path>"`
+  (`web_server.py:11382-11391`).
+- `slots` is **documentation only**. The real binding happens in the JS
+  bundle via `window.__HERMES_PLUGINS__.registerSlot(...)`
+  (extending-the-dashboard.md, line 696).
+- `api` is validated by `_safe_plugin_api_relpath` (`web_server.py:11296-11330`);
+  absolute paths or `..` traversal cause backend mount to be skipped (the
+  static assets still load). This is fix for GHSA-5qr3-c538-wm9j.
+
+### Slot widgets
+
+Page-scoped slots render only on the named built-in page. The slot
+catalogue (`extending-the-dashboard.md:590-600`) was verified against
+source; the four slots we register are:
+
+| Slot | Widget |
+|------|--------|
+| `sessions:top` | Last-run summary card (cost · tokens · model). |
+| `cron:top` | 7-day cron cost + failure badge. |
+| `header-right` | 24h spend + budget level (variant=destructive on hard breach). |
+| `analytics:bottom` | Daily cost line chart (Chart.js via CDN, graceful degradation). |
+
+The SDK does not currently expose an `useActiveSession` hook, so
+`sessions:top` shows the most recent run instead of the per-row session.
+When that hook lands upstream, swap the implementation — the backend
+endpoint `/session/{session_id}` is already in place.
+
+### Chart.js delivery
+
+Chart.js is loaded on-demand from `cdn.jsdelivr.net/npm/chart.js@4` inside
+the IIFE. If the CDN is blocked, `analytics:bottom` renders a degraded
+"Chart.js unavailable" message and links the user to the tabular view in
+the `/telemetry` tab. We deliberately do not bundle Chart.js — no build
+step is the right answer for a hand-edited IIFE.
+
+### Update path
+
+Both surfaces are upgraded with a single `git pull` in
+`~/.hermes/plugins/hermes-telemetry`. The manifest version is pinned to
+`__version__` by `test_plugin_version_matches_package`, so a release tag
+implicitly ships both surfaces in lockstep.

@@ -222,6 +222,125 @@ hermes gateway restart
 
 -----
 
+## Hermes Dashboard Plugin
+
+`hermes-telemetry` also ships as a **Hermes dashboard plugin**. When the Hermes web dashboard is running, it auto-discovers the plugin from this same install path — no extra steps. You get a dedicated **Telemetry** tab plus widgets injected into the built-in pages.
+
+### Screenshots
+
+**Dedicated Telemetry tab — Summary**
+
+[![Summary](docs/plugin/01-summary.png)](docs/plugin/01-summary.png)
+
+*The default sub-tab. Six stat cards summarise the last 24h: cost, total runs (with failed split), API calls, tokens in / out, and average latency. All values come from `/api/plugins/hermes-telemetry/summary`.*
+
+**Runs**
+
+[![Runs](docs/plugin/02-runs.png)](docs/plugin/02-runs.png)
+
+*One row per session in the last 7 days: started_at, session id, platform (cli / cron / telegram), model, provider, status, cost and token counts. Cron sessions surface as `cron_<job>_…` and any `error` status row appears with its status column.*
+
+**Requests**
+
+[![Requests](docs/plugin/03-requests.png)](docs/plugin/03-requests.png)
+
+*Per-API-call detail (`/api/plugins/hermes-telemetry/requests`): timestamp, model, provider, tokens, cost, latency, and an `Est?` column that flags rows recorded with `estimated=1` (provider returned no usage info — counts came from the fallback estimator).*
+
+**Providers**
+
+[![Providers](docs/plugin/04-providers.png)](docs/plugin/04-providers.png)
+
+*Aggregated by provider: total calls, how many of those were estimated, total cost, and tokens in / out. Useful for spotting a provider whose share of the bill is disproportionate to its share of traffic.*
+
+**Cron**
+
+[![Cron tab](docs/plugin/05-cron-tab.png)](docs/plugin/05-cron-tab.png)
+
+*The `Cron` sub-tab aggregates runs by `cron_job_id`: total runs, ok / failed split, cost, and last execution. Built from `/api/plugins/hermes-telemetry/cron`.*
+
+**Budgets — soft / hard semáforo**
+
+[![Budgets tab](docs/plugin/06-budgets-tab.png)](docs/plugin/06-budgets-tab.png)
+
+*Global daily and monthly budgets read live from `budget.yaml`. The HARD badge fires when spend exceeds the hard cap (`$7.82 / $5.00 = 156.4%` here); soft and ok states use distinct badge variants.*
+
+**Slot: `sessions:top` (injected into `/sessions`)**
+
+[![sessions:top slot](docs/plugin/07-slot-sessions-top.png)](docs/plugin/07-slot-sessions-top.png)
+
+*A pinned card at the top of the Sessions page surfaces the most recent run with real activity — cost, tokens in / out, and the model used.*
+
+**Slot: `cron:top` (injected into `/cron`)**
+
+[![cron:top slot](docs/plugin/08-slot-cron-top.png)](docs/plugin/08-slot-cron-top.png)
+
+*Aggregate 7-day cron cost plus a destructive `N FAILED` badge when any job failed in the window.*
+
+**Slot: `header-right` (injected into the dashboard header)**
+
+[![header-right slot](docs/plugin/09-slot-header-right.png)](docs/plugin/09-slot-header-right.png)
+
+*Compact 24h spend + percentage against the global daily cap. Badge turns `destructive` on hard breach.*
+
+> *Tip:* run [`tools/seed_demo_data.py`](tools/seed_demo_data.py) against an isolated `HERMES_HOME` to populate the dashboard with realistic demo data before taking your own screenshots.
+
+### What you get
+
+- A `/telemetry` tab with sub-tabs: **Summary**, **Runs**, **Requests**, **Providers**, **Cron**, **Budgets**.
+- Slot widgets on the existing dashboard pages:
+  - `sessions:top` — last run summary (cost · tokens · model).
+  - `cron:top` — 7-day cron cost and failure badge.
+  - `header-right` — 24h spend + global daily budget level (semáforo).
+  - `analytics:bottom` — daily cost chart (Chart.js loaded from CDN).
+
+### How discovery works
+
+When the Hermes dashboard process starts, it scans for `~/.hermes/plugins/<name>/dashboard/manifest.json` (verified against [`hermes_cli/web_server.py`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/web_server.py)). Because the standalone dashboard at `dashboard/serve.py` and the plugin manifest at `dashboard/manifest.json` live in the same directory, **a single `git pull` brings both surfaces up to date**.
+
+### Install / update (git pull, no PyPI)
+
+If you already installed the plugin via Option B (manual clone) above, you don't need to do anything — `git pull` updates both the runtime hooks and the dashboard plugin surface in lockstep:
+
+```bash
+cd ~/.hermes/plugins/hermes-telemetry
+git pull
+hermes gateway restart
+# (no separate restart for the dashboard process, but reload the page)
+```
+
+To force the Hermes dashboard to rescan plugins without restarting it:
+
+```bash
+curl -sS http://localhost:<dashboard-port>/api/dashboard/plugins/rescan
+```
+
+### Backend routes (mounted at `/api/plugins/hermes-telemetry/*`)
+
+The plugin exposes a read-only FastAPI router. The DB connection opens with `PRAGMA query_only=ON`; the plugin **never writes** to `telemetry.db`.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | Smoke endpoint. |
+| GET | `/summary?window_hours=24` | Run/LLM totals + daily cost series. |
+| GET | `/token-breakdown?window_hours=24` | Tokens by component. |
+| GET | `/runs?limit=50&window_hours=0` | Recent runs. |
+| GET | `/requests?limit=100&window_hours=0` | Recent LLM calls. |
+| GET | `/providers?window_hours=24` | Per-provider totals. |
+| GET | `/cron?window_hours=168` | Per-cron-job aggregate. |
+| GET | `/session/{session_id}` | Single-session detail. |
+| GET | `/budget` | Global daily/monthly budget status. |
+
+### The two dashboards: when to use each
+
+| Surface | Lives at | Best for |
+|---------|----------|----------|
+| **Standalone** | `dashboard/serve.py` — `python serve.py` → `http://localhost:8765` | Headless / SSH access, cron-only deployments, environments without the Hermes web dashboard. |
+| **Hermes plugin** | `dashboard/manifest.json` + `dashboard/plugin_api.py` | Interactive use alongside other Hermes features. Theming, header/sidebar slots, native auth. |
+
+They share **zero Python code** — only the SQLite DB. The isolation is enforced by `tests/test_dashboard_plugin_isolation.py`.
+
+-----
+
 ## Quick Start
 
 1. Install and enable the plugin (see above)

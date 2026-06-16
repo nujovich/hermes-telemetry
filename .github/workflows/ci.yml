@@ -33,6 +33,32 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      - name: JS bundle syntax (plugin IIFE)
+        run: node --check dashboard/dist/index.js
+
+      - name: Version sync — pyproject ↔ __init__ ↔ plugin.yaml ↔ manifest.json
+        run: |
+          python - <<'PY'
+          import json, pathlib, re, sys, tomllib
+
+          root = pathlib.Path(".")
+          pyver = tomllib.load(open(root / "pyproject.toml", "rb"))["project"]["version"]
+          init  = re.search(r'^__version__\s*=\s*"([^"]+)"',
+                            (root / "__init__.py").read_text(), re.M).group(1)
+          plug  = re.search(r'^version:\s*"?([\d.]+)"?',
+                            (root / "plugin.yaml").read_text(), re.M).group(1)
+          manif = json.loads((root / "dashboard" / "manifest.json").read_text())["version"]
+
+          versions = {"pyproject": pyver, "__init__": init,
+                      "plugin.yaml": plug, "dashboard/manifest.json": manif}
+          unique = set(versions.values())
+          if len(unique) != 1:
+              for k, v in versions.items():
+                  print(f"  {k}: {v}")
+              sys.exit("::error::version drift across files")
+          print(f"Version OK: {pyver}")
+          PY
+
   # -----------------------------------------------------------------------
   # Tests — pytest on Python 3.8–3.12
   # -----------------------------------------------------------------------
