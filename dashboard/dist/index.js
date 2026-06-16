@@ -250,8 +250,21 @@
     // swap this for a per-row card.
     const [run, setRun] = useState(null);
     useEffect(() => {
-      api("/runs?limit=1&window_hours=0")
-        .then((d) => setRun((d.rows && d.rows[0]) || null))
+      // Pull a handful of recent runs and pick the first one with real data.
+      // The literal last run in the table can be a session that died at
+      // init (no API key, agent never made a call), which shows as a noisy
+      // "Last run: $0.0000 · 0 in / 0 out" badge.
+      api("/runs?limit=10&window_hours=0")
+        .then((d) => {
+          const rows = (d && d.rows) || [];
+          const real = rows.find((r) =>
+            (r.cost_usd || 0) > 0
+            || (r.tokens_in || 0) > 0
+            || (r.tokens_out || 0) > 0
+            || r.model,
+          );
+          setRun(real || null);
+        })
         .catch(() => setRun(null));
     }, []);
     if (!run) return null;
