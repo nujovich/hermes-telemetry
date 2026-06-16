@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Pricing auto-refresh from remote sources.
 
-Fetches model pricing from provider APIs and merges into ~/.hermes/telemetry/pricing.yaml.
-Designed for extensibility: add new sources by subclassing PricingSource.
+Fetches model pricing from provider APIs and writes ~/.hermes/telemetry/
+pricing.auto.yaml. The file is fully replaced on each refresh (no merge into
+pricing.yaml), which is what makes the v0.6 split between manual overrides
+and auto-fetched entries collision-free by construction.
 
 Usage:
     python -m hermes_telemetry.pricing_refresh          # refresh all sources
@@ -23,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 PRICING_FILE = (
     Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "telemetry" / "pricing.yaml"
+)
+AUTO_FILE = (
+    Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "telemetry" / "pricing.auto.yaml"
 )
 
 
@@ -64,7 +69,7 @@ class OpenRouterSource(PricingSource):
 
     API: https://openrouter.ai/api/v1/models
     No auth required. Returns pricing in USD per token (not per 1M).
-    We convert to per-1M-tokens to match the existing pricing.yaml format.
+    We convert to per-1M-tokens to match the existing pricing format.
     """
 
     name = "openrouter"
@@ -85,13 +90,11 @@ class OpenRouterSource(PricingSource):
             if not pricing:
                 continue
 
-            # OpenRouter returns prices per token as strings like "0.00000250"
             inp = self._parse_price(pricing.get("prompt", "0"))
             out = self._parse_price(pricing.get("completion", "0"))
             if inp == 0 and out == 0:
                 continue
 
-            # Convert per-token to per-1M-tokens
             inp = round(inp * 1_000_000, 4)
             out = round(out * 1_000_000, 4)
 
@@ -103,7 +106,7 @@ class OpenRouterSource(PricingSource):
                 inp = 0.0
                 out = 0.0
 
-            entry = {"input": inp, "output": out}
+            entry: dict = {"input": inp, "output": out}
             if estimated_price:
                 entry["_estimated_price"] = True
 
@@ -114,7 +117,6 @@ class OpenRouterSource(PricingSource):
 
     @staticmethod
     def _parse_price(val: Any) -> float:
-        """Parse a price string like '0.00000250' to float."""
         try:
             return float(val)
         except (ValueError, TypeError):
@@ -127,17 +129,12 @@ class OpenRouterSource(PricingSource):
 class GoogleAISource(PricingSource):
     """Google AI Studio direct-provider pricing.
 
-    Google does not expose a structured pricing API, so this source ships a
-    constant table mirroring https://ai.google.dev/gemini-api/docs/pricing.
+    Constant table mirroring https://ai.google.dev/gemini-api/docs/pricing.
     Refresh manually on each release cycle: update _PRICES, bump LAST_VERIFIED,
     run tests, ship.
 
-    Keys are the bare model IDs Hermes reports when provider=google (no
-    "google/" prefix — that's what OpenRouterSource handles).
-
-    Tiered-pricing models (gemini-2.5-pro, gemini-3.1-pro-preview) use the
-    <=200k context tier; the >200k tier is out of scope until the pricing
-    schema supports tiering.
+    Keys are bare model IDs (no `google/` prefix). Tiered-pricing models use
+    the <=200k context tier only.
     """
 
     name = "google-ai"
@@ -169,7 +166,6 @@ class GoogleAISource(PricingSource):
 _SOURCES: list[type[PricingSource]] = [
     OpenRouterSource,
     GoogleAISource,
-    # Future: AnthropicSource, OpenAISource, etc.
 ]
 
 
@@ -179,148 +175,106 @@ def register_source(cls: type[PricingSource]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Merge logic
+# Refresh — full replacement of pricing.auto.yaml
 # ---------------------------------------------------------------------------
-def _load_yaml(path: Path) -> dict:
+def _load_auto(path: Path) -> dict:
     if not path.exists():
-        return {
-            "models": {},
-            "defaults": {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25},
-        }
+        return {}
     try:
         import yaml
 
         with open(path) as f:
-            return yaml.safe_load(f) or {"models": {}, "defaults": {}}
+            return yaml.safe_load(f) or {}
     except Exception as exc:
-        logger.error("Failed to load %s: %s", path, exc)
-        return {"models": {}, "defaults": {}}
+        logger.warning("Failed to read %s: %s", path, exc)
+        return {}
 
 
-def _save_yaml(path: Path, data: dict) -> None:
-    try:
-        import yaml
+def _save_auto(path: Path, data: dict) -> None:
+    import yaml
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-    except Exception as exc:
-        logger.error("Failed to save %s: %s", path, exc)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 
 def refresh_pricing(dry_run: bool = False) -> tuple[dict[str, dict], list[dict]]:
-    """Fetch all pricing sources and merge into pricing.yaml.
+    """Fetch all pricing sources and rewrite ``pricing.auto.yaml``.
 
-    Merge strategy:
-    - Existing manual entries are preserved (user overrides take priority)
-    - New models from remote sources are added
-    - Existing auto-refreshed models are updated
-    - Models are tagged with source and last_updated for traceability
+    The auto file is fully replaced — the v0.6 split moves manual overrides to
+    pricing.yaml, so the refresher no longer needs to preserve user edits or
+    track auto_models. Anything not returned by a source this run is gone from
+    the file (which is what you want for prices that vanished upstream).
 
     Returns:
-        (changes, manual_overrides) where
-        changes: {model: {old, new, source}}
-        manual_overrides: [{model, local_input, remote_input, local_output, remote_output}]
+        (changes, manual_overrides) where:
+          - changes: {model: {"old": prev_dict|None, "new": curr_dict, "source": src_name}}
+          - manual_overrides: always [] in v0.6 (kept for backward-compatible
+            unpacking; collisions are structurally impossible now).
     """
-    existing = _load_yaml(PRICING_FILE)
-    existing_models = existing.get("models", {})
-    defaults = existing.get(
-        "defaults", {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25}
-    )
+    prev = _load_auto(AUTO_FILE)
+    prev_sources = prev.get("sources") or {}
+    prev_flat: dict[str, tuple[str, dict]] = {}
+    if isinstance(prev_sources, dict):
+        for src, models in prev_sources.items():
+            if not isinstance(models, dict):
+                continue
+            for m, entry in models.items():
+                prev_flat[m] = (src, {k: v for k, v in entry.items() if not k.startswith("_")})
 
-    # Track which models came from auto-refresh vs manual
-    # We use a special _meta key to track auto-refreshed models
-    meta = existing.get("_meta", {})
-    auto_models = set(meta.get("auto_models", []))
+    new_sources: dict[str, dict[str, dict]] = {}
+    estimated_models: list[str] = []
+    source_names: list[str] = []
 
-    changes: dict[str, dict] = {}
-    all_fetched: dict[str, dict] = {}
-
-    # Fetch all sources
     for source_cls in _SOURCES:
         source = source_cls()
+        source_names.append(source.name)
         try:
             fetched = source.fetch()
-            for model, pricing in fetched.items():
-                if model not in all_fetched:
-                    all_fetched[model] = {**pricing, "_source": source.name}
         except Exception as exc:
             logger.error("Source %s failed: %s", source.name, exc)
-
-    # Merge: only update models that were auto-refreshed or are new
-    new_auto_models = set()
-    manual_overrides: list[dict] = []
-    for model, pricing in all_fetched.items():
-        source = pricing.pop("_source", "unknown")
-        new_auto_models.add(model)
-
-        if model in existing_models:
-            # A model that exists but was never auto-fetched is manual.
-            # Never overwrite manual entries — user overrides take priority.
-            is_manual = model not in auto_models
-            if is_manual:
-                fetched_input = pricing.get("input", 0)
-                existing_input = existing_models[model].get("input", 0)
-                if fetched_input != existing_input:
-                    logger.info(
-                        "Manual override preserved for %s "
-                        "(remote=%s, local=%s) — update pricing.yaml manually if needed",
-                        model,
-                        fetched_input,
-                        existing_input,
-                    )
-                    manual_overrides.append(
-                        {
-                            "model": model,
-                            "local_input": existing_input,
-                            "remote_input": fetched_input,
-                            "local_output": existing_models[model].get("output", 0),
-                            "remote_output": pricing.get("output", 0),
-                        }
-                    )
-                new_auto_models.discard(model)
+            continue
+        bucket = new_sources.setdefault(source.name, {})
+        for model, entry in fetched.items():
+            # First source to claim a model id wins (matches pre-v0.6 behaviour
+            # where OpenRouter populated first and Google-AI's bare gemini-* ids
+            # never collided with openrouter's google/-prefixed ones).
+            if any(model in s for s in new_sources.values() if s is not bucket):
                 continue
+            clean = dict(entry)
+            estimated = bool(clean.pop("_estimated_price", False))
+            bucket[model] = clean
+            if estimated:
+                estimated_models.append(model)
+                # Round-trip the flag on disk so the loader picks it up.
+                bucket[model]["_estimated_price"] = True
 
-            # It was auto-refreshed before — update if values changed
-            old = {k: v for k, v in existing_models[model].items() if not k.startswith("_")}
-            if old != pricing:
-                changes[model] = {"old": old, "new": pricing, "source": source}
-            existing_models[model] = {**pricing, "_auto": True, "_source": source}
-        else:
-            # New model -- add it
-            changes[model] = {"old": None, "new": pricing, "source": source}
-            existing_models[model] = {**pricing, "_auto": True, "_source": source}
+    # Compute diff vs previous auto file for the CLI report.
+    changes: dict[str, dict] = {}
+    new_flat: dict[str, tuple[str, dict]] = {}
+    for src, models in new_sources.items():
+        for m, entry in models.items():
+            new_flat[m] = (src, {k: v for k, v in entry.items() if not k.startswith("_")})
+    for m, (src, prices) in new_flat.items():
+        prev_prices = prev_flat.get(m, (None, None))[1]
+        if prev_prices is None:
+            changes[m] = {"old": None, "new": prices, "source": src}
+        elif prev_prices != prices:
+            changes[m] = {"old": prev_prices, "new": prices, "source": src}
 
-    # Update meta
-    meta["auto_models"] = sorted(new_auto_models)
-    # Subscription models (manual `_subscription: true`) are a *declared* $0 —
-    # a flat-sub / free-tier rate — and must stay distinguishable from a lookup
-    # failure and from estimated-price models. They are never auto-populated;
-    # they only appear because a user hand-added them (issue #24, Option A).
-    meta["subscription_models"] = sorted(
-        m for m, e in existing_models.items() if e.get("_subscription")
-    )
-    meta["estimated_price_models"] = sorted(
-        m
-        for m, e in existing_models.items()
-        if e.get("_estimated_price") and not e.get("_subscription")
-    )
-    meta["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    meta["sources"] = [s.name for s in _SOURCES]
+    out: dict = {"sources": new_sources}
+    if estimated_models:
+        out["estimated_price_models"] = sorted(set(estimated_models))
+    out["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    out["sources_list"] = source_names
 
-    existing["models"] = existing_models
-    existing["defaults"] = defaults
-    existing["_meta"] = meta
-
-    if not dry_run and changes:
-        _save_yaml(PRICING_FILE, existing)
-        logger.info("pricing.yaml updated: %d changes", len(changes))
-    elif dry_run:
-        logger.info("dry-run: %d changes would be made", len(changes))
+    if not dry_run:
+        _save_auto(AUTO_FILE, out)
+        logger.info("pricing.auto.yaml written: %d models, %d changes", len(new_flat), len(changes))
     else:
-        logger.info("no changes detected")
+        logger.info("dry-run: %d changes would be made", len(changes))
 
-    return changes, manual_overrides
+    return changes, []
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +293,7 @@ def main():
         format="%(levelname)s %(message)s",
     )
 
-    changes, manual_overrides = refresh_pricing(dry_run=args.check)
+    changes, _ = refresh_pricing(dry_run=args.check)
 
     if changes:
         label = "Would update" if args.check else "Updated"
@@ -356,23 +310,7 @@ def main():
                     new_v = diff["new"].get(key, 0)
                     if old_v != new_v:
                         print(f"      {key}: {old_v:.4f} → {new_v:.4f}")
-
-    if manual_overrides:
-        print(
-            f"\n⚠  Manual overrides preserved ({len(manual_overrides)} model(s) with differing remote prices):\n"
-        )
-        for mo in sorted(manual_overrides, key=lambda x: x["model"]):
-            print(f"    {mo['model']}")
-            if mo["local_input"] != mo["remote_input"]:
-                print(
-                    f"      input:  local={mo['local_input']:.4f}  remote={mo['remote_input']:.4f}"
-                )
-            if mo["local_output"] != mo["remote_output"]:
-                print(
-                    f"      output: local={mo['local_output']:.4f}  remote={mo['remote_output']:.4f}"
-                )
-
-    if not changes and not manual_overrides:
+    else:
         print("No changes. Pricing is up to date.")
 
 
