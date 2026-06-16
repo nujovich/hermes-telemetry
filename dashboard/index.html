@@ -253,6 +253,7 @@
         <div class="settings-group">
           <label for="homeTrendGranularitySelect">Chart view</label>
           <select id="homeTrendGranularitySelect" onchange="closeSettingsMenu(); setHomeTrendGranularity(this.value)">
+            <option value="hour">Hourly</option>
             <option value="day">Daily</option>
             <option value="week">Weekly</option>
             <option value="month">Monthly</option>
@@ -497,7 +498,7 @@ function closeSettingsMenu() {
   $('#settingsToggle')?.classList.remove('open');
 }
 function granularityLabel(g) {
-  return ({ day: 'Daily', week: 'Weekly', month: 'Monthly' }[g]) || 'Daily';
+  return ({ hour: 'Hourly', day: 'Daily', week: 'Weekly', month: 'Monthly' }[g]) || 'Daily';
 }
 function setUsageGranularity(g) {
   if (!['day', 'week', 'month'].includes(g) || g === currentUsageGranularity) return;
@@ -515,7 +516,7 @@ function setMetricTrendMetric(metric) {
   loadAll({showShell:false});
 }
 function setHomeTrendGranularity(g) {
-  if (!['day', 'week', 'month'].includes(g) || g === currentHomeTrendGranularity) return;
+  if (!['hour', 'day', 'week', 'month'].includes(g) || g === currentHomeTrendGranularity) return;
   currentHomeTrendGranularity = g;
   const select = $('#homeTrendGranularitySelect');
   if (select) select.value = g;
@@ -741,8 +742,23 @@ function fmtShortDayLabel(day) {
   return d ? new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(d) : day;
 }
 
-function fmtTrendPeriodLabel(value, granularity = currentHomeTrendGranularity) {
+function fmtHourLabel(value, opts = {}) {
+  const d = parseDashboardTs(`${value}:00Z`);
+  if (!d) return value;
+  return new Intl.DateTimeFormat(undefined, opts.full
+    ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+    : { hour: 'numeric' }).format(d);
+}
+
+function effectiveHomeTrendGranularity(hoursValue = $('#windowSelect')?.value || '0') {
+  const hours = Number(hoursValue);
+  if (currentHomeTrendGranularity === 'day' && hours > 0 && hours <= 24) return 'hour';
+  return currentHomeTrendGranularity;
+}
+
+function fmtTrendPeriodLabel(value, granularity = effectiveHomeTrendGranularity()) {
   if (!value) return '—';
+  if (granularity === 'hour') return fmtHourLabel(value);
   if (granularity === 'month') {
     const d = parseDashboardTs(`${value}-01T00:00:00Z`);
     return d ? new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric' }).format(d) : value;
@@ -769,6 +785,7 @@ function buildMetricTrendSummary(rows) {
 
 function renderMetricTrendCard(rows, hours, summaryOverrides = {}) {
   const trendRows = rows || [];
+  const effectiveGranularity = effectiveHomeTrendGranularity(hours);
   const summary = { ...buildMetricTrendSummary(trendRows), ...(summaryOverrides || {}) };
   const metrics = ['tokens', 'api_calls', 'request_runs', 'messages', 'tool_calls', 'cron_job_runs', 'cost', 'savings'];
   const chartRows = getMetricTrendRows(trendRows, currentMetricTrendMetric);
@@ -780,7 +797,7 @@ function renderMetricTrendCard(rows, hours, summaryOverrides = {}) {
       : '';
     return `<button class="metric-trend-stat ${metric === currentMetricTrendMetric ? 'active' : ''}" onclick="setMetricTrendMetric('${metric}')"><div class="metric-trend-label-row"><span class="metric-trend-label">${meta.label}</span>${meta.info ? `<span class="metric-trend-info">${meta.info}</span>` : ''}</div><div class="metric-trend-value-row"><span class="metric-trend-value">${fmtCompactMetricValue(metric, raw)}</span>${pill}</div></button>`;
   }).join('');
-  const emptyLabel = granularityLabel(currentHomeTrendGranularity).toLowerCase();
+  const emptyLabel = granularityLabel(effectiveGranularity).toLowerCase();
   return `<div class="chart-card full-width-chart metric-trend-card">
     <div class="metric-trend-header">${stats}</div>
     <div class="metric-trend-body">
@@ -1405,8 +1422,14 @@ function drawMetricTrendChart(canvasId, rows) {
   const chartRows = getMetricTrendRows(rows, currentMetricTrendMetric);
   if (!canvas || !chartRows.length) return;
   const meta = trendMetricMeta(currentMetricTrendMetric);
-  const labels = chartRows.map(row => fmtTrendPeriodLabel(row.day, currentHomeTrendGranularity));
-  const fullLabels = chartRows.map(row => currentHomeTrendGranularity === 'week' ? `Week of ${row.day}` : currentHomeTrendGranularity === 'month' ? fmtTrendPeriodLabel(row.day, 'month') : (row.day || fmtTrendPeriodLabel(row.day, 'day')));
+  const effectiveGranularity = effectiveHomeTrendGranularity();
+  const labels = chartRows.map(row => fmtTrendPeriodLabel(row.day, effectiveGranularity));
+  const fullLabels = chartRows.map(row => {
+    if (effectiveGranularity === 'hour') return fmtHourLabel(row.day, { full: true });
+    if (effectiveGranularity === 'week') return `Week of ${row.day}`;
+    if (effectiveGranularity === 'month') return fmtTrendPeriodLabel(row.day, 'month');
+    return row.day || fmtTrendPeriodLabel(row.day, 'day');
+  });
   const tokenDatasets = [
     { key: 'total_tokens', label: 'Total', borderColor: '#22d3ee', backgroundColor: 'rgba(34,211,238,0.16)', fill: true, tension: 0.32, pointRadius: 3, pointHoverRadius: 5, borderWidth: 3, yAxisID: 'y' },
     { key: 'tokens_in', label: 'Input', borderColor: '#4f8cff', backgroundColor: 'rgba(79,140,255,0)', fill: false, tension: 0.28, pointRadius: 2, pointHoverRadius: 4, borderWidth: 2.5, yAxisID: 'y1' },
@@ -1755,6 +1778,7 @@ async function loadAll(options = {}) {
   const app = $('#app');
   const hours = $('#windowSelect').value;
   const homeTrendGranularitySelect = $('#homeTrendGranularitySelect');
+  const effectiveHomeGranularity = effectiveHomeTrendGranularity(hours);
   if (homeTrendGranularitySelect) homeTrendGranularitySelect.value = currentHomeTrendGranularity;
   if (hours !== lastWindowHours) {
     currentDailyTokensPage = 1;
@@ -1779,7 +1803,7 @@ async function loadAll(options = {}) {
       fetchJSON(`/api/model-tokens?hours=${hours}&limit=100`),
       fetchJSON(`/api/model-efficiency?hours=${hours}&limit=50`),
       fetchJSON(`/api/daily-tokens?hours=${hours}&page=${currentDailyTokensPage}&per_page=15`),
-      fetchJSON(`/api/daily-token-chart?hours=${chartHours}&limit_days=${chartLimitDays}&include_deleted=1&granularity=${currentHomeTrendGranularity}`),
+      fetchJSON(`/api/daily-token-chart?hours=${chartHours}&limit_days=${chartLimitDays}&include_deleted=1&granularity=${effectiveHomeGranularity}`),
       fetchJSON(`/api/daily-model-chart?hours=${chartHours}&limit_days=${chartLimitDays}&top_n=5&include_deleted=1`),
       fetchJSON(`/api/model-period-trends?hours=${hours}&granularity=${currentUsageGranularity}&metric=${currentUsageMetric}&top_n=6&limit_periods=${trendLimit}`),
       fetchJSON(`/api/model-share-comparison?hours=${hours}&granularity=${currentUsageGranularity}&limit=12`),
