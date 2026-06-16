@@ -403,18 +403,27 @@ hermes-telemetry — providers (last 24 h)
 
 ```
 hermes-telemetry — models (last 24 h)
-================================================================================================
-  Provider             Model                                           Calls   Real   Est         Cost
-  ----------------------------------------------------------------------------------------------
-  openrouter           owl-alpha                                          66     66     0    $0.000000
-  openrouter           anthropic/claude-sonnet-4-6                        42     42     0    $0.314378
-  openrouter           anthropic/claude-opus-4-7                           8      8     0    $2.225595
+============================================================================================================
+  Provider             Model                                           Calls   Real   Est         Cost  Notes
+  ----------------------------------------------------------------------------------------------------------
+  nous                 deepseek/deepseek-v4-pro-20260423                 449    448     1    $2.318788
+  nous                 nvidia/nemotron-3-ultra:free                      153    153     0    $0.000000  subscription/free-tier
+  openrouter           some/unpriced-model                                12     12     0    $0.000000  no price entry
 
-  Rows are grouped by provider, then by calls (desc). A model showing $0.00 has no price entry
-  in pricing.yaml — run /setup pricing auto to refresh, or add it manually.
+  Rows are grouped by provider, then by calls (desc).
+  1 model(s) at $0.00 are subscription/free tier (declared in pricing.yaml via `_subscription: true`).
+  1 model(s) at $0.00 have no price entry in pricing.yaml — run /setup pricing auto
+  to refresh, or add them manually.
 ```
 
-Breaks each provider's spend down to individual models. Rows are grouped by provider (ascending), then ordered by call count within each provider; the `Model` column is kept wide so dated model keys stay readable. Columns: `Calls` (total), `Real` (calls with provider-reported usage), `Est` (calls with locally estimated tokens), and `Cost`. A model showing `$0.000000` has no price entry in `pricing.yaml`.
+Breaks each provider's spend down to individual models. Rows are grouped by provider (ascending), then ordered by call count within each provider; the `Model` column is kept wide so dated model keys stay readable. Columns: `Calls` (total), `Real` (calls with provider-reported usage), `Est` (calls with locally estimated tokens), `Cost`, and `Notes`.
+
+The `Notes` column disambiguates `$0.000000` rows so the user can tell intentional zeros from missing pricing:
+
+- **`subscription/free-tier`** — the model is declared with `_subscription: true` in `pricing.yaml`. The $0 is intentional (subscription plan or free tier), not a bug. Pricing refresh preserves these entries verbatim.
+- **`no price entry`** — there is no row for this model in `pricing.yaml`. The $0 means Hermes had nothing to multiply by; run `/setup pricing auto` to refresh, or add a manual entry.
+
+The footer reflects the same split: subscription rows are claimed as declared, no-entry rows keep the original `/setup pricing auto` hint, and a mixed window emits both lines.
 
 ### `/budget`
 
