@@ -11,7 +11,10 @@ def test_stats_today_default_text(capsys):
         main(["stats"])
     out, _ = capsys.readouterr()
     assert out == "STATS_TODAY\n"
-    m.assert_called_once_with(24)
+    # Now called with date_from/date_to keyword args
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert kwargs.get("date_to") is None
 
 
 def test_stats_today_explicit_text(capsys):
@@ -19,62 +22,76 @@ def test_stats_today_explicit_text(capsys):
         main(["stats", "today"])
     out, _ = capsys.readouterr()
     assert out == "STATS_TODAY\n"
-    m.assert_called_once_with(24)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert kwargs.get("date_to") is None
 
 
 @pytest.mark.parametrize(
-    "argv,expected_hours",
+    "argv,expected_from_substr",
     [
-        (["stats", "week"], 168),
-        (["stats", "month"], 720),
+        (["stats", "week"], "202"),  # year in date_from
+        (["stats", "month"], "202"),
     ],
 )
-def test_stats_summary_window_text(argv, expected_hours, capsys):
+def test_stats_summary_window_text(argv, expected_from_substr, capsys):
     with patch("hermes_telemetry.stats._summary_block", return_value="S") as m:
         main(argv)
-    m.assert_called_once_with(expected_hours)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert expected_from_substr in kwargs["date_from"]
+    assert kwargs.get("date_to") is None
 
 
 @pytest.mark.parametrize(
-    "argv,expected_hours",
+    "argv,expected_from_substr",
     [
-        (["stats", "cron"], 168),
-        (["stats", "cron-week"], 168),
-        (["stats", "cron-month"], 720),
+        (["stats", "cron"], "202"),
+        (["stats", "cron-week"], "202"),
+        (["stats", "cron-month"], "202"),
     ],
 )
-def test_stats_cron_text(argv, expected_hours, capsys):
+def test_stats_cron_text(argv, expected_from_substr, capsys):
     with patch("hermes_telemetry.stats._cron_block", return_value="C") as m:
         main(argv)
-    m.assert_called_once_with(expected_hours)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert expected_from_substr in kwargs["date_from"]
+    assert kwargs.get("date_to") is None
 
 
 @pytest.mark.parametrize(
-    "argv,expected_hours",
+    "argv,expected_from_substr",
     [
-        (["stats", "providers"], 24),
-        (["stats", "providers-week"], 168),
-        (["stats", "providers-month"], 720),
+        (["stats", "providers"], "202"),
+        (["stats", "providers-week"], "202"),
+        (["stats", "providers-month"], "202"),
     ],
 )
-def test_stats_providers_text(argv, expected_hours, capsys):
+def test_stats_providers_text(argv, expected_from_substr, capsys):
     with patch("hermes_telemetry.stats._providers_block", return_value="P") as m:
         main(argv)
-    m.assert_called_once_with(expected_hours)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert expected_from_substr in kwargs["date_from"]
+    assert kwargs.get("date_to") is None
 
 
 @pytest.mark.parametrize(
-    "argv,expected_hours",
+    "argv,expected_from_substr",
     [
-        (["stats", "models"], 24),
-        (["stats", "models-week"], 168),
-        (["stats", "models-month"], 720),
+        (["stats", "models"], "202"),
+        (["stats", "models-week"], "202"),
+        (["stats", "models-month"], "202"),
     ],
 )
-def test_stats_models_text(argv, expected_hours, capsys):
+def test_stats_models_text(argv, expected_from_substr, capsys):
     with patch("hermes_telemetry.stats._models_block", return_value="M") as m:
         main(argv)
-    m.assert_called_once_with(expected_hours)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert expected_from_substr in kwargs["date_from"]
+    assert kwargs.get("date_to") is None
 
 
 def test_budget_status_text(capsys):
@@ -111,7 +128,9 @@ def test_stats_today_json(capsys):
     out, _ = capsys.readouterr()
     data = _json.loads(out)
     assert data["total_runs"] == 3
-    m.assert_called_once_with(24)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert kwargs.get("date_to") is None
 
 
 def test_stats_week_json(capsys):
@@ -121,7 +140,9 @@ def test_stats_week_json(capsys):
     out, _ = capsys.readouterr()
     data = _json.loads(out)
     assert data["total_runs"] == 20
-    m.assert_called_once_with(168)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert kwargs.get("date_to") is None
 
 
 def test_stats_cron_json(capsys):
@@ -131,7 +152,9 @@ def test_stats_cron_json(capsys):
     out, _ = capsys.readouterr()
     data = _json.loads(out)
     assert data[0]["job_id"] == "backup"
-    m.assert_called_once_with(168)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert kwargs.get("date_to") is None
 
 
 def test_stats_providers_json(capsys):
@@ -141,7 +164,9 @@ def test_stats_providers_json(capsys):
     out, _ = capsys.readouterr()
     data = _json.loads(out)
     assert data[0]["provider"] == "anthropic"
-    m.assert_called_once_with(24)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert kwargs.get("date_to") is None
 
 
 def test_stats_models_json(capsys):
@@ -151,49 +176,60 @@ def test_stats_models_json(capsys):
     out, _ = capsys.readouterr()
     data = _json.loads(out)
     assert data[0]["model"] == "claude-sonnet-4-6"
-    m.assert_called_once_with(24)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert kwargs.get("date_to") is None
 
 
 @pytest.mark.parametrize(
-    "argv,expected_hours",
+    "argv,expected_from_substr",
     [
-        (["stats", "cron-week", "--json"], 168),
-        (["stats", "cron-month", "--json"], 720),
+        (["stats", "cron-week", "--json"], "202"),
+        (["stats", "cron-month", "--json"], "202"),
     ],
 )
-def test_stats_cron_json_windowed(argv, expected_hours, capsys):
+def test_stats_cron_json_windowed(argv, expected_from_substr, capsys):
     fake = [{"job_id": "j", "cost_usd": 0.01}]
     with patch("hermes_telemetry.telemetry_cli.db.cost_by_job", return_value=fake) as m:
         main(argv)
-    m.assert_called_once_with(expected_hours)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert expected_from_substr in kwargs["date_from"]
+    assert kwargs.get("date_to") is None
 
 
 @pytest.mark.parametrize(
-    "argv,expected_hours",
+    "argv,expected_from_substr",
     [
-        (["stats", "providers-week", "--json"], 168),
-        (["stats", "providers-month", "--json"], 720),
+        (["stats", "providers-week", "--json"], "202"),
+        (["stats", "providers-month", "--json"], "202"),
     ],
 )
-def test_stats_providers_json_windowed(argv, expected_hours, capsys):
+def test_stats_providers_json_windowed(argv, expected_from_substr, capsys):
     fake = [{"provider": "x", "cost_usd": 0.01}]
     with patch("hermes_telemetry.telemetry_cli.db.stats_by_provider", return_value=fake) as m:
         main(argv)
-    m.assert_called_once_with(expected_hours)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert expected_from_substr in kwargs["date_from"]
+    assert kwargs.get("date_to") is None
 
 
 @pytest.mark.parametrize(
-    "argv,expected_hours",
+    "argv,expected_from_substr",
     [
-        (["stats", "models-week", "--json"], 168),
-        (["stats", "models-month", "--json"], 720),
+        (["stats", "models-week", "--json"], "202"),
+        (["stats", "models-month", "--json"], "202"),
     ],
 )
-def test_stats_models_json_windowed(argv, expected_hours, capsys):
+def test_stats_models_json_windowed(argv, expected_from_substr, capsys):
     fake = [{"model": "x", "cost_usd": 0.01}]
     with patch("hermes_telemetry.telemetry_cli.db.stats_by_model", return_value=fake) as m:
         main(argv)
-    m.assert_called_once_with(expected_hours)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert expected_from_substr in kwargs["date_from"]
+    assert kwargs.get("date_to") is None
 
 
 from hermes_telemetry.budget import BudgetVerdict  # noqa: E402

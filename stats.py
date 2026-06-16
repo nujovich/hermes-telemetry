@@ -9,10 +9,15 @@ Subcommands:
   /stats raw [N]      → last N runs (default 20)
   /stats providers    → per-provider real vs estimated breakdown (last 24h)
   /stats models       → per-model breakdown within each provider (last 24h)
+
+Date range support:
+  --from YYYY-MM-DD   → start date (inclusive)
+  --to YYYY-MM-DD     → end date (exclusive, defaults to now)
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -50,8 +55,37 @@ def _window_label(hours: int) -> str:
     return f"last {hours // 24} days"
 
 
-def _summary_block(window_hours: int) -> str:
-    s = db.stats_summary(window_hours)
+def _date_range_label(date_from: str | None, date_to: str | None) -> str:
+    if date_from and date_to:
+        return f"{date_from[:10]} to {date_to[:10]}"
+    if date_from:
+        return f"since {date_from[:10]}"
+    if date_to:
+        return f"until {date_to[:10]}"
+    return "all time"
+
+
+def _date_range_to_hours(date_from: str | None, date_to: str | None) -> int | None:
+    """Convert date range to approximate hours for backward compat label."""
+    if not date_from:
+        return None
+    try:
+        from_dt = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
+        to_dt = (
+            datetime.fromisoformat(date_to.replace("Z", "+00:00"))
+            if date_to
+            else datetime.now(timezone.utc)
+        )
+        hours = int((to_dt - from_dt).total_seconds() / 3600)
+        return hours
+    except Exception:
+        return None
+
+
+def _summary_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    s = db.stats_summary(window_hours=window_hours, date_from=date_from, date_to=date_to)
     total = s.get("total_runs") or 0
     ok = s.get("ok_runs") or 0
     failed = s.get("failed_runs") or 0
@@ -66,8 +100,10 @@ def _summary_block(window_hours: int) -> str:
     cost_val = s.get("cost_usd")
     cost_str = f"~{_fmt_cost(cost_val)}" if has_estimated else _fmt_cost(cost_val)
 
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
+
     lines = [
-        f"hermes-telemetry — {_window_label(window_hours)}",
+        f"hermes-telemetry — {label}",
         "=" * 44,
         f"  Sessions      : {_fmt_int(total)}",
         f"  Success rate  : {success_rate}  (ok={_fmt_int(ok)}, failed={_fmt_int(failed)})",
@@ -106,13 +142,16 @@ def _summary_block(window_hours: int) -> str:
     return "\n".join(lines)
 
 
-def _cron_block(window_hours: int = 168) -> str:
-    rows = db.cost_by_job(window_hours)
+def _cron_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    rows = db.cost_by_job(window_hours=window_hours, date_from=date_from, date_to=date_to)
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
     if not rows:
-        return f"No cron runs in the last {window_hours // 24} days."
+        return f"No cron runs in {label}."
 
     lines = [
-        f"hermes-telemetry — cron jobs ({_window_label(window_hours)})",
+        f"hermes-telemetry — cron jobs ({label})",
         "=" * 72,
         f"  {'Job ID':<20} {'Runs':>5} {'OK':>5} {'Fail':>5} {'Tok-in':>9} {'Tok-out':>9} {'Cost':>12} {'Avg dur':>9}",
         "  " + "-" * 70,
@@ -132,13 +171,16 @@ def _cron_block(window_hours: int = 168) -> str:
     return "\n".join(lines)
 
 
-def _providers_block(window_hours: int = 24) -> str:
-    rows = db.stats_by_provider(window_hours)
+def _providers_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    rows = db.stats_by_provider(window_hours=window_hours, date_from=date_from, date_to=date_to)
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
     if not rows:
-        return f"No API calls recorded in the {_window_label(window_hours)}."
+        return f"No API calls recorded in {label}."
 
     lines = [
-        f"hermes-telemetry — providers ({_window_label(window_hours)})",
+        f"hermes-telemetry — providers ({label})",
         "=" * 72,
         f"  {'Provider':<28} {'Calls':>6} {'Real':>6} {'Est':>5} {'Est%':>6} {'Cost':>12}",
         "  " + "-" * 67,
@@ -199,10 +241,13 @@ def _providers_block(window_hours: int = 24) -> str:
     return "\n".join(lines)
 
 
-def _models_block(window_hours: int = 24) -> str:
-    rows = db.stats_by_model(window_hours)
+def _models_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    rows = db.stats_by_model(window_hours=window_hours, date_from=date_from, date_to=date_to)
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
     if not rows:
-        return f"No API calls recorded in the {_window_label(window_hours)}."
+        return f"No API calls recorded in {label}."
 
     # Subscription models (`_subscription: true` in pricing.yaml) are an
     # explicitly declared $0 — surface them so the $0.00 footer can stop
@@ -212,7 +257,7 @@ def _models_block(window_hours: int = 24) -> str:
     subscription_models = _pricing._load_custom_pricing().get("subscription_models", set())
 
     lines = [
-        f"hermes-telemetry — models ({_window_label(window_hours)})",
+        f"hermes-telemetry — models ({label})",
         "=" * 108,
         f"  {'Provider':<20} {'Model':<46} {'Calls':>6} {'Real':>6} {'Est':>5} {'Cost':>12}  Notes",
         "  " + "-" * 106,
@@ -255,8 +300,8 @@ def _models_block(window_hours: int = 24) -> str:
     return "\n".join(lines)
 
 
-def _raw_block(limit: int = 20) -> str:
-    rows = db.recent_runs(limit)
+def _raw_block(limit: int = 20, *, date_from: str | None = None, date_to: str | None = None) -> str:
+    rows = db.recent_runs(limit, date_from=date_from, date_to=date_to)
     if not rows:
         return "No runs recorded yet."
 
@@ -278,32 +323,146 @@ def _raw_block(limit: int = 20) -> str:
     return "\n".join(lines)
 
 
+_ISO_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S.%fZ",
+)
+
+
+def _parse_iso_date(raw: str) -> str | None:
+    """Parse a date/timestamp into an ISO-8601 string with a UTC offset.
+
+    Returns None when the input isn't a recognized format — slash command args
+    are user-typed, so we surface a parse failure as "ignore this flag" rather
+    than raising, and the caller renders an error message inline.
+    """
+    s = raw.strip()
+    if not s:
+        return None
+    # ``fromisoformat`` handles offsets like ``+00:00`` natively and accepts
+    # ``Z`` on Python 3.11+; it covers the timestamps produced by ``_utcnow``.
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except ValueError:
+        pass
+    # Legacy strptime formats for inputs that don't carry timezone info.
+    for fmt in _ISO_DATE_FORMATS:
+        try:
+            dt = datetime.strptime(s, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_date_flags(raw_args: str) -> tuple[str, str | None, str | None, str | None]:
+    """Pull `--from <val>` and `--to <val>` out of a slash-command arg string.
+
+    Returns ``(remaining, date_from, date_to, error)`` where:
+      - ``remaining`` is the arg string with the flags removed (preset tokens
+        survive untouched and keep their original casing — the caller still
+        lowercases them).
+      - ``date_from`` / ``date_to`` are ISO-normalized or ``None``.
+      - ``error`` is a human-readable message if a flag value failed to parse,
+        otherwise ``None``. The caller short-circuits with that message.
+    """
+    if not raw_args:
+        return ("", None, None, None)
+    tokens = raw_args.split()
+    out: list[str] = []
+    date_from: str | None = None
+    date_to: str | None = None
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("--from", "--to"):
+            if i + 1 >= len(tokens):
+                return ("", None, None, f"Missing value for {tok}.")
+            parsed = _parse_iso_date(tokens[i + 1])
+            if parsed is None:
+                return (
+                    "",
+                    None,
+                    None,
+                    f"Invalid date for {tok}: {tokens[i + 1]!r} "
+                    "(use YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
+                )
+            if tok == "--from":
+                date_from = parsed
+            else:
+                date_to = parsed
+            i += 2
+        else:
+            out.append(tok)
+            i += 1
+    return (" ".join(out), date_from, date_to, None)
+
+
 def handle(raw_args: str) -> str:
-    """Entry point for /stats command handler."""
-    args = (raw_args or "").strip().lower()
+    """Entry point for /stats command handler (Slack slash command format).
+
+    Supports ``--from <iso>`` / ``--to <iso>`` flags alongside the preset
+    subcommands so the in-chat surface has parity with the standalone CLI.
+    When a date flag is supplied, the matching block ignores the preset window
+    and queries the (possibly bounded) date range instead.
+    """
+    remaining, date_from, date_to, err = _extract_date_flags(raw_args or "")
+    if err:
+        return err
+    has_range = date_from is not None or date_to is not None
+
+    args = remaining.strip().lower()
 
     if not args or args in ("today",):
+        if has_range:
+            return _summary_block(date_from=date_from, date_to=date_to)
         return _summary_block(24)
     if args == "week":
-        return _summary_block(168)
+        return (
+            _summary_block(168)
+            if not has_range
+            else _summary_block(date_from=date_from, date_to=date_to)
+        )
     if args == "month":
-        return _summary_block(720)
+        return (
+            _summary_block(720)
+            if not has_range
+            else _summary_block(date_from=date_from, date_to=date_to)
+        )
     if args in ("cron", "cron week"):
-        return _cron_block(168)
+        return (
+            _cron_block(168) if not has_range else _cron_block(date_from=date_from, date_to=date_to)
+        )
     if args == "cron month":
-        return _cron_block(720)
+        return (
+            _cron_block(720) if not has_range else _cron_block(date_from=date_from, date_to=date_to)
+        )
     if args == "cron today":
-        return _cron_block(24)
+        return (
+            _cron_block(24) if not has_range else _cron_block(date_from=date_from, date_to=date_to)
+        )
     if args.startswith("raw"):
         parts = args.split()
         try:
             limit = int(parts[1]) if len(parts) > 1 else 20
         except ValueError:
             limit = 20
+        if has_range:
+            return _raw_block(min(limit, 200), date_from=date_from, date_to=date_to)
         return _raw_block(min(limit, 200))
 
     if args.startswith("providers"):
         sub = args[len("providers") :].strip()
+        if has_range and sub in ("", "today", "week", "month"):
+            return _providers_block(date_from=date_from, date_to=date_to)
         if sub in ("", "today"):
             return _providers_block(24)
         if sub == "week":
@@ -313,6 +472,8 @@ def handle(raw_args: str) -> str:
 
     if args.startswith("models"):
         sub = args[len("models") :].strip()
+        if has_range and sub in ("", "today", "week", "month"):
+            return _models_block(date_from=date_from, date_to=date_to)
         if sub in ("", "today"):
             return _models_block(24)
         if sub == "week":
@@ -322,6 +483,7 @@ def handle(raw_args: str) -> str:
 
     return (
         "Usage: /stats [today|week|month|cron|cron week|cron month|providers|models|raw [N]]\n"
+        "             [--from YYYY-MM-DD[THH:MM:SS[Z]]] [--to YYYY-MM-DD[THH:MM:SS[Z]]]\n"
         "  /stats               — last 24h summary\n"
         "  /stats week          — last 7 days summary\n"
         "  /stats month         — last 30 days summary\n"
@@ -330,5 +492,9 @@ def handle(raw_args: str) -> str:
         "  /stats providers week — provider breakdown, last 7 days\n"
         "  /stats models        — per-model breakdown within each provider (24h)\n"
         "  /stats models week   — per-model breakdown, last 7 days\n"
-        "  /stats raw [N]       — last N raw run records (default 20)"
+        "  /stats raw [N]       — last N raw run records (default 20)\n"
+        "\n"
+        "Date range examples (work the same way under the CLI):\n"
+        "  /stats models --from 2026-06-16T12:00:00Z\n"
+        "  /stats providers --from 2026-06-10 --to 2026-06-15"
     )
