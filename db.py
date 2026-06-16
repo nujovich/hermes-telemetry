@@ -715,14 +715,10 @@ def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
 
     Returns 0.0–1.0.
     """
-    pricing_file = _get_db_path().parent / "pricing.yaml"
-    if not pricing_file.exists():
-        return 0.0
     try:
-        import yaml
+        from . import pricing
 
-        cfg = yaml.safe_load(pricing_file.read_text()) or {}
-        est_models = set(cfg.get("_meta", {}).get("estimated_price_models", []))
+        est_models = set(pricing.get_estimated_price_models())
     except Exception:
         return 0.0
     if not est_models:

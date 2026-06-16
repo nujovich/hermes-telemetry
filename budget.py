@@ -449,24 +449,21 @@ def _status_block() -> str:
     lines.append("")
     lines.append("  Legend:  (blank)=ok  !=soft (≥80%)  █=hard (≥100%)  ~est=estimated data")
 
-    # Estimated-price models warning
+    # Estimated-price models warning — single source of truth in pricing.py
     try:
-        import yaml
+        from . import pricing
 
-        pricing_file = _pricing_path()
-        if pricing_file.exists():
-            cfg = yaml.safe_load(pricing_file.read_text()) or {}
-            est_models = cfg.get("_meta", {}).get("estimated_price_models", [])
-            if est_models:
-                lines.append("")
-                lines.append(
-                    f"  ⚠️  {len(est_models)} model(s) with estimated pricing "
-                    "(no fixed price → cost shown as $0.00)."
-                )
-                lines.append(
-                    "  If >0% of spend uses these models, budget hard-verdicts "
-                    "are degraded to soft (on_estimated.mode: warn_only)."
-                )
+        est_models = pricing.get_estimated_price_models()
+        if est_models:
+            lines.append("")
+            lines.append(
+                f"  ⚠️  {len(est_models)} model(s) with estimated pricing "
+                "(no fixed price → cost shown as $0.00)."
+            )
+            lines.append(
+                "  If >0% of spend uses these models, budget hard-verdicts "
+                "are degraded to soft (on_estimated.mode: warn_only)."
+            )
     except Exception:
         pass
 

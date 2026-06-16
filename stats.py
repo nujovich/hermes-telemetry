@@ -13,7 +13,6 @@ Subcommands:
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from . import db
@@ -170,29 +169,27 @@ def _providers_block(window_hours: int = 24) -> str:
         "degraded to soft under on_estimated.mode: warn_only."
     )
 
-    # Check for estimated-price models
+    # Check for estimated-price models \u2014 single source of truth in pricing.py
+    # (also fixes a latent HERMES_HOME isolation hole: the old call used
+    # Path.home() directly, bypassing the env-var override the tests rely on).
     try:
-        import yaml
+        from . import pricing
 
-        pricing_file = Path.home() / ".hermes" / "telemetry" / "pricing.yaml"
-        if pricing_file.exists():
-            cfg = yaml.safe_load(pricing_file.read_text()) or {}
-            est_models = cfg.get("_meta", {}).get("estimated_price_models", [])
-            if est_models:
-                lines.append("")
-                lines.append(
-                    f"  \u26a0\ufe0f  {len(est_models)} model(s) have estimated pricing "
-                    "(no fixed price from provider)."
-                )
-                lines.append(
-                    "  Budget hard-verdicts are degraded to soft under "
-                    "on_estimated.mode: warn_only when these models are used."
-                )
-                # Show first few examples
-                for m in est_models[:5]:
-                    lines.append(f"    - {m}")
-                if len(est_models) > 5:
-                    lines.append(f"    ... and {len(est_models) - 5} more")
+        est_models = pricing.get_estimated_price_models()
+        if est_models:
+            lines.append("")
+            lines.append(
+                f"  \u26a0\ufe0f  {len(est_models)} model(s) have estimated pricing "
+                "(no fixed price from provider)."
+            )
+            lines.append(
+                "  Budget hard-verdicts are degraded to soft under "
+                "on_estimated.mode: warn_only when these models are used."
+            )
+            for m in est_models[:5]:
+                lines.append(f"    - {m}")
+            if len(est_models) > 5:
+                lines.append(f"    ... and {len(est_models) - 5} more")
     except Exception:
         pass
 
