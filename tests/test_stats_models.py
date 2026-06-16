@@ -258,6 +258,35 @@ def test_stats_models_date_from_filters_older_rows():
     assert abs(rows[0]["cost_usd"] - 0.002) < 1e-9
 
 
+def test_stats_handle_slash_command_accepts_from_flag():
+    """`/stats models --from <iso>` honours the date filter (parity with CLI)."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    pre = (now - timedelta(hours=12)).isoformat()
+    post = (now - timedelta(minutes=30)).isoformat()
+    cutoff = (now - timedelta(hours=6)).isoformat()
+
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call("s1", pre, "old/model", "p", 1, 1, 9.99, 10)
+    db.record_llm_call("s1", post, "new/model", "p", 1, 1, 0.01, 10)
+
+    out = stats_mod.handle(f"models --from {cutoff}")
+    assert "new/model" in out
+    assert "old/model" not in out
+
+
+def test_stats_handle_slash_command_invalid_date_returns_error():
+    out = stats_mod.handle("models --from not-a-date")
+    assert "Invalid date" in out
+    assert "--from" in out
+
+
+def test_stats_handle_slash_command_missing_value_returns_error():
+    out = stats_mod.handle("models --from")
+    assert "Missing value" in out
+
+
 def test_stats_models_date_range_bounds_both_sides():
     """Both `date_from` and `date_to` bound the window inclusively/exclusively."""
     from datetime import datetime, timedelta, timezone

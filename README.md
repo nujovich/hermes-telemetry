@@ -307,6 +307,15 @@ hermes-telemetry stats models --from 2026-06-16T12:00:00Z
 # nous       deepseek/deepseek-v4-pro     17    ...  $0.034000   ← new pricing, isolated
 ```
 
+The same flags work from inside Hermes Chat via the `/stats` slash command,
+so you don't have to leave the session to run the check:
+
+```
+/stats models --from 2026-06-16T12:00:00Z
+/stats providers --from 2026-06-10 --to 2026-06-15
+/stats --from 2026-06-16     # date-only → 00:00:00 UTC of that day
+```
+
 The `Notes` column (subscription/free-tier vs no price entry) and footer
 behaviour described in [`/stats models`](#stats) work the same way under a
 date filter — they're computed against whatever rows the filter selected.
@@ -397,6 +406,17 @@ rm ~/.hermes/telemetry/budget.yaml
 /stats models week      → per-model breakdown, last 7 days
 /stats raw [N]          → last N raw run records (default 20, max 200)
 ```
+
+Any subcommand also accepts `--from <iso>` and `--to <iso>` (inclusive /
+exclusive) to override the preset window with an arbitrary date range — useful
+for isolating "post-deploy" or "post-fix" data without waiting 24 h. Examples:
+
+```
+/stats models --from 2026-06-16T12:00:00Z
+/stats providers --from 2026-06-10 --to 2026-06-15
+```
+
+See the [Standalone CLI · Date range filters](#date-range-filters---from----to) section for the full reference (the CLI and the slash command parse the same flags).
 
 **Example output (`/stats`):**
 

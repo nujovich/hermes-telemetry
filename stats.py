@@ -323,32 +323,146 @@ def _raw_block(limit: int = 20, *, date_from: str | None = None, date_to: str | 
     return "\n".join(lines)
 
 
+_ISO_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S.%fZ",
+)
+
+
+def _parse_iso_date(raw: str) -> str | None:
+    """Parse a date/timestamp into an ISO-8601 string with a UTC offset.
+
+    Returns None when the input isn't a recognized format — slash command args
+    are user-typed, so we surface a parse failure as "ignore this flag" rather
+    than raising, and the caller renders an error message inline.
+    """
+    s = raw.strip()
+    if not s:
+        return None
+    # ``fromisoformat`` handles offsets like ``+00:00`` natively and accepts
+    # ``Z`` on Python 3.11+; it covers the timestamps produced by ``_utcnow``.
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except ValueError:
+        pass
+    # Legacy strptime formats for inputs that don't carry timezone info.
+    for fmt in _ISO_DATE_FORMATS:
+        try:
+            dt = datetime.strptime(s, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_date_flags(raw_args: str) -> tuple[str, str | None, str | None, str | None]:
+    """Pull `--from <val>` and `--to <val>` out of a slash-command arg string.
+
+    Returns ``(remaining, date_from, date_to, error)`` where:
+      - ``remaining`` is the arg string with the flags removed (preset tokens
+        survive untouched and keep their original casing — the caller still
+        lowercases them).
+      - ``date_from`` / ``date_to`` are ISO-normalized or ``None``.
+      - ``error`` is a human-readable message if a flag value failed to parse,
+        otherwise ``None``. The caller short-circuits with that message.
+    """
+    if not raw_args:
+        return ("", None, None, None)
+    tokens = raw_args.split()
+    out: list[str] = []
+    date_from: str | None = None
+    date_to: str | None = None
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("--from", "--to"):
+            if i + 1 >= len(tokens):
+                return ("", None, None, f"Missing value for {tok}.")
+            parsed = _parse_iso_date(tokens[i + 1])
+            if parsed is None:
+                return (
+                    "",
+                    None,
+                    None,
+                    f"Invalid date for {tok}: {tokens[i + 1]!r} "
+                    "(use YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
+                )
+            if tok == "--from":
+                date_from = parsed
+            else:
+                date_to = parsed
+            i += 2
+        else:
+            out.append(tok)
+            i += 1
+    return (" ".join(out), date_from, date_to, None)
+
+
 def handle(raw_args: str) -> str:
-    """Entry point for /stats command handler (Slack slash command format)."""
-    args = (raw_args or "").strip().lower()
+    """Entry point for /stats command handler (Slack slash command format).
+
+    Supports ``--from <iso>`` / ``--to <iso>`` flags alongside the preset
+    subcommands so the in-chat surface has parity with the standalone CLI.
+    When a date flag is supplied, the matching block ignores the preset window
+    and queries the (possibly bounded) date range instead.
+    """
+    remaining, date_from, date_to, err = _extract_date_flags(raw_args or "")
+    if err:
+        return err
+    has_range = date_from is not None or date_to is not None
+
+    args = remaining.strip().lower()
 
     if not args or args in ("today",):
+        if has_range:
+            return _summary_block(date_from=date_from, date_to=date_to)
         return _summary_block(24)
     if args == "week":
-        return _summary_block(168)
+        return (
+            _summary_block(168)
+            if not has_range
+            else _summary_block(date_from=date_from, date_to=date_to)
+        )
     if args == "month":
-        return _summary_block(720)
+        return (
+            _summary_block(720)
+            if not has_range
+            else _summary_block(date_from=date_from, date_to=date_to)
+        )
     if args in ("cron", "cron week"):
-        return _cron_block(168)
+        return (
+            _cron_block(168) if not has_range else _cron_block(date_from=date_from, date_to=date_to)
+        )
     if args == "cron month":
-        return _cron_block(720)
+        return (
+            _cron_block(720) if not has_range else _cron_block(date_from=date_from, date_to=date_to)
+        )
     if args == "cron today":
-        return _cron_block(24)
+        return (
+            _cron_block(24) if not has_range else _cron_block(date_from=date_from, date_to=date_to)
+        )
     if args.startswith("raw"):
         parts = args.split()
         try:
             limit = int(parts[1]) if len(parts) > 1 else 20
         except ValueError:
             limit = 20
+        if has_range:
+            return _raw_block(min(limit, 200), date_from=date_from, date_to=date_to)
         return _raw_block(min(limit, 200))
 
     if args.startswith("providers"):
         sub = args[len("providers") :].strip()
+        if has_range and sub in ("", "today", "week", "month"):
+            return _providers_block(date_from=date_from, date_to=date_to)
         if sub in ("", "today"):
             return _providers_block(24)
         if sub == "week":
@@ -358,6 +472,8 @@ def handle(raw_args: str) -> str:
 
     if args.startswith("models"):
         sub = args[len("models") :].strip()
+        if has_range and sub in ("", "today", "week", "month"):
+            return _models_block(date_from=date_from, date_to=date_to)
         if sub in ("", "today"):
             return _models_block(24)
         if sub == "week":
@@ -367,6 +483,7 @@ def handle(raw_args: str) -> str:
 
     return (
         "Usage: /stats [today|week|month|cron|cron week|cron month|providers|models|raw [N]]\n"
+        "             [--from YYYY-MM-DD[THH:MM:SS[Z]]] [--to YYYY-MM-DD[THH:MM:SS[Z]]]\n"
         "  /stats               — last 24h summary\n"
         "  /stats week          — last 7 days summary\n"
         "  /stats month         — last 30 days summary\n"
@@ -377,5 +494,7 @@ def handle(raw_args: str) -> str:
         "  /stats models week   — per-model breakdown, last 7 days\n"
         "  /stats raw [N]       — last N raw run records (default 20)\n"
         "\n"
-        "For date range filtering, use the CLI: hermes-telemetry stats --from YYYY-MM-DD --to YYYY-MM-DD"
+        "Date range examples (work the same way under the CLI):\n"
+        "  /stats models --from 2026-06-16T12:00:00Z\n"
+        "  /stats providers --from 2026-06-10 --to 2026-06-15"
     )
