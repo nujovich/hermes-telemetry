@@ -204,12 +204,21 @@ def _models_block(window_hours: int = 24) -> str:
     if not rows:
         return f"No API calls recorded in the {_window_label(window_hours)}."
 
+    # Subscription models (`_subscription: true` in pricing.yaml) are an
+    # explicitly declared $0 — surface them so the $0.00 footer can stop
+    # claiming every zero-cost row is a missing-pricing problem.
+    from . import pricing as _pricing
+
+    subscription_models = _pricing._load_custom_pricing().get("subscription_models", set())
+
     lines = [
         f"hermes-telemetry — models ({_window_label(window_hours)})",
-        "=" * 96,
-        f"  {'Provider':<20} {'Model':<46} {'Calls':>6} {'Real':>6} {'Est':>5} {'Cost':>12}",
-        "  " + "-" * 94,
+        "=" * 108,
+        f"  {'Provider':<20} {'Model':<46} {'Calls':>6} {'Real':>6} {'Est':>5} {'Cost':>12}  Notes",
+        "  " + "-" * 106,
     ]
+    sub_zero_count = 0
+    noentry_zero_count = 0
     for r in rows:
         prov = (r.get("provider") or "(unknown)")[:20]
         # Model names (esp. OpenRouter's dated keys) are kept wide so the date
@@ -218,15 +227,31 @@ def _models_block(window_hours: int = 24) -> str:
         total = _fmt_int(r.get("total_calls"))
         real = _fmt_int(r.get("real_calls"))
         est = _fmt_int(r.get("estimated_calls"))
-        cost = _fmt_cost(r.get("cost_usd"))
-        lines.append(f"  {prov:<20} {model:<46} {total:>6} {real:>6} {est:>5} {cost:>12}")
+        cost_v = float(r.get("cost_usd") or 0.0)
+        cost = _fmt_cost(cost_v)
+        note = ""
+        if cost_v == 0.0:
+            if (r.get("model") or "").lower() in subscription_models:
+                note = "subscription/free-tier"
+                sub_zero_count += 1
+            else:
+                note = "no price entry"
+                noentry_zero_count += 1
+        lines.append(f"  {prov:<20} {model:<46} {total:>6} {real:>6} {est:>5} {cost:>12}  {note}")
 
     lines.append("")
-    lines.append(
-        "  Rows are grouped by provider, then by calls (desc). A model showing "
-        "$0.00 has no price entry"
-    )
-    lines.append("  in pricing.yaml — run /setup pricing auto to refresh, or add it manually.")
+    lines.append("  Rows are grouped by provider, then by calls (desc).")
+    if sub_zero_count:
+        lines.append(
+            f"  {sub_zero_count} model(s) at $0.00 are subscription/free tier "
+            "(declared in pricing.yaml via `_subscription: true`)."
+        )
+    if noentry_zero_count:
+        lines.append(
+            f"  {noentry_zero_count} model(s) at $0.00 have no price entry in "
+            "pricing.yaml — run /setup pricing auto"
+        )
+        lines.append("  to refresh, or add them manually.")
     return "\n".join(lines)
 
 

@@ -141,3 +141,88 @@ def test_stats_models_week_subcommand():
     out = stats_mod.handle("models week")
     assert "modelX" in out
     assert "last 7 days" in out
+
+
+# ---------------------------------------------------------------------------
+# $0.00 row classification: subscription vs no-price-entry
+# ---------------------------------------------------------------------------
+
+
+def _seed_pricing_yaml(tmp_path, body: str) -> None:
+    pricing_dir = tmp_path / "telemetry"
+    pricing_dir.mkdir(parents=True, exist_ok=True)
+    (pricing_dir / "pricing.yaml").write_text(body)
+
+
+def test_stats_models_zero_cost_subscription_row_labeled(tmp_path, monkeypatch):
+    """A $0.00 row whose model is flagged `_subscription: true` is tagged as
+    subscription/free-tier and the footer claims it as declared, NOT as missing
+    pricing."""
+    _seed_pricing_yaml(
+        tmp_path,
+        "models:\n"
+        "  nvidia/nemotron-3-ultra:free:\n"
+        "    input: 0.0\n"
+        "    output: 0.0\n"
+        "    _subscription: true\n",
+    )
+    # conftest already set HERMES_HOME=tmp_path; reload the pricing cache so it
+    # picks up the file we just wrote.
+    import hermes_telemetry.pricing as pricing
+
+    pricing.reload_custom_pricing()
+
+    now = db._utcnow()
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call("s1", now, "nvidia/nemotron-3-ultra:free", "nous", 100, 50, 0.0, 100)
+
+    out = stats_mod.handle("models")
+    assert "nvidia/nemotron-3-ultra:free" in out
+    assert "subscription/free-tier" in out
+    assert "subscription/free tier (declared in pricing.yaml" in out
+    # Should NOT claim missing pricing for this row.
+    assert "no price entry" not in out
+
+
+def test_stats_models_zero_cost_no_entry_row_labeled(tmp_path, monkeypatch):
+    """A $0.00 row NOT flagged as subscription is tagged 'no price entry' and
+    the footer keeps the original /setup pricing auto hint."""
+    import hermes_telemetry.pricing as pricing
+
+    pricing.reload_custom_pricing()  # ensure empty cache (no pricing.yaml)
+
+    now = db._utcnow()
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call("s1", now, "some/unpriced-model", "openrouter", 100, 50, 0.0, 100)
+
+    out = stats_mod.handle("models")
+    assert "some/unpriced-model" in out
+    assert "no price entry" in out
+    assert "/setup pricing auto" in out
+    assert "subscription/free-tier" not in out
+
+
+def test_stats_models_zero_cost_mixed_emits_both_footers(tmp_path, monkeypatch):
+    """When the window contains both kinds of $0.00 rows, both footer lines are
+    emitted so the user can tell them apart."""
+    _seed_pricing_yaml(
+        tmp_path,
+        "models:\n"
+        "  nvidia/nemotron-3-ultra:free:\n"
+        "    input: 0.0\n"
+        "    output: 0.0\n"
+        "    _subscription: true\n",
+    )
+    import hermes_telemetry.pricing as pricing
+
+    pricing.reload_custom_pricing()
+
+    now = db._utcnow()
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call("s1", now, "nvidia/nemotron-3-ultra:free", "nous", 10, 10, 0.0, 50)
+    db.record_llm_call("s1", now, "some/unpriced-model", "openrouter", 10, 10, 0.0, 50)
+
+    out = stats_mod.handle("models")
+    assert "subscription/free tier (declared in pricing.yaml" in out
+    assert "no price entry in pricing.yaml" in out
+    assert "/setup pricing auto" in out
