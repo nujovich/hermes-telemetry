@@ -107,7 +107,19 @@ def test_plugin_api_exposes_router():
         }
         assert "router" in names, "plugin_api.py must assign a top-level `router`"
         src = api_file.read_text(encoding="utf-8")
-        assert '"/summary"' in src and '"/health"' in src
+        for endpoint in (
+            '"/summary"',
+            '"/health"',
+            '"/runs"',
+            '"/requests"',
+            '"/providers"',
+            '"/cron"',
+            '"/budget"',
+            '"/token-breakdown"',
+        ):
+            assert endpoint in src, f"plugin_api.py is missing route {endpoint}"
+        # session_detail uses a path param.
+        assert '"/session/{session_id}"' in src
         return
 
     import importlib.util
@@ -122,7 +134,18 @@ def test_plugin_api_exposes_router():
         spec_pkg.loader.exec_module(mod)
         assert hasattr(mod, "router"), "plugin_api.py must export `router`"
         paths = {r.path for r in mod.router.routes}
-        assert "/summary" in paths
-        assert "/health" in paths
+        expected = {
+            "/summary",
+            "/health",
+            "/token-breakdown",
+            "/runs",
+            "/requests",
+            "/providers",
+            "/cron",
+            "/session/{session_id}",
+            "/budget",
+        }
+        missing = expected - paths
+        assert not missing, f"plugin_api.py missing routes: {missing}"
     finally:
         sys.path.pop(0)
