@@ -148,8 +148,12 @@ def test_unknown_model_does_not_queue_free_to_paid_alert(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "telemetry").mkdir()
     db.close_thread_conn()
+    pricing.reload_custom_pricing()
 
-    model = "nvidia/nemotron-3-ultra:free"
+    # Genuinely unknown id (no exact entry, no prefix seed, no ":free" suffix).
+    # Note: any "…:free" id is NOT unknown — it resolves to $0 via the ":free"
+    # suffix rule and is recorded as known-free (issue #32).
+    model = "nvidia/totally-unknown-model"
     provider = "nvidia"
 
     # Unknown model: is_explicitly_priced returns False → should NOT be recorded

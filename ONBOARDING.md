@@ -62,8 +62,8 @@ hermes-telemetry/
 │                          per-thread connections, WAL mode, write API and
 │                          read/budget query API.
 ├── pricing.py           ← Cost estimation engine. Priority-chain lookup
-│                          (custom YAML → built-in → prefix match). All 5 token
-│                          components. Google-symmetric normalization.
+│                          (custom YAML → built-in → `:free`→$0 → prefix match).
+│                          All 5 token components. Google-symmetric normalization.
 ├── pricing_refresh.py   ← Auto-refresh from remote pricing APIs. PricingSource
 │                          ABC, OpenRouterSource, GoogleAISource. Merge strategy
 │                          preserves manual overrides.
@@ -80,7 +80,7 @@ hermes-telemetry/
 │   └── serve.py         ← stdlib HTTP server, port 8765, --host flag.
 ├── tests/
 │   ├── conftest.py      ← Autouse HERMES_HOME isolation (see Test Isolation).
-│   └── test_*.py        ← 253 tests. All in-memory SQLite, no live gateway.
+│   └── test_*.py        ← 262 tests. All in-memory SQLite, no live gateway.
 ├── config.example.yaml  ← Annotated pricing.yaml example.
 └── budget.example.yaml  ← Annotated budget.yaml example.
 ```
@@ -402,9 +402,22 @@ already uses `INSERT OR IGNORE`).
 
 1. **Custom YAML** (`~/.hermes/telemetry/pricing.yaml`, `models:` section) — exact match, case-insensitive
 2. **Built-in table** (`_DEFAULT_PRICING`) — exact match
-3. **Prefix fallback** — scans all of the above plus `_PREFIX_PRICING`, **longest prefix wins**
-4. **Google symmetric form** — if the above misses, tries `gemini-X` ↔ `google/gemini-X`
-5. **Unknown** → returns `$0.00`, logs a one-time WARNING
+3. **`:free` suffix rule** — any id ending in `:free` resolves to an explicit `$0`
+   (`{"input": 0.0, "output": 0.0}`), **before** the prefix fallback. See below.
+4. **Prefix fallback** — scans all of the above plus `_PREFIX_PRICING`, **longest prefix wins**
+5. **Google symmetric form** — if the above misses, tries `gemini-X` ↔ `google/gemini-X`
+6. **Unknown** → returns `$0.00`, logs a one-time WARNING
+
+**`:free` suffix rule (issue #32):** OpenRouter advertises free-tier variants with
+a `:free` suffix (e.g. `nvidia/nemotron-3-ultra-550b-a55b:free`). These are `$0` by
+definition. The rule sits in `_lookup_form` **after** the two exact-match steps but
+**before** the prefix scan, for two reasons: (1) otherwise a suffixed free id
+inherits its paid base's price via prefix — the `nvidia/nemotron-3-ultra` seed would
+price `…-550b-a55b:free` at the paid rate, billing a free call as paid; (2) returning
+an explicit zero dict (not the unknown-model `None`) makes the call resolve as
+known-free — no estimated-price warning, and it's recorded in `known_free_models` so
+the free→paid alert fires when the gateway later drops the `:free` suffix. A user's
+explicit `:free` entry (step 1) still overrides the rule.
 
 Every candidate is first filtered by the **provider-aware guard** (below), so a
 source-ineligible entry is skipped and the chain falls through to the next one.
@@ -446,8 +459,11 @@ same-id collision, the OpenRouter entry in `models:` is excluded for a
 `provider="nvidia"` call, and the lookup falls through to the source-neutral
 seed in `_DEFAULT_PRICING`. Keeping seeds in code also makes them immune to an
 OpenRouter sync overwriting the shared key. The `:free` promo variants
-(`nvidia/...:free`) carry no seed — they resolve to `$0.00` via the
-unknown-model fallback (issue #12).
+(`nvidia/...:free`) carry no seed — they resolve to `$0.00` via the **`:free`
+suffix rule** above (issues #12/#32). (Before that rule existed, a `:free` variant
+of any *seeded* model was mis-priced at the seed's paid rate via prefix match — the
+earlier "resolve to $0 via the unknown-model fallback" claim only held for models
+with no seeded paid base.)
 
 ### Pricing metadata tags (`_`-prefixed)
 
@@ -646,6 +662,41 @@ that entry is $0). This distinguishes a genuine free model from an unknown model
 that fell through to the `$0.00` unknown-model fallback. Without this guard, any
 unrecognized model would be recorded as "free" and trigger spurious alerts when
 the pricing table is later populated.
+
+### Id-change transitions (`is_free_tier_transition`, issue #32)
+
+A `known_free_models` row is keyed on the model id seen at $0. But some providers
+move a model from free to paid by **changing the id** — dropping a `:free` suffix
+(or renaming the promo to its paid base) — so the first paid call arrives under a
+different id than the recorded `:free` row, and a plain `is_known_free_model`
+lookup misses.
+
+`is_free_tier_transition(model, provider)` in `db.py` bridges that gap. For an
+incoming paid `model` it returns `True` if a stored `<id>:free` row matches via
+either:
+
+1. **Bare rename** — `model + ":free"` is a known-free row
+   (`nvidia/nemotron-3-ultra` ← `nvidia/nemotron-3-ultra:free`).
+2. **Suffixed paid id** — a stored `<base>:free` whose `<base>` is a prefix of
+   `model` at a token boundary (`-`, `:`, `/`, `_`), so
+   `nvidia/nemotron-3-ultra-550b-a55b` ← `nvidia/nemotron-3-ultra:free` but an
+   unrelated `…-ultrablend` does not false-positive.
+
+`post_api_request` checks `is_known_free_model(...) OR is_free_tier_transition(...)`
+on the `cost > 0.0` branch. The concrete case: the `nvidia/nemotron-3-ultra:free`
+promo ends 2026-06-18 and bills as `nvidia/nemotron-3-ultra`; the paid price is
+seeded in `_DEFAULT_PRICING` so `cost > 0` once billing starts, and the reverse
+lookup connects the paid id back to the recorded `:free` row to fire the alert.
+
+**No user-side config is required** (changed by issue #32): while the promo is
+live, the `:free` id resolves to `$0` via the `:free` suffix rule and is recorded
+as known-free automatically — so the `:free` row exists for the reverse lookup to
+match, with no `_subscription` entry needed. This holds for whichever free form
+the gateway sends: the short `nvidia/nemotron-3-ultra:free` (matched on the paid
+side by **bare rename**) and the OpenRouter long form
+`nvidia/nemotron-3-ultra-550b-a55b:free` (matched by **bare rename** of its own
+suffix-dropped paid id `…-550b-a55b`). An explicit `_subscription` entry is still
+honored and overrides the rule, but is no longer necessary.
 
 ---
 
@@ -873,6 +924,28 @@ with `pytest --basetemp=DIR`.
 - **253 tests** (was 233): `test_init.py` gained free→paid detection, queueing,
   injection, and backfill tests; `test_db.py` and `test_pricing.py` gained
   corresponding unit tests.
+
+### Unreleased — Free→paid id-change handling (issue #32)
+
+- **`is_free_tier_transition(model, provider)`** in `db.py`: reverse-looks-up a
+  stored `<id>:free` row when a provider moves a model to paid under a *different*
+  id (dropped `:free` suffix or suffixed paid id at a token boundary). Wired into
+  `post_api_request` as `is_known_free_model(...) OR is_free_tier_transition(...)`.
+- **`:free` suffix → $0 rule** in `_lookup_form`: any `…:free` id resolves to an
+  explicit `$0` before the prefix scan (see *Lookup priority chain*). This both
+  (a) stops a seeded model's `:free` variant from being mis-billed at its paid rate
+  via prefix, and (b) records the `:free` id as known-free with no estimated-price
+  warning — so the transition alert seeds itself with **no user config**. This
+  *replaced* the earlier design's manual-`_subscription` requirement. It also
+  surfaced and fixed a latent bug: `nvidia/nemotron-3-super-120b-a12b:free` (a
+  pre-existing 0.4.1 seed) had been resolving to the paid `$0.09/$0.45` rate.
+- **`nvidia/nemotron-3-ultra` paid seed** in `_DEFAULT_PRICING` (OpenRouter rate,
+  NIM-direct pending). Catches the bare id (exact) and the `…-550b-a55b` form
+  (prefix), making `cost > 0` after the 2026-06-18 promo end — which fires the
+  alert. The free `…:free` forms are unaffected (handled by the suffix rule above).
+- **263 tests** (was 253): `test_db.py` gained 7 `is_free_tier_transition` cases;
+  `test_pricing.py` gained the ultra paid-seed + `:free`-suffix → $0 (bare and
+  OpenRouter-long-form), `super:free` regression, and explicit-override cases.
 
 ---
 

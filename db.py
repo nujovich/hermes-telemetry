@@ -791,6 +791,43 @@ def is_known_free_model(model: str, provider: str = "") -> bool:
     return row is not None
 
 
+def is_free_tier_transition(model: str, provider: str = "") -> bool:
+    """Return True if *model* looks like the paid successor of a known-free
+    ``:free`` variant — i.e. a provider dropped the ``:free`` suffix (or renamed
+    the promo id to its paid base) and started charging.
+
+    Two ways a stored ``X:free`` row matches an incoming paid ``model``:
+      1. Exact: ``model + ":free"`` is a known-free row — the bare-id rename,
+         e.g. ``nvidia/nemotron-3-ultra`` ← ``nvidia/nemotron-3-ultra:free``.
+      2. Prefix: a stored ``<base>:free`` whose ``<base>`` is a prefix of
+         ``model`` at a token boundary — the suffixed paid id, e.g.
+         ``nvidia/nemotron-3-ultra-550b-a55b`` ← ``nvidia/nemotron-3-ultra:free``.
+
+    Matches the same provider or the wildcard ``provider=''`` backfill sentinel.
+    """
+    conn = _get_conn()
+    # Check 1: incoming model is exactly a stored "<model>:free".
+    row = conn.execute(
+        "SELECT 1 FROM known_free_models WHERE model = ? AND (provider = ? OR provider = '')",
+        (model + ":free", provider),
+    ).fetchone()
+    if row is not None:
+        return True
+    # Check 2: a stored "<base>:free" whose <base> is a prefix of model. Require
+    # the char after <base> to be a separator so "…-3-ultra" matches the
+    # "…-3-ultra-550b" variant but never an unrelated "…-3-ultraX" model.
+    rows = conn.execute(
+        "SELECT model FROM known_free_models"
+        " WHERE (provider = ? OR provider = '') AND model LIKE '%:free'",
+        (provider,),
+    ).fetchall()
+    for (free_model,) in rows:
+        base = free_model[: -len(":free")]
+        if base and model.startswith(base) and model[len(base) : len(base) + 1] in "-:/_":
+            return True
+    return False
+
+
 def backfill_known_free_models(models: list) -> int:
     """Insert known-free models with provider='' (wildcard) for backward compat.
 

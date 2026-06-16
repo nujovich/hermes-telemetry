@@ -793,12 +793,68 @@ def test_nim_openrouter_collision_excluded_for_nvidia(tmp_path, monkeypatch):
     assert abs(cost_or - (0.09 + 0.45)) < 1e-9
 
 
-def test_nim_free_variant_resolves_zero(caplog):
-    """A :free promo variant is unpriced → $0.00 (handled by zero-cost fallback)."""
+def test_nim_ultra_free_suffix_resolves_zero():
+    """A `:free` call resolves to $0 via the ":free" suffix rule, NOT the paid
+    `nemotron-3-ultra` prefix — no manual pricing entry needed. Covers both the
+    bare-id free form and the OpenRouter-style suffixed free form (issue #32)."""
+    bare_free = pricing.estimate_cost(
+        {"input_tokens": 1_000_000}, "nvidia/nemotron-3-ultra:free", provider="nvidia"
+    )
+    suffixed_free = pricing.estimate_cost(
+        {"input_tokens": 1_000_000},
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        provider="openrouter",
+    )
+    assert bare_free == 0.0
+    assert suffixed_free == 0.0
+    # And both are explicitly priced → recorded as known-free → transition-capable.
+    assert pricing.is_explicitly_priced("nvidia/nemotron-3-ultra:free", "nvidia")
+    assert pricing.is_explicitly_priced("nvidia/nemotron-3-ultra-550b-a55b:free", "openrouter")
+
+
+def test_nim_super_free_suffix_resolves_zero():
+    """Regression: a seeded model's `:free` variant must resolve to $0, not the
+    seeded paid price via prefix. Pre-fix, `…-super-120b-a12b:free` billed at the
+    paid $0.09/$0.45 rate via prefix match (issue #32)."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        provider="openrouter",
+    )
+    assert cost == 0.0
+
+
+def test_free_suffix_overridable_by_explicit_entry(tmp_path, monkeypatch):
+    """An explicit custom `:free` entry still wins over the built-in $0 rule, so
+    users can pin a different price for a `:free` id if a gateway ever charges
+    for one (issue #32)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    # Pin a NONZERO price to the `:free` id: if the built-in $0 rule fired first
+    # this call would cost $0, so a nonzero result proves the explicit custom
+    # entry takes precedence over the suffix rule.
+    (tmp_path / "telemetry" / "pricing.yaml").write_text(
+        'models:\n  "nvidia/nemotron-3-ultra:free":\n    input: 1.23\n    output: 0.0\n'
+    )
+    pricing.reload_custom_pricing()
     cost = pricing.estimate_cost(
         {"input_tokens": 1_000_000}, "nvidia/nemotron-3-ultra:free", provider="nvidia"
     )
-    assert cost == 0.0
+    assert abs(cost - 1.23) < 1e-9
+    pricing.reload_custom_pricing()
+
+
+def test_nim_ultra_paid_resolves_bare_and_suffixed():
+    """The paid seed answers both the bare id and the OpenRouter-style suffixed
+    id (via prefix), so cost>0 once the promo ends — what fires the alert."""
+    bare = pricing.estimate_cost(
+        {"input_tokens": 1_000_000}, "nvidia/nemotron-3-ultra", provider="nvidia"
+    )
+    suffixed = pricing.estimate_cost(
+        {"input_tokens": 1_000_000}, "nvidia/nemotron-3-ultra-550b-a55b", provider="nvidia"
+    )
+    assert abs(bare - 0.50) < 1e-9
+    assert abs(suffixed - 0.50) < 1e-9
 
 
 def test_nim_seed_survives_simulated_refresh():
@@ -828,7 +884,10 @@ def test_is_explicitly_priced_zero_price_model():
 
 def test_is_explicitly_priced_unknown_model():
     assert pricing.is_explicitly_priced("completely-unknown-xyz-model") is False
-    assert pricing.is_explicitly_priced("nvidia/nemotron-3-ultra:free") is False
+    # A genuinely unknown nvidia id (no prefix seed, no ":free") stays unpriced.
+    # Note: any `…:free` id IS explicitly priced ($0 via the suffix rule, issue
+    # #32) — that path is covered by the NIM free-suffix tests above.
+    assert pricing.is_explicitly_priced("nvidia/totally-unknown-model") is False
 
 
 def test_is_explicitly_priced_subscription_model(tmp_path, monkeypatch):
