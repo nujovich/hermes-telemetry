@@ -7,8 +7,7 @@ isolation contract (HERMES_HOME → tmp dir) is enforced by conftest.py.
 
 from __future__ import annotations
 
-import importlib
-import sys
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -16,7 +15,11 @@ import pytest
 
 @pytest.fixture
 def plugin_api(monkeypatch):
-    """Import dashboard_plugin.plugin_api fresh, skipping if fastapi missing.
+    """Load ``dashboard/plugin_api.py`` the same way the Hermes loader does.
+
+    Hermes imports the file via ``importlib.util.spec_from_file_location``,
+    so the plugin runs **without** being part of any Python package. We
+    mirror that here.
 
     Mirrors the production order: the runtime creates ``telemetry.db`` (with
     its schema) before the dashboard plugin queries it. We trigger schema
@@ -26,20 +29,21 @@ def plugin_api(monkeypatch):
 
     repo_root = Path(__file__).resolve().parent.parent
     monkeypatch.syspath_prepend(str(repo_root))
-    # Drop any cached modules so the per-thread sqlite cache is fresh under the
-    # new HERMES_HOME (set by the autouse fixture in conftest.py).
-    for name in ("dashboard_plugin", "dashboard_plugin._db", "dashboard_plugin.plugin_api"):
-        sys.modules.pop(name, None)
-    # Force the runtime to materialize the DB + schema under the test HERMES_HOME.
-    # The runtime caches a per-thread connection at module level; if a previous
-    # test left one pointing at a now-deleted tmp dir, reset it.
+    # The runtime caches a per-thread connection at module level; if a
+    # previous test left one pointing at a now-deleted tmp dir, reset it.
     import threading as _t
 
     import db as runtime_db
 
     runtime_db._local = _t.local()
     runtime_db._get_conn()  # creates dir + tables on first call
-    mod = importlib.import_module("dashboard_plugin.plugin_api")
+
+    api_file = repo_root / "dashboard" / "plugin_api.py"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_hermes_telemetry", api_file
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
     return mod
 
 
@@ -167,6 +171,6 @@ def test_db_connection_is_read_only(plugin_api):
     """plugin_api opens the DB with PRAGMA query_only — writes must fail."""
     import sqlite3
 
-    conn = plugin_api._db.conn()
+    conn = plugin_api._conn()
     with pytest.raises(sqlite3.OperationalError):
         conn.execute("INSERT INTO runs (session_id, started_at) VALUES ('x', 'y')")

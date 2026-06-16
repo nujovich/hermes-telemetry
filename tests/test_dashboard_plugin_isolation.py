@@ -1,8 +1,15 @@
-"""Guard: the dashboard plugin and the standalone dashboard share no code.
+"""Guard: the standalone dashboard and the Hermes dashboard plugin share no code.
 
-These two surfaces are intentionally independent — see CLAUDE.md and the
-PR that introduced ``dashboard_plugin/``. This test fails if anyone wires
-an import from one into the other.
+These two surfaces co-locate in ``dashboard/`` because the Hermes loader
+requires plugin files at ``<plugin_root>/dashboard/manifest.json``. They
+must remain code-isolated even though they live in the same directory:
+
+- Standalone:  ``dashboard/serve.py`` + ``dashboard/index.html``
+- Plugin:      ``dashboard/manifest.json`` + ``dashboard/plugin_api.py``
+               + ``dashboard/dist/index.js``
+
+These tests fail if a file from one surface imports a symbol from the other.
+The plugin file set is identified by filename — the loader contract pins it.
 """
 
 from __future__ import annotations
@@ -11,8 +18,12 @@ import ast
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-STANDALONE_DIR = REPO_ROOT / "dashboard"
-PLUGIN_DIR = REPO_ROOT / "dashboard_plugin"
+DASH_DIR = REPO_ROOT / "dashboard"
+
+# Filenames that belong to the plugin surface (loaded by Hermes' dashboard).
+PLUGIN_FILES = {"plugin_api.py"}
+# Filenames that belong to the standalone surface (stdlib HTTP server).
+STANDALONE_FILES = {"serve.py"}
 
 
 def _module_imports(py_file: Path) -> set[str]:
@@ -27,34 +38,46 @@ def _module_imports(py_file: Path) -> set[str]:
     return names
 
 
-def _iter_py(root: Path):
-    return (p for p in root.rglob("*.py") if p.is_file())
+def test_plugin_api_is_self_contained():
+    """plugin_api.py must not import serve.py (in any form)."""
+    api = DASH_DIR / "plugin_api.py"
+    imports = _module_imports(api)
+    forbidden = {"serve", "dashboard.serve", "dashboard"}
+    leak = imports & forbidden
+    assert not leak, f"plugin_api.py leaks standalone imports: {leak}"
 
 
-def test_plugin_does_not_import_standalone():
-    offenders = []
-    for py in _iter_py(PLUGIN_DIR):
-        for mod in _module_imports(py):
-            if mod.startswith("dashboard") and not mod.startswith("dashboard_plugin"):
-                offenders.append((py.relative_to(REPO_ROOT), mod))
-    assert not offenders, (
-        f"dashboard_plugin must not import from the standalone dashboard: {offenders}"
-    )
+def test_standalone_serve_does_not_import_plugin_api():
+    serve = DASH_DIR / "serve.py"
+    imports = _module_imports(serve)
+    forbidden = {"plugin_api", "dashboard.plugin_api"}
+    leak = imports & forbidden
+    assert not leak, f"serve.py leaks plugin imports: {leak}"
 
 
-def test_standalone_does_not_import_plugin():
-    offenders = []
-    for py in _iter_py(STANDALONE_DIR):
-        for mod in _module_imports(py):
-            if mod.startswith("dashboard_plugin"):
-                offenders.append((py.relative_to(REPO_ROOT), mod))
-    assert not offenders, f"dashboard/ must not import from dashboard_plugin/: {offenders}"
+def test_no_shared_helpers_between_surfaces():
+    """No third Python file in dashboard/ may be imported by both surfaces.
+
+    This prevents a slow drift toward a shared 'utils' that re-couples them.
+    """
+    third_party = [
+        p
+        for p in DASH_DIR.glob("*.py")
+        if p.name not in PLUGIN_FILES and p.name not in STANDALONE_FILES
+    ]
+    plugin_imports = _module_imports(DASH_DIR / "plugin_api.py")
+    serve_imports = _module_imports(DASH_DIR / "serve.py")
+    for helper in third_party:
+        mod_name = helper.stem
+        assert not (mod_name in plugin_imports and mod_name in serve_imports), (
+            f"{helper.name} would re-couple plugin and standalone surfaces"
+        )
 
 
 def test_plugin_manifest_is_valid():
     import json
 
-    manifest = json.loads((PLUGIN_DIR / "manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((DASH_DIR / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "hermes-telemetry"
     assert manifest["entry"] == "dist/index.js"
     assert manifest["api"] == "plugin_api.py"
@@ -67,7 +90,7 @@ def test_plugin_manifest_is_valid():
 def test_plugin_version_matches_package():
     import json
 
-    manifest = json.loads((PLUGIN_DIR / "manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((DASH_DIR / "manifest.json").read_text(encoding="utf-8"))
     init_src = (REPO_ROOT / "__init__.py").read_text(encoding="utf-8")
     # Parse __version__ literal without importing the package (avoids side effects).
     for line in init_src.splitlines():
@@ -83,20 +106,17 @@ def test_plugin_version_matches_package():
 
 
 def test_plugin_api_exposes_router():
-    """plugin_api.py must export `router` with /summary and /health.
+    """plugin_api.py must export `router` with all documented routes.
 
     FastAPI is a runtime dep of the Hermes dashboard, not of hermes-telemetry,
     so we skip live import when it's unavailable and fall back to an AST
     inspection that guarantees the same contract.
     """
-    api_file = PLUGIN_DIR / "plugin_api.py"
+    api_file = DASH_DIR / "plugin_api.py"
 
     try:
         import fastapi  # noqa: F401
     except ImportError:
-        # AST fallback: verify the file declares a `router` and routes /summary
-        # + /health. This is good enough to prevent regressions; full wiring is
-        # exercised inside the Hermes dashboard process.
         tree = ast.parse(api_file.read_text(encoding="utf-8"))
         names = {
             t.id
@@ -118,34 +138,28 @@ def test_plugin_api_exposes_router():
             '"/token-breakdown"',
         ):
             assert endpoint in src, f"plugin_api.py is missing route {endpoint}"
-        # session_detail uses a path param.
         assert '"/session/{session_id}"' in src
         return
 
     import importlib.util
-    import sys
 
-    sys.path.insert(0, str(REPO_ROOT))
-    try:
-        import dashboard_plugin  # noqa: F401
-
-        spec_pkg = importlib.util.spec_from_file_location("dashboard_plugin.plugin_api", api_file)
-        mod = importlib.util.module_from_spec(spec_pkg)
-        spec_pkg.loader.exec_module(mod)
-        assert hasattr(mod, "router"), "plugin_api.py must export `router`"
-        paths = {r.path for r in mod.router.routes}
-        expected = {
-            "/summary",
-            "/health",
-            "/token-breakdown",
-            "/runs",
-            "/requests",
-            "/providers",
-            "/cron",
-            "/session/{session_id}",
-            "/budget",
-        }
-        missing = expected - paths
-        assert not missing, f"plugin_api.py missing routes: {missing}"
-    finally:
-        sys.path.pop(0)
+    spec_pkg = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_hermes_telemetry", api_file
+    )
+    mod = importlib.util.module_from_spec(spec_pkg)
+    spec_pkg.loader.exec_module(mod)
+    assert hasattr(mod, "router"), "plugin_api.py must export `router`"
+    paths = {r.path for r in mod.router.routes}
+    expected = {
+        "/summary",
+        "/health",
+        "/token-breakdown",
+        "/runs",
+        "/requests",
+        "/providers",
+        "/cron",
+        "/session/{session_id}",
+        "/budget",
+    }
+    missing = expected - paths
+    assert not missing, f"plugin_api.py missing routes: {missing}"
