@@ -166,9 +166,11 @@ def _since_cutoff_epoch(window_hours):
 
 def _parse_cron_output_ts(path: Path) -> datetime | None:
     try:
-        return datetime.strptime(path.stem, "%Y-%m-%d_%H-%M-%S").replace(tzinfo=timezone.utc)
+        naive = datetime.strptime(path.stem, "%Y-%m-%d_%H-%M-%S")
     except ValueError:
         return None
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    return naive.replace(tzinfo=local_tz).astimezone(timezone.utc)
 
 
 def _cron_scheduler_runs(window_hours=0):
@@ -1625,7 +1627,7 @@ def api_daily_token_chart(
             FROM tool_calls tc
             LEFT JOIN runs r ON r.session_id = tc.session_id
             WHERE {_since_clause(window_hours, "tc.ts")} AND {visible_llm_sql}
-            GROUP BY {_period_label_expr("tc.ts", granularity)}
+            GROUP BY {_period_label_expr("tc.ts", granularity, tz_name)}
             ORDER BY day DESC
             LIMIT ?
         ) d

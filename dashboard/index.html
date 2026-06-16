@@ -742,12 +742,25 @@ function fmtShortDayLabel(day) {
   return d ? new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(d) : day;
 }
 
+function parseHourBucketParts(value) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!match) return null;
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5]),
+  };
+}
+
 function fmtHourLabel(value, opts = {}) {
-  const d = parseDashboardTs(`${value}:00Z`);
-  if (!d) return value;
+  const parts = parseHourBucketParts(value);
+  if (!parts) return value;
+  const localDate = new Date(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0, 0);
   return new Intl.DateTimeFormat(undefined, opts.full
     ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
-    : { hour: 'numeric' }).format(d);
+    : { hour: 'numeric' }).format(localDate);
 }
 
 function effectiveHomeTrendGranularity(hoursValue = $('#windowSelect')?.value || '0') {
