@@ -226,6 +226,40 @@ hermes gateway restart
 
 `hermes-telemetry` also ships as a **Hermes dashboard plugin**. When the Hermes web dashboard is running, it auto-discovers the plugin from this same install path — no extra steps. You get a dedicated **Telemetry** tab plus widgets injected into the built-in pages.
 
+### Screenshots
+
+**Dedicated Telemetry tab — Cron view**
+
+[![Cron tab](docs/plugin/05-cron-tab.png)](docs/plugin/05-cron-tab.png)
+
+*The `Cron` sub-tab aggregates runs by `cron_job_id`: total runs, ok / failed split, cost, and last execution. Built from `/api/plugins/hermes-telemetry/cron`.*
+
+**Budgets — soft / hard semáforo**
+
+[![Budgets tab](docs/plugin/06-budgets-tab.png)](docs/plugin/06-budgets-tab.png)
+
+*Global daily and monthly budgets read live from `budget.yaml`. The HARD badge fires when spend exceeds the hard cap (`$7.82 / $5.00 = 156.4%` here); soft and ok states use distinct badge variants.*
+
+**Slot: `sessions:top` (injected into `/sessions`)**
+
+[![sessions:top slot](docs/plugin/07-slot-sessions-top.png)](docs/plugin/07-slot-sessions-top.png)
+
+*A pinned card at the top of the Sessions page surfaces the most recent run with real activity — cost, tokens in / out, and the model used.*
+
+**Slot: `cron:top` (injected into `/cron`)**
+
+[![cron:top slot](docs/plugin/08-slot-cron-top.png)](docs/plugin/08-slot-cron-top.png)
+
+*Aggregate 7-day cron cost plus a destructive `N FAILED` badge when any job failed in the window.*
+
+**Slot: `header-right` (injected into the dashboard header)**
+
+[![header-right slot](docs/plugin/09-slot-header-right.png)](docs/plugin/09-slot-header-right.png)
+
+*Compact 24h spend + percentage against the global daily cap. Badge turns `destructive` on hard breach.*
+
+> *Tip:* run [`tools/seed_demo_data.py`](tools/seed_demo_data.py) against an isolated `HERMES_HOME` to populate the dashboard with realistic demo data before taking your own screenshots.
+
 ### What you get
 
 - A `/telemetry` tab with sub-tabs: **Summary**, **Runs**, **Requests**, **Providers**, **Cron**, **Budgets**.
