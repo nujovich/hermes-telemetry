@@ -9,10 +9,15 @@ Subcommands:
   /stats raw [N]      → last N runs (default 20)
   /stats providers    → per-provider real vs estimated breakdown (last 24h)
   /stats models       → per-model breakdown within each provider (last 24h)
+
+Date range support:
+  --from YYYY-MM-DD   → start date (inclusive)
+  --to YYYY-MM-DD     → end date (exclusive, defaults to now)
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -50,8 +55,37 @@ def _window_label(hours: int) -> str:
     return f"last {hours // 24} days"
 
 
-def _summary_block(window_hours: int) -> str:
-    s = db.stats_summary(window_hours)
+def _date_range_label(date_from: str | None, date_to: str | None) -> str:
+    if date_from and date_to:
+        return f"{date_from[:10]} to {date_to[:10]}"
+    if date_from:
+        return f"since {date_from[:10]}"
+    if date_to:
+        return f"until {date_to[:10]}"
+    return "all time"
+
+
+def _date_range_to_hours(date_from: str | None, date_to: str | None) -> int | None:
+    """Convert date range to approximate hours for backward compat label."""
+    if not date_from:
+        return None
+    try:
+        from_dt = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
+        to_dt = (
+            datetime.fromisoformat(date_to.replace("Z", "+00:00"))
+            if date_to
+            else datetime.now(timezone.utc)
+        )
+        hours = int((to_dt - from_dt).total_seconds() / 3600)
+        return hours
+    except Exception:
+        return None
+
+
+def _summary_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    s = db.stats_summary(window_hours=window_hours, date_from=date_from, date_to=date_to)
     total = s.get("total_runs") or 0
     ok = s.get("ok_runs") or 0
     failed = s.get("failed_runs") or 0
@@ -66,8 +100,10 @@ def _summary_block(window_hours: int) -> str:
     cost_val = s.get("cost_usd")
     cost_str = f"~{_fmt_cost(cost_val)}" if has_estimated else _fmt_cost(cost_val)
 
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
+
     lines = [
-        f"hermes-telemetry — {_window_label(window_hours)}",
+        f"hermes-telemetry — {label}",
         "=" * 44,
         f"  Sessions      : {_fmt_int(total)}",
         f"  Success rate  : {success_rate}  (ok={_fmt_int(ok)}, failed={_fmt_int(failed)})",
@@ -106,13 +142,16 @@ def _summary_block(window_hours: int) -> str:
     return "\n".join(lines)
 
 
-def _cron_block(window_hours: int = 168) -> str:
-    rows = db.cost_by_job(window_hours)
+def _cron_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    rows = db.cost_by_job(window_hours=window_hours, date_from=date_from, date_to=date_to)
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
     if not rows:
-        return f"No cron runs in the last {window_hours // 24} days."
+        return f"No cron runs in {label}."
 
     lines = [
-        f"hermes-telemetry — cron jobs ({_window_label(window_hours)})",
+        f"hermes-telemetry — cron jobs ({label})",
         "=" * 72,
         f"  {'Job ID':<20} {'Runs':>5} {'OK':>5} {'Fail':>5} {'Tok-in':>9} {'Tok-out':>9} {'Cost':>12} {'Avg dur':>9}",
         "  " + "-" * 70,
@@ -132,13 +171,16 @@ def _cron_block(window_hours: int = 168) -> str:
     return "\n".join(lines)
 
 
-def _providers_block(window_hours: int = 24) -> str:
-    rows = db.stats_by_provider(window_hours)
+def _providers_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    rows = db.stats_by_provider(window_hours=window_hours, date_from=date_from, date_to=date_to)
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
     if not rows:
-        return f"No API calls recorded in the {_window_label(window_hours)}."
+        return f"No API calls recorded in {label}."
 
     lines = [
-        f"hermes-telemetry — providers ({_window_label(window_hours)})",
+        f"hermes-telemetry — providers ({label})",
         "=" * 72,
         f"  {'Provider':<28} {'Calls':>6} {'Real':>6} {'Est':>5} {'Est%':>6} {'Cost':>12}",
         "  " + "-" * 67,
@@ -199,10 +241,13 @@ def _providers_block(window_hours: int = 24) -> str:
     return "\n".join(lines)
 
 
-def _models_block(window_hours: int = 24) -> str:
-    rows = db.stats_by_model(window_hours)
+def _models_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    rows = db.stats_by_model(window_hours=window_hours, date_from=date_from, date_to=date_to)
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
     if not rows:
-        return f"No API calls recorded in the {_window_label(window_hours)}."
+        return f"No API calls recorded in {label}."
 
     # Subscription models (`_subscription: true` in pricing.yaml) are an
     # explicitly declared $0 — surface them so the $0.00 footer can stop
@@ -212,9 +257,10 @@ def _models_block(window_hours: int = 24) -> str:
     subscription_models = _pricing._load_custom_pricing().get("subscription_models", set())
 
     lines = [
-        f"hermes-telemetry — models ({_window_label(window_hours)})",
+        f"hermes-telemetry — models ({label})",
         "=" * 108,
-        f"  {'Provider':<20} {'Model':<46} {'Calls':>6} {'Real':>6} {'Est':>5} {'Cost':>12}  Notes",
+        f"  {'Provider':<20} {'Model':<46} {'Calls':>6} {'Real':>6} "
+        f"{'Est':>5} {'Cost':>12}  Notes",
         "  " + "-" * 106,
     ]
     sub_zero_count = 0
@@ -255,8 +301,8 @@ def _models_block(window_hours: int = 24) -> str:
     return "\n".join(lines)
 
 
-def _raw_block(limit: int = 20) -> str:
-    rows = db.recent_runs(limit)
+def _raw_block(limit: int = 20, *, date_from: str | None = None, date_to: str | None = None) -> str:
+    rows = db.recent_runs(limit, date_from=date_from, date_to=date_to)
     if not rows:
         return "No runs recorded yet."
 
@@ -279,7 +325,7 @@ def _raw_block(limit: int = 20) -> str:
 
 
 def handle(raw_args: str) -> str:
-    """Entry point for /stats command handler."""
+    """Entry point for /stats command handler (Slack slash command format)."""
     args = (raw_args or "").strip().lower()
 
     if not args or args in ("today",):
@@ -330,5 +376,7 @@ def handle(raw_args: str) -> str:
         "  /stats providers week — provider breakdown, last 7 days\n"
         "  /stats models        — per-model breakdown within each provider (24h)\n"
         "  /stats models week   — per-model breakdown, last 7 days\n"
-        "  /stats raw [N]       — last N raw run records (default 20)"
+        "  /stats raw [N]       — last N raw run records (default 20)\n"
+        "\n"
+        "For date range filtering, use the CLI: hermes-telemetry stats --from YYYY-MM-DD --to YYYY-MM-DD"
     )

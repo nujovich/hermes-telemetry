@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 
 from . import db, stats
 
@@ -10,6 +11,8 @@ _STATS_WINDOW_HOURS: dict[str, int] = {
     "today": 24,
     "week": 168,
     "month": 720,
+    "last-7-days": 168,
+    "last-30-days": 720,
     "cron": 168,
     "cron-week": 168,
     "cron-month": 720,
@@ -22,6 +25,80 @@ _STATS_WINDOW_HOURS: dict[str, int] = {
 }
 
 _STATS_CHOICES = list(_STATS_WINDOW_HOURS)
+
+
+def _parse_date(date_str: str) -> str:
+    """Parse a date string and return ISO format (YYYY-MM-DD or ISO 8601)."""
+    # Support formats: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, YYYY-MM-DDTHH:MM:SSZ, now
+    date_str = date_str.strip().lower()
+    if date_str == "now":
+        return datetime.now(timezone.utc).isoformat()
+
+    # Try parsing as date only (YYYY-MM-DD)
+    for fmt in (
+        "%Y-%m-%d",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+    ):
+        try:
+            dt = datetime.strptime(date_str, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.isoformat()
+        except ValueError:
+            continue
+
+    raise argparse.ArgumentTypeError(
+        f"Invalid date format: {date_str}. Use YYYY-MM-DD or ISO 8601."
+    )
+
+
+def _preset_to_date_range(preset: str) -> tuple[str | None, str | None]:
+    """Convert preset strings like 'today', 'week', 'month', 'last-7-days' to (from, to)."""
+    preset = preset.strip().lower()
+    now = datetime.now(timezone.utc)
+
+    if preset == "today":
+        from_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return (from_dt.isoformat(), None)
+    if preset == "week":
+        from_dt = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+        return (from_dt.isoformat(), None)
+    if preset == "month":
+        from_dt = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30)
+        return (from_dt.isoformat(), None)
+    if preset.startswith("last-") and preset.endswith("-days"):
+        try:
+            days = int(preset[5:-5])
+            from_dt = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
+            return (from_dt.isoformat(), None)
+        except ValueError:
+            pass
+
+    return (None, None)
+
+
+def _subcommand_to_date_range(subcommand: str) -> tuple[str | None, str | None]:
+    """Convert any stats subcommand to a date range using its default window hours."""
+    # Check for explicit presets first
+    preset_result = _preset_to_date_range(subcommand)
+    if preset_result != (None, None):
+        return preset_result
+
+    # For other subcommands (cron, providers, models, cron-week, etc.),
+    # use their default window hours
+    window_hours = _STATS_WINDOW_HOURS.get(subcommand)
+    if window_hours is not None:
+        now = datetime.now(timezone.utc)
+        from_dt = now - timedelta(hours=window_hours)
+        return (from_dt.isoformat(), None)
+
+    # Fallback to 24h
+    now = datetime.now(timezone.utc)
+    from_dt = now - timedelta(hours=24)
+    return (from_dt.isoformat(), None)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -44,6 +121,18 @@ def _build_parser_into(sub) -> None:
         choices=_STATS_CHOICES,
         metavar="SUBCOMMAND",
         help=f"One of: {', '.join(_STATS_CHOICES)} (default: today)",
+    )
+    sp.add_argument(
+        "--from",
+        dest="date_from",
+        type=_parse_date,
+        help="Start date (ISO 8601, e.g. 2025-01-15 or 2025-01-15T00:00:00Z)",
+    )
+    sp.add_argument(
+        "--to",
+        dest="date_to",
+        type=_parse_date,
+        help="End date (ISO 8601, exclusive). Defaults to now.",
     )
     sp.add_argument("--json", action="store_true", help="Output as JSON")
 
@@ -77,39 +166,49 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser | None =
         sys.exit(0)
 
 
+def _resolve_date_range(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    """Resolve the date range from --from/--to flags or from preset subcommand."""
+    # Explicit --from/--to flags take precedence
+    if args.date_from is not None:
+        date_from = args.date_from
+        date_to = args.date_to or datetime.now(timezone.utc).isoformat()
+        return (date_from, date_to)
+
+    # Otherwise use subcommand to determine date range
+    return _subcommand_to_date_range(args.subcommand)
+
+
 def _handle_stats(args: argparse.Namespace) -> None:
+    date_from, date_to = _resolve_date_range(args)
+
     if args.json:
-        _stats_json(args.subcommand)
+        _stats_json(args.subcommand, date_from, date_to)
     else:
-        _stats_text(args.subcommand)
+        _stats_text(args.subcommand, date_from, date_to)
 
 
-def _stats_text(subcommand: str) -> None:
-    hours = _STATS_WINDOW_HOURS.get(subcommand, 24)
-    if subcommand in ("today", "week", "month"):
-        print(stats._summary_block(hours))
-    elif subcommand.startswith("cron"):
-        print(stats._cron_block(hours))
+def _stats_text(subcommand: str, date_from: str | None, date_to: str | None) -> None:
+    if subcommand.startswith("cron"):
+        print(stats._cron_block(date_from=date_from, date_to=date_to))
     elif subcommand.startswith("providers"):
-        print(stats._providers_block(hours))
+        print(stats._providers_block(date_from=date_from, date_to=date_to))
     elif subcommand.startswith("models"):
-        print(stats._models_block(hours))
+        print(stats._models_block(date_from=date_from, date_to=date_to))
     else:
-        print(stats._summary_block(24))
+        # today, week, month, last-N-days
+        print(stats._summary_block(date_from=date_from, date_to=date_to))
 
 
-def _stats_json(subcommand: str) -> None:
-    hours = _STATS_WINDOW_HOURS.get(subcommand, 24)
-    if subcommand in ("today", "week", "month"):
-        data = db.stats_summary(hours)
-    elif subcommand.startswith("cron"):
-        data = db.cost_by_job(hours)
+def _stats_json(subcommand: str, date_from: str | None, date_to: str | None) -> None:
+    if subcommand.startswith("cron"):
+        data = db.cost_by_job(date_from=date_from, date_to=date_to)
     elif subcommand.startswith("providers"):
-        data = db.stats_by_provider(hours)
+        data = db.stats_by_provider(date_from=date_from, date_to=date_to)
     elif subcommand.startswith("models"):
-        data = db.stats_by_model(hours)
+        data = db.stats_by_model(date_from=date_from, date_to=date_to)
     else:
-        data = db.stats_summary(24)
+        # today, week, month, last-N-days
+        data = db.stats_summary(date_from=date_from, date_to=date_to)
     print(json.dumps(data, default=str))
 
 

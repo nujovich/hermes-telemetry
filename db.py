@@ -438,9 +438,87 @@ def record_tool_call(
 # ---------------------------------------------------------------------------
 
 
-def stats_summary(window_hours: int = 24) -> dict[str, Any]:
+def _build_where_clause(
+    window_hours: int | None = None, date_from: str | None = None, date_to: str | None = None
+) -> tuple[str, list]:
+    """Build WHERE clause for date filtering.
+
+    Priority: explicit date_from/date_to > window_hours > default (24h)
+    Returns (where_sql, params)
+    """
+    where_parts = []
+    params = []
+
+    if date_from is not None:
+        where_parts.append("started_at >= ?")
+        params.append(date_from)
+        if date_to is not None:
+            where_parts.append("started_at < ?")
+            params.append(date_to)
+        else:
+            where_parts.append("started_at < datetime('now')")
+    elif window_hours is not None:
+        where_parts.append(f"started_at >= {_run_hours_ago_expr(window_hours)}")
+    else:
+        # Default to last 24h
+        where_parts.append(f"started_at >= {_run_hours_ago_expr(24)}")
+
+    return (" AND ".join(where_parts), params)
+
+
+def _build_where_clause_ts(
+    window_hours: int | None = None, date_from: str | None = None, date_to: str | None = None
+) -> tuple[str, list]:
+    """Build WHERE clause for date filtering on llm_calls.ts column."""
+    where_parts = []
+    params = []
+
+    if date_from is not None:
+        where_parts.append("ts >= ?")
+        params.append(date_from)
+        if date_to is not None:
+            where_parts.append("ts < ?")
+            params.append(date_to)
+        else:
+            where_parts.append("ts < datetime('now')")
+    elif window_hours is not None:
+        where_parts.append(f"ts >= {_run_hours_ago_expr(window_hours)}")
+    else:
+        where_parts.append(f"ts >= {_run_hours_ago_expr(24)}")
+
+    return (" AND ".join(where_parts), params)
+
+
+def _build_tools_where(
+    window_hours: int | None = None, date_from: str | None = None, date_to: str | None = None
+) -> tuple[str, list]:
+    """Build WHERE clause for tool_calls JOIN runs query."""
+    where_parts = []
+    params = []
+
+    if date_from is not None:
+        where_parts.append("r.started_at >= ?")
+        params.append(date_from)
+        if date_to is not None:
+            where_parts.append("r.started_at < ?")
+            params.append(date_to)
+        else:
+            where_parts.append("r.started_at < datetime('now')")
+    elif window_hours is not None:
+        where_parts.append(f"r.started_at >= {_run_hours_ago_expr(window_hours)}")
+    else:
+        where_parts.append(f"r.started_at >= {_run_hours_ago_expr(24)}")
+
+    return (" AND ".join(where_parts), params)
+
+
+def stats_summary(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> dict[str, Any]:
     conn = _get_conn()
-    since = _run_hours_ago_expr(window_hours)
+    where_sql, params = _build_where_clause(window_hours, date_from, date_to)
+    where_sql_ts, params_ts = _build_where_clause_ts(window_hours, date_from, date_to)
+    tools_where, tools_params = _build_tools_where(window_hours, date_from, date_to)
 
     runs_row = conn.execute(
         f"""
@@ -456,8 +534,9 @@ def stats_summary(window_hours: int = 24) -> dict[str, Any]:
             SUM(tool_calls)                                   AS tool_calls,
             SUM(estimated_llm_calls)                          AS estimated_llm_calls
         FROM runs
-        WHERE started_at >= {since}
-        """
+        WHERE {where_sql}
+        """,
+        params,
     ).fetchone()
 
     llm_row = conn.execute(
@@ -466,8 +545,9 @@ def stats_summary(window_hours: int = 24) -> dict[str, Any]:
             COUNT(*)        AS api_calls,
             AVG(latency_ms) AS avg_latency_ms
         FROM llm_calls
-        WHERE ts >= {since}
-        """
+        WHERE {where_sql_ts}
+        """,
+        params_ts,
     ).fetchone()
 
     top_tools = conn.execute(
@@ -478,25 +558,35 @@ def stats_summary(window_hours: int = 24) -> dict[str, Any]:
                AVG(latency_ms) AS avg_ms
         FROM tool_calls tc
         JOIN runs r ON tc.session_id = r.session_id
-        WHERE r.started_at >= {since}
+        WHERE {tools_where}
         GROUP BY tool_name
         ORDER BY calls DESC
         LIMIT 10
-        """
+        """,
+        tools_params,
     ).fetchall()
 
     result = dict(runs_row)
     result.update(dict(llm_row))
     result["top_tools"] = [dict(t) for t in top_tools]
     result["window_hours"] = window_hours
+    result["date_from"] = date_from
+    result["date_to"] = date_to
     # Parent-child attribution is not yet populated (see ONBOARDING.md)
     result["parent_links_available"] = False
     return result
 
 
-def cost_by_job(window_hours: int = 168) -> list[dict[str, Any]]:
+def cost_by_job(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
     conn = _get_conn()
-    since = _run_hours_ago_expr(window_hours)
+    where_sql, params = _build_where_clause(window_hours, date_from, date_to)
+    if where_sql:
+        where_sql = f"WHERE cron_job_id IS NOT NULL AND {where_sql}"
+    else:
+        where_sql = "WHERE cron_job_id IS NOT NULL"
+
     rows = conn.execute(
         f"""
         SELECT
@@ -510,30 +600,39 @@ def cost_by_job(window_hours: int = 168) -> list[dict[str, Any]]:
             AVG(duration_ms)                                  AS avg_duration_ms,
             MAX(started_at)                                   AS last_run
         FROM runs
-        WHERE cron_job_id IS NOT NULL
-          AND started_at >= {since}
+        {where_sql}
         GROUP BY cron_job_id
         ORDER BY cost_usd DESC
-        """
+        """,
+        params,
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
+def recent_runs(
+    limit: int = 20,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    window_hours: int | None = None,
+) -> list[dict[str, Any]]:
     conn = _get_conn()
-    rows = conn.execute(
-        """
+    where_sql, params = _build_where_clause(window_hours, date_from, date_to)
+
+    query = """
         SELECT session_id, platform, cron_job_id, sender_id, model, provider,
                started_at, ended_at, status,
                tokens_in, tokens_out, cost_usd, duration_ms,
                api_calls, tool_calls,
                parent_session_id, estimated_llm_calls
         FROM runs
-        ORDER BY started_at DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
+    """
+    if where_sql:
+        query += f" WHERE {where_sql}"
+    query += " ORDER BY started_at DESC LIMIT ?"
+    params.append(limit)
+
+    rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -625,14 +724,17 @@ def list_sender_ids(since_iso: str) -> list[str]:
     return [r["sender_id"] for r in rows]
 
 
-def stats_by_provider(window_hours: int = 24) -> list[dict[str, Any]]:
+def stats_by_provider(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
     """Per-provider breakdown for /stats providers.
 
     Returns one row per provider seen in llm_calls within the window:
       provider, total_calls, real_calls, estimated_calls, estimated_pct, cost_usd
     """
     conn = _get_conn()
-    since = _run_hours_ago_expr(window_hours)
+    where_sql, params = _build_where_clause_ts(window_hours, date_from, date_to)
+
     rows = conn.execute(
         f"""
         SELECT
@@ -642,10 +744,11 @@ def stats_by_provider(window_hours: int = 24) -> list[dict[str, Any]]:
             SUM(CASE WHEN estimated = 1 THEN 1 ELSE 0 END)    AS estimated_calls,
             ROUND(SUM(cost_usd), 6)                            AS cost_usd
         FROM llm_calls
-        WHERE ts >= {since}
+        WHERE {where_sql}
         GROUP BY COALESCE(provider, '(unknown)')
         ORDER BY cost_usd DESC
-        """
+        """,
+        params,
     ).fetchall()
     result = []
     for r in rows:
@@ -657,7 +760,9 @@ def stats_by_provider(window_hours: int = 24) -> list[dict[str, Any]]:
     return result
 
 
-def stats_by_model(window_hours: int = 24) -> list[dict[str, Any]]:
+def stats_by_model(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
     """Per-model breakdown within each provider, for /stats models.
 
     Returns one row per (provider, model) seen in llm_calls within the window:
@@ -668,7 +773,8 @@ def stats_by_model(window_hours: int = 24) -> list[dict[str, Any]]:
     $0.00 separately, without dropping to raw SQL.
     """
     conn = _get_conn()
-    since = _run_hours_ago_expr(window_hours)
+    where_sql, params = _build_where_clause_ts(window_hours, date_from, date_to)
+
     rows = conn.execute(
         f"""
         SELECT
@@ -679,10 +785,11 @@ def stats_by_model(window_hours: int = 24) -> list[dict[str, Any]]:
             SUM(CASE WHEN estimated = 1 THEN 1 ELSE 0 END)   AS estimated_calls,
             ROUND(SUM(cost_usd), 6)                           AS cost_usd
         FROM llm_calls
-        WHERE ts >= {since}
+        WHERE {where_sql}
         GROUP BY COALESCE(provider, '(unknown)'), COALESCE(model, '(unknown)')
         ORDER BY provider ASC, total_calls DESC
-        """
+        """,
+        params,
     ).fetchall()
     result = []
     for r in rows:
