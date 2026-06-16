@@ -9,6 +9,10 @@ __pycache__/
 venv/
 .env
 dist/
+# The Hermes dashboard plugin ships a hand-written IIFE under
+# dashboard_plugin/dist/ — no build step, so it must be tracked.
+!dashboard_plugin/dist/
+!dashboard_plugin/dist/**
 build/
 *.egg-info/
 .pytest_cache/
