@@ -568,7 +568,14 @@ def test_equal_length_prefix_tie_break_prefers_custom_over_default(monkeypatch):
     monkeypatch.setattr(
         pricing,
         "_load_custom_pricing",
-        lambda: {"models": {shared_prefix: custom_price}},
+        lambda: {
+            "overrides": {"*": {shared_prefix: custom_price}},
+            "sources": {},
+            "defaults": {},
+            "subscription_models": set(),
+            "estimated_price_models": set(),
+            "legacy": False,
+        },
     )
     monkeypatch.setattr(pricing, "_DEFAULT_PRICING", {shared_prefix: default_price})
     monkeypatch.setattr(pricing, "_PREFIX_PRICING", [])
@@ -589,7 +596,18 @@ def test_google_alt_form_resolves_dated_variant_via_longest_prefix(monkeypatch):
     over the shorter "gemini-3-flash" family prefix in _PREFIX_PRICING (len 14).
     Exercises the intersection of name normalization and the longest-prefix matcher.
     """
-    monkeypatch.setattr(pricing, "_load_custom_pricing", lambda: {"models": {}})
+    monkeypatch.setattr(
+        pricing,
+        "_load_custom_pricing",
+        lambda: {
+            "overrides": {},
+            "sources": {},
+            "defaults": {},
+            "subscription_models": set(),
+            "estimated_price_models": set(),
+            "legacy": False,
+        },
+    )
 
     dated_prefixed = "google/gemini-3-flash-preview-20251217"
     dated_bare = "gemini-3-flash-preview-20251217"
@@ -726,7 +744,8 @@ def test_subscription_model_zero_cost_no_warning(tmp_path, monkeypatch, caplog):
 
 
 def test_subscription_models_tracked_in_loader(tmp_path, monkeypatch):
-    """_load_custom_pricing exposes _subscription flags and _source metadata."""
+    """The loader exposes _subscription flags and routes _source-tagged
+    entries into the auto-source bucket (legacy shim path)."""
     _write_pricing_yaml(
         tmp_path,
         monkeypatch,
@@ -742,12 +761,15 @@ def test_subscription_models_tracked_in_loader(tmp_path, monkeypatch):
             _source: openrouter
     """),
     )
-    custom = pricing._load_custom_pricing()
-    assert "qwen3.7-plus" in custom["subscription_models"]
-    assert custom["model_sources"]["qwen/qwen3.7-plus"] == "openrouter"
-    # Price-key dict must NOT carry the _-prefixed metadata
-    assert "_subscription" not in custom["models"]["qwen3.7-plus"]
-    assert "_source" not in custom["models"]["qwen/qwen3.7-plus"]
+    cache = pricing._load_custom_pricing()
+    assert "qwen3.7-plus" in cache["subscription_models"]
+    # Legacy `_source: openrouter` entries land under sources.openrouter
+    assert "qwen/qwen3.7-plus" in cache["sources"]["openrouter"]
+    # Untagged manual entries land in the neutral overrides bucket
+    assert "qwen3.7-plus" in cache["overrides"]["*"]
+    # Price-key dicts must NOT carry the _-prefixed metadata
+    assert "_subscription" not in cache["overrides"]["*"]["qwen3.7-plus"]
+    assert "_source" not in cache["sources"]["openrouter"]["qwen/qwen3.7-plus"]
 
 
 # ── NVIDIA NIM seeds + same-id collision with OpenRouter ──
