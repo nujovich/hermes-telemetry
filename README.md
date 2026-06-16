@@ -48,6 +48,34 @@ LLM provider
 
 -----
 
+> ### ℹ️ Free Nemotron Ultra before June 18, 2026 — no action needed
+>
+> The `nvidia/nemotron-3-ultra:free` promo **ends June 18, 2026**, after which the
+> model bills as `nvidia/nemotron-3-ultra` (and the OpenRouter long form
+> `nvidia/nemotron-3-ultra-550b-a55b`). You no longer need to declare anything in
+> `pricing.yaml`: **any model id ending in `:free` resolves to `$0` automatically**
+> (the OpenRouter free-tier convention) and is recorded as known-free, with no
+> estimated-price warning. This covers every form the gateway might send —
+> `nvidia/nemotron-3-ultra:free` and `nvidia/nemotron-3-ultra-550b-a55b:free`
+> alike.
+>
+> When the promo ends and the `:free` suffix is dropped, the model starts
+> incurring cost and hermes-telemetry detects the free→paid jump — even though the
+> id changes — and warns you in-context. (Pricing details: [`pricing.yaml`](#pricingyaml).)
+>
+> You may still pin an explicit price for a `:free` id if you ever need to (an
+> explicit `pricing.yaml` entry overrides the automatic `$0`):
+>
+> ```yaml
+> models:
+>   nvidia/nemotron-3-ultra:free:
+>     input: 0.0
+>     output: 0.0
+>     _subscription: true
+> ```
+
+-----
+
 ## Table of Contents
 
 - [Screenshots](#screenshots)
@@ -561,32 +589,6 @@ models:
     output: 0.0
     _subscription: true  # declared $0 — survives every OpenRouter refresh
 ```
-
-> ### ℹ️ Free Nemotron Ultra before June 18, 2026 — no action needed
->
-> The `nvidia/nemotron-3-ultra:free` promo **ends June 18, 2026**, after which the
-> model bills as `nvidia/nemotron-3-ultra` (and the OpenRouter long form
-> `nvidia/nemotron-3-ultra-550b-a55b`). You no longer need to declare anything in
-> `pricing.yaml`: **any model id ending in `:free` resolves to `$0` automatically**
-> (the OpenRouter free-tier convention) and is recorded as known-free, with no
-> estimated-price warning. This covers every form the gateway might send —
-> `nvidia/nemotron-3-ultra:free` and `nvidia/nemotron-3-ultra-550b-a55b:free`
-> alike.
->
-> When the promo ends and the `:free` suffix is dropped, the model starts
-> incurring cost and hermes-telemetry detects the free→paid jump — even though the
-> id changes — and warns you in-context.
->
-> You may still pin an explicit price for a `:free` id if you ever need to (an
-> explicit `pricing.yaml` entry overrides the automatic `$0`):
->
-> ```yaml
-> models:
->   nvidia/nemotron-3-ultra:free:
->     input: 0.0
->     output: 0.0
->     _subscription: true
-> ```
 
 ### `budget.yaml`
 
