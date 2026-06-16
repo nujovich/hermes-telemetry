@@ -68,9 +68,9 @@ _DEFAULT_PRICING: dict[str, dict] = {
     # nemotron normalize to it). Seeds live here, source-neutral and in code, so
     # they (1) survive an OpenRouter sync untouched and (2) are selected when the
     # provider-aware guard excludes a same-id OpenRouter entry for a NIM call.
-    # Prices per build.nvidia.com, verified 2026-06. Most `:free` promo variants
-    # (e.g. nemotron-3-super:free) resolve to $0 via the unknown-model fallback
-    # and need no entry — see issue #12.
+    # Prices per build.nvidia.com, verified 2026-06. `:free` promo variants
+    # (e.g. nemotron-3-super-120b-a12b:free) resolve to $0 via the ":free"
+    # suffix rule in `_lookup_form` and need no entry — see issue #12.
     "nvidia/nemotron-3-super-120b-a12b": dict(input=0.10, output=0.50),
     "nvidia/nemotron-super-49b": dict(input=0.10, output=0.40),
     "nvidia/nemotron-70b-instruct": dict(input=1.20, output=1.20),
@@ -78,10 +78,11 @@ _DEFAULT_PRICING: dict[str, dict] = {
     "nvidia/nemotron-nano-9b": dict(input=0.04, output=0.16),
     # nemotron-3-ultra: the `:free` promo ends 2026-06-18, after which the
     # gateway drops the `:free` suffix and bills `nvidia/nemotron-3-ultra` (and
-    # the suffixed `…-550b-a55b` form, caught by prefix match). Seeding the paid
-    # price here makes cost>0 once the promo ends, which is what fires the
-    # free→paid transition alert (issues #16/#32). Price is the OpenRouter rate
-    # pending confirmation of the NIM-direct figure.
+    # the suffixed `…-550b-a55b` form, caught by prefix match). While the promo
+    # is live, the `…:free` ids resolve to $0 via the ":free" suffix rule (not
+    # this seed). Seeding the paid price here makes cost>0 once the promo ends,
+    # which is what fires the free→paid transition alert (issues #16/#32). Price
+    # is the OpenRouter rate pending confirmation of the NIM-direct figure.
     "nvidia/nemotron-3-ultra": dict(input=0.50, output=2.50),
     # ── Meta (via OpenRouter / providers) ───────────────────────────────────
     "meta-llama/llama-3.1-405b-instruct": dict(input=2.70, output=2.70),
@@ -275,6 +276,20 @@ def _lookup_form(model_lc: str, provider: str = "") -> dict | None:
         return custom_models[model_lc]
     if model_lc in _DEFAULT_PRICING:
         return _DEFAULT_PRICING[model_lc]
+    # Free-tier suffix: OpenRouter (and similar gateways) advertise free variants
+    # with a ":free" suffix, e.g. "nvidia/nemotron-3-ultra-550b-a55b:free". These
+    # are $0 by definition. Short-circuit to an explicit zero price BEFORE the
+    # prefix scan, for two reasons:
+    #   1. Otherwise the suffixed free id inherits its paid base price via prefix
+    #      (e.g. the "nvidia/nemotron-3-ultra" seed would price "…-550b-a55b:free"
+    #      at $0.50/$2.50 — billing a free call as paid).
+    #   2. Returning an explicit zero dict (not the unknown-model None) makes the
+    #      call resolve as known-free: no estimated-price warning, and recorded in
+    #      known_free_models so the free→paid alert fires when the gateway later
+    #      drops the ":free" suffix and starts charging (issues #16/#32).
+    # A user's explicit ":free" entry (matched above) still wins over this rule.
+    if model_lc.endswith(":free"):
+        return {"input": 0.0, "output": 0.0}
     # Prefix fallback: scan ALL known keys — custom (auto-refreshed + user) and
     # default exact keys, plus the curated family-prefix table — longest prefix
     # wins. This lets an auto-refreshed key like 'google/gemini-3-flash-preview'

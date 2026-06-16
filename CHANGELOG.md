@@ -16,18 +16,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `nemotron-3-ultra`) and for a suffixed paid id at a token boundary
   (`nemotron-3-ultra-550b-a55b`). Wired into `post_api_request` alongside the
   existing `is_known_free_model` check.
+- **`:free` suffix pricing rule** (issue #32): any model id ending in `:free`
+  (the OpenRouter free-tier convention, e.g.
+  `nvidia/nemotron-3-ultra-550b-a55b:free`) now resolves to an explicit `$0` in
+  `pricing._lookup_form`, **before** the prefix scan. This means a `:free` id is
+  recorded as known-free (no estimated-price warning) and seeds the free→paid
+  alert automatically — no manual `pricing.yaml` entry required. A user's
+  explicit `:free` entry still overrides the rule.
 - `nvidia/nemotron-3-ultra` paid seed in `_DEFAULT_PRICING` (OpenRouter rate
   pending NIM-direct confirmation). Covers both the bare id and the suffixed
   `…-550b-a55b` form via prefix, so cost becomes non-zero once the `:free`
   promo ends 2026-06-18 — which is what fires the transition alert.
 
+### Fixed
+- `:free` promo variants of any **seeded** model were billed at the seeded
+  **paid** price via prefix match instead of `$0` (issue #32). Pre-fix,
+  `nvidia/nemotron-3-super-120b-a12b:free` resolved to the paid `$0.09/$0.45`
+  rate, and adding the `nvidia/nemotron-3-ultra` seed (above) regressed
+  `nvidia/nemotron-3-ultra-550b-a55b:free` from `$0` to the paid rate. The new
+  `:free` suffix rule short-circuits before the prefix scan, so free-tier calls
+  correctly cost `$0` during the promo. Corrects the earlier (0.4.1) claim that
+  `:free` variants "resolve to $0 via the unknown-model fallback" — they did not
+  for any model with a seeded paid base.
+
 ### Notes
-- **Free Nemotron Ultra users**: declare `nvidia/nemotron-3-ultra:free` at `$0`
-  with `_subscription: true` in `pricing.yaml` before 2026-06-18. This both
-  silences the estimated-price warning and seeds the model as known-free so the
-  free→paid alert fires when billing starts. See the README **PLEASE READ**
-  notice. A built-in default price cannot suppress the estimated-price warning —
-  only the manual `_subscription` flag can.
+- **Free Nemotron Ultra users**: no action required. Calls under any
+  `…nemotron-3-ultra…:free` id resolve to `$0` automatically and seed the
+  free→paid alert, which fires when the `:free` promo ends 2026-06-18 and the
+  gateway starts billing the bare/suffixed paid id. A manual `_subscription`
+  `$0` entry in `pricing.yaml` is still honored (and overrides the rule) but is
+  no longer needed.
 
 ## [0.5.0] - 2026-06-15
 

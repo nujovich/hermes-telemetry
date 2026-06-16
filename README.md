@@ -562,25 +562,31 @@ models:
     _subscription: true  # declared $0 — survives every OpenRouter refresh
 ```
 
-> ### ⚠️ PLEASE READ — if you use free Nemotron Ultra before June 18, 2026
+> ### ℹ️ Free Nemotron Ultra before June 18, 2026 — no action needed
 >
 > The `nvidia/nemotron-3-ultra:free` promo **ends June 18, 2026**, after which the
-> model bills as `nvidia/nemotron-3-ultra`. To get the free→paid alert *and* avoid
-> a spurious estimated-price warning, you **must** declare the free tier manually
-> in `pricing.yaml` — no exception:
+> model bills as `nvidia/nemotron-3-ultra` (and the OpenRouter long form
+> `nvidia/nemotron-3-ultra-550b-a55b`). You no longer need to declare anything in
+> `pricing.yaml`: **any model id ending in `:free` resolves to `$0` automatically**
+> (the OpenRouter free-tier convention) and is recorded as known-free, with no
+> estimated-price warning. This covers every form the gateway might send —
+> `nvidia/nemotron-3-ultra:free` and `nvidia/nemotron-3-ultra-550b-a55b:free`
+> alike.
+>
+> When the promo ends and the `:free` suffix is dropped, the model starts
+> incurring cost and hermes-telemetry detects the free→paid jump — even though the
+> id changes — and warns you in-context.
+>
+> You may still pin an explicit price for a `:free` id if you ever need to (an
+> explicit `pricing.yaml` entry overrides the automatic `$0`):
 >
 > ```yaml
 > models:
 >   nvidia/nemotron-3-ultra:free:
 >     input: 0.0
 >     output: 0.0
->     _subscription: true   # REQUIRED: silences the estimated-price warning
+>     _subscription: true
 > ```
->
-> Then restart Hermes. This seeds the model as known-free so that, once the promo
-> ends, hermes-telemetry detects the jump to paid (even though the id changes) and
-> warns you in-context. The `_subscription: true` flag is what keeps `/budget` from
-> flagging it as an estimated-price model — a built-in default price cannot do this.
 
 ### `budget.yaml`
 
@@ -639,7 +645,7 @@ The plugin can automatically fetch model pricing from OpenRouter’s public API,
   - Previously auto-fetched models are updated when prices change
   - Models are tagged with `_auto: true` and `_source: openrouter` — the `_source` tag is load-bearing: it drives the provider-aware guard above
 
-> **NVIDIA NIM** (`build.nvidia.com`) is supported out of the box: the Nemotron lineup ships as built-in seed prices, so NIM-served calls cost correctly even though NIM has no auto-refresh source. The seeds are immune to OpenRouter syncs, and a NIM call never borrows OpenRouter's rate for a colliding model id. Most `nvidia/...:free` promo variants resolve to `$0.00`; the `nemotron-3-ultra:free` promo ends 2026-06-18 (see the **PLEASE READ** notice above).
+> **NVIDIA NIM** (`build.nvidia.com`) is supported out of the box: the Nemotron lineup ships as built-in seed prices, so NIM-served calls cost correctly even though NIM has no auto-refresh source. The seeds are immune to OpenRouter syncs, and a NIM call never borrows OpenRouter's rate for a colliding model id. Any `…:free` id resolves to `$0.00` via the free-tier suffix rule (so a seeded model's `:free` variant is never mis-billed at its paid rate); the `nemotron-3-ultra:free` promo ends 2026-06-18 (see the notice above).
 
 ### Estimated-Price Models
 
@@ -951,11 +957,11 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (262 tests):**
+**Test suite (263 tests):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
-|`test_pricing.py`                |60   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds (incl. `nemotron-3-ultra` paid + `:free` collision), subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`|
+|`test_pricing.py`                |61   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds (incl. `nemotron-3-ultra` paid + `:free` suffix → $0 rule), subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`|
 |`test_telemetry_cli.py`          |32   |CLI subcommands (stats/budget), all window variants, text + `--json` output, entry point smoke test                            |
 |`test_db.py`                     |45   |Schema v1→v5 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes), `known_free_models` CRUD, `backfill_known_free_models`, `is_free_tier_transition` (id-change detection)|
 |`test_setup.py`                  |21   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |
