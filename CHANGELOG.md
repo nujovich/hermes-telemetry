@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-16
+
 ### Added
 - Free→paid transition detection now handles the **id-change** case (issue #32):
   when a provider drops a `:free` suffix (or renames a promo to its paid base)
@@ -208,6 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MIT License
 - README with architecture, usage, screenshots
 
+[0.5.1]: https://github.com/nujovich/hermes-telemetry/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/nujovich/hermes-telemetry/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.3.1...v0.4.0
