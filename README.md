@@ -263,6 +263,54 @@ hermes-telemetry budget --json | jq ‘.global’
 All subcommands read from the same SQLite database as the in-session `/stats` and
 `/budget` slash commands. The gateway does not need to be running.
 
+### Date range filters (`--from` / `--to`)
+
+Every `stats` subcommand also accepts `--from` and `--to` (ISO-8601 dates or full
+timestamps). `--from` is inclusive, `--to` is exclusive, and either can be
+omitted — leaving `--to` off means "up to now".
+
+```bash
+# Everything since a specific instant (good for "post-deploy" windows)
+hermes-telemetry stats models --from 2026-06-16T12:00:00Z
+
+# Bounded range
+hermes-telemetry stats providers --from 2026-06-10 --to 2026-06-15
+
+# Date-only is treated as 00:00:00 UTC of that day
+hermes-telemetry stats today --from 2026-06-01
+
+# Combine with --json for scripting
+hermes-telemetry stats models --from 2026-06-16T12:00:00Z --json \
+  | jq '.[] | {model, calls: .total_calls, cost: .cost_usd}'
+```
+
+Presets `today`, `week`, `month`, plus `last-7-days` / `last-30-days` are also
+available as subcommands when you don't need an arbitrary boundary.
+
+#### Use case: validating a pricing fix without waiting for the 24h window to roll
+
+If you land a fix that changes how a model is priced (e.g. you correct a
+provider-resolution bug so a model that was being billed against the wrong
+gateway now bills against the right one), the rolling 24-hour window in
+`/stats models` will keep mixing pre-fix and post-fix calls until enough time
+passes for the old ones to age out. The cost column is "right" for new calls
+but the *aggregate* is misleading.
+
+`--from <fix-deploy-timestamp>` lets you see only the post-fix calls
+immediately, so you can confirm the new unit cost without dropping to raw SQL
+and without waiting 24 h:
+
+```bash
+# Right after the fix lands at, say, 2026-06-16 12:00 UTC:
+hermes-telemetry stats models --from 2026-06-16T12:00:00Z
+# Provider   Model                       Calls  ...  Cost
+# nous       deepseek/deepseek-v4-pro     17    ...  $0.034000   ← new pricing, isolated
+```
+
+The `Notes` column (subscription/free-tier vs no price entry) and footer
+behaviour described in [`/stats models`](#stats) work the same way under a
+date filter — they're computed against whatever rows the filter selected.
+
 -----
 
 ## Setup Wizard
