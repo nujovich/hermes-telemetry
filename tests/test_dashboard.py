@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,11 +18,16 @@ _SERVE_PATH = Path(__file__).resolve().parents[1] / "dashboard" / "serve.py"
 
 
 @pytest.fixture
-def serve_module():
+def serve_module(tmp_path):
     spec = importlib.util.spec_from_file_location("dashboard_serve", _SERVE_PATH)
     module = importlib.util.module_from_spec(spec)
     sys.modules["dashboard_serve"] = module
     spec.loader.exec_module(module)
+    cron_root = tmp_path / "cron"
+    cron_root.mkdir()
+    module.CRON_JOBS_PATH = cron_root / "jobs.json"
+    module.CRON_OUTPUT_DIR = cron_root / "output"
+    module.CRON_OUTPUT_DIR.mkdir()
     yield module
     sys.modules.pop("dashboard_serve", None)
 
@@ -33,6 +40,42 @@ def isolated_dashboard_db():
     if conn:
         conn.close()
         db._local.conn = None
+
+
+def _seed_state_db(path: Path, rows: list[tuple[float, str, str]]):
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER,
+            role TEXT,
+            content TEXT,
+            tool_call_id TEXT,
+            tool_calls TEXT,
+            tool_name TEXT,
+            timestamp REAL,
+            token_count INTEGER,
+            finish_reason TEXT,
+            reasoning TEXT,
+            reasoning_content TEXT
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO messages (timestamp, role, content) VALUES (?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def _seed_cron_history(serve_module, jobs: list[dict], output_runs: list[tuple[str, str]]):
+    serve_module.CRON_JOBS_PATH.write_text(json.dumps({"jobs": jobs}))
+    for job_id, ts in output_runs:
+        job_dir = serve_module.CRON_OUTPUT_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / f"{ts}.md").write_text("ok\n")
 
 
 # ---------------------------------------------------------------------------
@@ -417,3 +460,458 @@ def test_budget_detail_restores_default_thresholds(serve_module, tmp_path):
     assert detail["soft_pct"] == 0.8
     assert detail["hard_pct"] == 1.0
     assert detail["on_estimated_mode"] == "warn_only"
+
+
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="zoneinfo requires Python 3.9+")
+def test_dashboard_period_helper_respects_viewer_timezone(serve_module):
+    assert (
+        serve_module._sqlite_dashboard_period("2026-06-13T18:30:00+00:00", "day", "Asia/Dhaka")
+        == "2026-06-14"
+    )
+    assert (
+        serve_module._sqlite_dashboard_period("2026-06-13T18:30:00+00:00", "day", "UTC")
+        == "2026-06-13"
+    )
+
+
+def test_parse_window_hours_supports_subhour_ranges(serve_module):
+    assert serve_module._parse_window_hours("0.25") == 0.25
+    assert serve_module._parse_window_hours("0") == 0.0
+
+
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="zoneinfo requires Python 3.9+")
+def test_daily_token_chart_groups_by_viewer_timezone_day(serve_module, monkeypatch, tmp_path):
+    state_db = tmp_path / "state.db"
+    _seed_state_db(state_db, [])
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-13T17:00:00+00:00")
+    db.start_run("tz-a", model="gpt-5.4", platform="discord")
+    db.record_llm_call(
+        "tz-a", "2026-06-13T17:30:00+00:00", "gpt-5.4", "openai-codex", 100, 10, 0.01, 50
+    )
+    db.end_run("tz-a", "ok", ended_at="2026-06-13T17:35:00+00:00")
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-13T18:00:00+00:00")
+    db.start_run("tz-b", model="gpt-5.4", platform="discord")
+    db.record_llm_call(
+        "tz-b", "2026-06-13T18:30:00+00:00", "gpt-5.4", "openai-codex", 200, 20, 0.02, 50
+    )
+    db.end_run("tz-b", "ok", ended_at="2026-06-13T18:35:00+00:00")
+
+    utc_rows = serve_module.api_daily_token_chart(window_hours=0, limit_days=10, tz_name="UTC")
+    dhaka_rows = serve_module.api_daily_token_chart(
+        window_hours=0, limit_days=10, tz_name="Asia/Dhaka"
+    )
+
+    assert [row["day"] for row in utc_rows] == ["2026-06-13"]
+    assert utc_rows[0]["api_calls"] == 2
+    assert [row["day"] for row in dhaka_rows] == ["2026-06-13", "2026-06-14"]
+    assert dhaka_rows[0]["api_calls"] == 1
+    assert dhaka_rows[1]["api_calls"] == 1
+
+
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="zoneinfo requires Python 3.9+")
+def test_daily_token_chart_supports_hourly_granularity(serve_module, monkeypatch, tmp_path):
+    state_db = tmp_path / "state.db"
+    _seed_state_db(
+        state_db,
+        [
+            (datetime(2026, 6, 13, 10, 5, tzinfo=timezone.utc).timestamp(), "user", "u1"),
+            (datetime(2026, 6, 13, 10, 6, tzinfo=timezone.utc).timestamp(), "assistant", "a1"),
+            (datetime(2026, 6, 13, 11, 5, tzinfo=timezone.utc).timestamp(), "user", "u2"),
+            (datetime(2026, 6, 13, 11, 6, tzinfo=timezone.utc).timestamp(), "assistant", "a2"),
+        ],
+    )
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-13T09:55:00+00:00")
+    db.start_run("hour-a", model="gpt-5.4", platform="discord")
+    db.record_llm_call(
+        "hour-a", "2026-06-13T10:15:00+00:00", "gpt-5.4", "openai-codex", 100, 20, 0.01, 50
+    )
+    db.end_run("hour-a", "ok", ended_at="2026-06-13T10:20:00+00:00")
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-13T10:55:00+00:00")
+    db.start_run("hour-b", model="gpt-5.4", platform="cron")
+    db.record_llm_call(
+        "hour-b", "2026-06-13T11:25:00+00:00", "gpt-5.4", "openai-codex", 200, 30, 0.02, 50
+    )
+    db.end_run("hour-b", "ok", ended_at="2026-06-13T11:30:00+00:00")
+
+    rows = serve_module.api_daily_token_chart(
+        window_hours=0, limit_days=48, granularity="hour", tz_name="UTC"
+    )
+
+    assert [row["day"] for row in rows] == [
+        "2026-06-13T09:00",
+        "2026-06-13T10:00",
+        "2026-06-13T11:00",
+    ]
+    assert rows[0]["request_runs"] == 1
+    assert rows[1]["api_calls"] == 1
+    assert rows[1]["message_runs"] == 2
+    assert rows[2]["api_calls"] == 1
+
+
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="zoneinfo requires Python 3.9+")
+def test_daily_token_chart_supports_minute_granularity(serve_module, monkeypatch, tmp_path):
+    state_db = tmp_path / "state.db"
+    _seed_state_db(
+        state_db,
+        [
+            (datetime(2026, 6, 13, 10, 15, tzinfo=timezone.utc).timestamp(), "user", "u1"),
+            (datetime(2026, 6, 13, 10, 15, tzinfo=timezone.utc).timestamp(), "assistant", "a1"),
+            (datetime(2026, 6, 13, 10, 17, tzinfo=timezone.utc).timestamp(), "user", "u2"),
+        ],
+    )
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-13T10:10:00+00:00")
+    db.start_run("minute-a", model="gpt-5.4", platform="discord")
+    db.record_llm_call(
+        "minute-a", "2026-06-13T10:15:20+00:00", "gpt-5.4", "openai-codex", 100, 20, 0.01, 50
+    )
+    db.record_tool_call("minute-a", "2026-06-13T10:15:30+00:00", "read_file", True, 10)
+    db.end_run("minute-a", "ok", ended_at="2026-06-13T10:15:40+00:00")
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-13T10:16:00+00:00")
+    db.start_run("minute-b", model="gpt-5.4", platform="cron")
+    db.record_llm_call(
+        "minute-b", "2026-06-13T10:17:10+00:00", "gpt-5.4", "openai-codex", 200, 30, 0.02, 50
+    )
+    db.end_run("minute-b", "ok", ended_at="2026-06-13T10:17:20+00:00")
+
+    rows = serve_module.api_daily_token_chart(
+        window_hours=0, limit_days=20, granularity="minute", tz_name="UTC"
+    )
+
+    by_day = {row["day"]: row for row in rows}
+    assert set(by_day) == {
+        "2026-06-13T10:10",
+        "2026-06-13T10:15",
+        "2026-06-13T10:16",
+        "2026-06-13T10:17",
+    }
+    assert by_day["2026-06-13T10:10"]["request_runs"] == 1
+    assert by_day["2026-06-13T10:15"]["api_calls"] == 1
+    assert by_day["2026-06-13T10:15"]["tool_calls"] == 1
+    assert by_day["2026-06-13T10:15"]["message_runs"] == 2
+    assert by_day["2026-06-13T10:16"]["request_runs"] == 1
+    assert by_day["2026-06-13T10:17"]["api_calls"] == 1
+
+
+def test_daily_token_chart_includes_requests_cost_savings_and_messages(
+    serve_module, monkeypatch, tmp_path
+):
+    _seed_cron_history(
+        serve_module,
+        [
+            {
+                "id": "trend-cron",
+                "name": "Trend Cron",
+                "schedule_display": "0 * * * *",
+                "repeat": {"completed": 1},
+                "last_run_at": "2026-06-10T11:10:00+00:00",
+                "last_status": "ok",
+                "enabled": True,
+            }
+        ],
+        [("trend-cron", "2026-06-10_11-10-00")],
+    )
+    state_db = tmp_path / "state.db"
+    _seed_state_db(
+        state_db,
+        [
+            (datetime(2026, 6, 10, 10, 1, tzinfo=timezone.utc).timestamp(), "user", "hello"),
+            (datetime(2026, 6, 10, 10, 2, tzinfo=timezone.utc).timestamp(), "assistant", "hi"),
+            (datetime(2026, 6, 10, 10, 3, tzinfo=timezone.utc).timestamp(), "assistant", ""),
+        ],
+    )
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-10T09:50:00+00:00")
+
+    db.start_run("trend-a", model="gpt-5.4", platform="discord")
+    db.record_tool_call("trend-a", "2026-06-10T10:05:00+00:00", "search_files", True, 15)
+    db.record_tool_call("trend-a", "2026-06-10T10:06:00+00:00", "read_file", True, 20)
+    db.record_llm_call(
+        "trend-a",
+        "2026-06-10T10:00:00+00:00",
+        "gpt-5.4",
+        "openai-codex",
+        100,
+        50,
+        0.03,
+        120,
+        cache_read_tokens=150,
+        cache_write_tokens=20,
+        reasoning_tokens=10,
+    )
+    db.end_run("trend-a", "ok", ended_at="2026-06-10T10:10:00+00:00")
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-10T11:00:00+00:00")
+    db.start_run("trend-cron", model="gpt-5.4", platform="cron")
+    db.record_tool_call("trend-cron", "2026-06-10T11:05:00+00:00", "browser_navigate", True, 25)
+    db.end_run("trend-cron", "ok", ended_at="2026-06-10T11:10:00+00:00")
+
+    rows = serve_module.api_daily_token_chart(window_hours=0, limit_days=10)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["day"] == "2026-06-10"
+    assert row["api_calls"] == 1
+    assert row["request_runs"] == 2
+    assert row["tool_calls"] == 3
+    assert row["cron_job_runs"] == 1
+    assert row["message_runs"] == 2
+    assert row["user_messages"] == 1
+    assert row["assistant_messages"] == 1
+    assert row["cost_usd"] == pytest.approx(0.03, abs=1e-6)
+    assert row["total_tokens"] == 330
+    assert row["estimated_savings_usd"] == pytest.approx(0.025, abs=1e-6)
+    assert row["savings_pct"] == pytest.approx(45.45, abs=0.01)
+
+
+def test_daily_token_chart_hides_deleted_sessions_like_dashboard_tables(
+    serve_module, monkeypatch, tmp_path
+):
+    _seed_cron_history(
+        serve_module,
+        [
+            {
+                "id": "alpha",
+                "name": "Cron Alpha",
+                "schedule_display": "0 * * * *",
+                "repeat": {"completed": 1},
+                "last_run_at": "2026-06-10T12:10:00+00:00",
+                "last_status": "ok",
+                "enabled": True,
+            }
+        ],
+        [("alpha", "2026-06-10_12-10-00")],
+    )
+    state_db = tmp_path / "state.db"
+    _seed_state_db(
+        state_db,
+        [
+            (datetime(2026, 6, 10, 10, 1, tzinfo=timezone.utc).timestamp(), "user", "visible user"),
+            (
+                datetime(2026, 6, 10, 10, 2, tzinfo=timezone.utc).timestamp(),
+                "assistant",
+                "visible assistant",
+            ),
+        ],
+    )
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+    monkeypatch.setattr(
+        serve_module, "_active_hermes_session_ids", lambda: ({"sess-visible"}, True)
+    )
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-10T09:55:00+00:00")
+
+    db.start_run("sess-visible", model="gpt-5.4", platform="discord")
+    db.record_llm_call(
+        "sess-visible", "2026-06-10T10:00:00+00:00", "gpt-5.4", "openai-codex", 100, 50, 0.03, 120
+    )
+    db.end_run("sess-visible", "ok", ended_at="2026-06-10T10:10:00+00:00")
+
+    db.start_run("sess-hidden", model="gpt-5.4", platform="discord")
+    db.record_llm_call(
+        "sess-hidden", "2026-06-10T11:00:00+00:00", "gpt-5.4", "openai-codex", 200, 75, 0.05, 100
+    )
+    db.end_run("sess-hidden", "ok", ended_at="2026-06-10T11:10:00+00:00")
+
+    db.start_run("cron_alpha", model="gpt-5.4", platform="cron")
+    db.record_llm_call(
+        "cron_alpha", "2026-06-10T12:00:00+00:00", "gpt-5.4", "openai-codex", 80, 20, 0.01, 90
+    )
+    db.end_run("cron_alpha", "ok", ended_at="2026-06-10T12:10:00+00:00")
+
+    rows = serve_module.api_daily_token_chart(window_hours=0, limit_days=10)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["api_calls"] == 2
+    assert row["request_runs"] == 2
+    assert row["cron_job_runs"] == 1
+    assert row["message_runs"] == 2
+    assert row["user_messages"] == 1
+    assert row["assistant_messages"] == 1
+    assert row["tokens_in"] == 180
+    assert row["tokens_out"] == 70
+
+
+def test_daily_token_chart_include_deleted_restores_archived_sessions(
+    serve_module, monkeypatch, tmp_path
+):
+    state_db = tmp_path / "state.db"
+    _seed_state_db(
+        state_db,
+        [
+            (datetime(2026, 6, 10, 10, 1, tzinfo=timezone.utc).timestamp(), "user", "first user"),
+            (
+                datetime(2026, 6, 10, 10, 2, tzinfo=timezone.utc).timestamp(),
+                "assistant",
+                "first assistant",
+            ),
+            (datetime(2026, 6, 10, 11, 1, tzinfo=timezone.utc).timestamp(), "user", "second user"),
+            (
+                datetime(2026, 6, 10, 11, 2, tzinfo=timezone.utc).timestamp(),
+                "assistant",
+                "second assistant",
+            ),
+        ],
+    )
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+    monkeypatch.setattr(
+        serve_module, "_active_hermes_session_ids", lambda: ({"sess-visible"}, True)
+    )
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-10T09:55:00+00:00")
+
+    db.start_run("sess-visible", model="gpt-5.4", platform="discord")
+    db.record_llm_call(
+        "sess-visible", "2026-06-10T10:00:00+00:00", "gpt-5.4", "openai-codex", 100, 50, 0.03, 120
+    )
+    db.end_run("sess-visible", "ok", ended_at="2026-06-10T10:10:00+00:00")
+
+    db.start_run("sess-hidden", model="gpt-5.4", platform="discord")
+    db.record_llm_call(
+        "sess-hidden", "2026-06-10T11:00:00+00:00", "gpt-5.4", "openai-codex", 200, 75, 0.05, 100
+    )
+    db.end_run("sess-hidden", "ok", ended_at="2026-06-10T11:10:00+00:00")
+
+    rows = serve_module.api_daily_token_chart(window_hours=0, limit_days=10, include_deleted=True)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["api_calls"] == 2
+    assert row["request_runs"] == 2
+    assert row["message_runs"] == 4
+    assert row["user_messages"] == 2
+    assert row["assistant_messages"] == 2
+    assert row["tokens_in"] == 300
+    assert row["tokens_out"] == 125
+
+
+def test_daily_token_chart_supports_weekly_granularity(serve_module, monkeypatch, tmp_path):
+    _seed_cron_history(
+        serve_module,
+        [
+            {
+                "id": "week-b",
+                "name": "Week B",
+                "schedule_display": "0 * * * *",
+                "repeat": {"completed": 1},
+                "last_run_at": "2026-06-12T09:10:00+00:00",
+                "last_status": "ok",
+                "enabled": True,
+            }
+        ],
+        [("week-b", "2026-06-12_09-10-00")],
+    )
+    state_db = tmp_path / "state.db"
+    _seed_state_db(
+        state_db,
+        [
+            (datetime(2026, 6, 10, 10, 1, tzinfo=timezone.utc).timestamp(), "user", "u1"),
+            (datetime(2026, 6, 10, 10, 2, tzinfo=timezone.utc).timestamp(), "assistant", "a1"),
+            (datetime(2026, 6, 12, 9, 0, tzinfo=timezone.utc).timestamp(), "user", "u2"),
+            (datetime(2026, 6, 12, 9, 1, tzinfo=timezone.utc).timestamp(), "assistant", "a2"),
+        ],
+    )
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-10T08:00:00+00:00")
+
+    db.start_run("week-a", model="gpt-5.4", platform="discord")
+    db.record_llm_call(
+        "week-a", "2026-06-10T10:00:00+00:00", "gpt-5.4", "openai-codex", 100, 50, 0.03, 100
+    )
+    db.end_run("week-a", "ok", ended_at="2026-06-10T10:10:00+00:00")
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-12T08:00:00+00:00")
+    db.start_run("week-b", model="gpt-5.4", platform="cron")
+    db.record_llm_call(
+        "week-b", "2026-06-12T09:00:00+00:00", "gpt-5.4", "openai-codex", 200, 75, 0.05, 100
+    )
+    db.end_run("week-b", "ok", ended_at="2026-06-12T09:10:00+00:00")
+
+    rows = serve_module.api_daily_token_chart(window_hours=0, limit_days=10, granularity="week")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["day"] == "2026-06-08"
+    assert row["api_calls"] == 2
+    assert row["request_runs"] == 2
+    assert row["cron_job_runs"] == 1
+    assert row["message_runs"] == 4
+    assert row["tokens_in"] == 300
+    assert row["tokens_out"] == 125
+
+
+def test_api_summary_uses_tool_call_events_not_run_aggregate(serve_module, monkeypatch):
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-10T09:55:00+00:00")
+    db.start_run("summary-tools", model="gpt-5.4", platform="discord")
+    db.record_tool_call("summary-tools", "2026-06-10T10:00:00+00:00", "read_file", True, 10)
+    db.record_tool_call("summary-tools", "2026-06-10T10:00:01+00:00", "search_files", True, 12)
+    db.end_run("summary-tools", "ok", ended_at="2026-06-10T10:01:00+00:00")
+
+    conn = sqlite3.connect(serve_module.DB_PATH)
+    conn.execute("UPDATE runs SET tool_calls = 1 WHERE session_id = 'summary-tools'")
+    conn.commit()
+    conn.close()
+
+    summary = serve_module.api_summary(window_hours=0)
+    assert summary["runs"]["tool_calls"] == 2
+
+
+def test_api_cron_includes_scheduler_runs_without_telemetry(serve_module, monkeypatch):
+    _seed_cron_history(
+        serve_module,
+        [
+            {
+                "id": "script-only",
+                "name": "Script Only",
+                "schedule_display": "every 15m",
+                "repeat": {"completed": 3},
+                "last_run_at": "2026-06-10T12:30:00+00:00",
+                "last_status": "ok",
+                "enabled": True,
+            },
+            {
+                "id": "telemetry-job",
+                "name": "Telemetry Job",
+                "schedule_display": "0 * * * *",
+                "repeat": {"completed": 2},
+                "last_run_at": "2026-06-10T11:00:00+00:00",
+                "last_status": "ok",
+                "enabled": True,
+            },
+        ],
+        [
+            ("script-only", "2026-06-10_12-00-00"),
+            ("script-only", "2026-06-10_12-15-00"),
+            ("script-only", "2026-06-10_12-30-00"),
+            ("telemetry-job", "2026-06-10_11-00-00"),
+        ],
+    )
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-10T10:55:00+00:00")
+    db.start_run(
+        "cron_telemetry-job_20260610_110000",
+        model="gpt-5.4",
+        platform="cron",
+        cron_job_id="telemetry-job",
+    )
+    db.record_llm_call(
+        "cron_telemetry-job_20260610_110000",
+        "2026-06-10T11:00:00+00:00",
+        "gpt-5.4",
+        "openai-codex",
+        50,
+        10,
+        0.01,
+        80,
+    )
+    db.end_run("cron_telemetry-job_20260610_110000", "ok", ended_at="2026-06-10T11:05:00+00:00")
+
+    rows = serve_module.api_cron(window_hours=0)
+    by_job = {row["cron_job_id"]: row for row in rows}
+    assert by_job["script-only"]["runs"] == 3
+    assert by_job["script-only"]["tokens_in"] == 0
+    assert by_job["script-only"]["last_status"] == "ok"
+    assert by_job["telemetry-job"]["runs"] == 2
+    assert by_job["telemetry-job"]["tokens_in"] == 50

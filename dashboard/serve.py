@@ -49,8 +49,16 @@ logger = logging.getLogger("hermes_telemetry.dashboard")
 # ---------------------------------------------------------------------------
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 DB_PATH = HERMES_HOME / "telemetry" / "telemetry.db"
+STATE_DB_PATH = HERMES_HOME / "state.db"
+CRON_JOBS_PATH = HERMES_HOME / "cron" / "jobs.json"
+CRON_OUTPUT_DIR = HERMES_HOME / "cron" / "output"
 
 _local = threading.local()
+
+
+def _register_sqlite_functions(conn: sqlite3.Connection):
+    conn.create_function("dashboard_period", 3, _sqlite_dashboard_period)
+    conn.create_function("dashboard_period_start", 3, _sqlite_dashboard_period_start)
 
 
 def _conn():
@@ -58,6 +66,7 @@ def _conn():
         _local.c = sqlite3.connect(str(DB_PATH), isolation_level=None)
         _local.c.row_factory = sqlite3.Row
         _local.c.execute("PRAGMA busy_timeout=5000")
+        _register_sqlite_functions(_local.c)
     return _local.c
 
 
@@ -70,6 +79,161 @@ def _one(sql, params=()):
     return dict(r) if r else {}
 
 
+def _state_rows(sql, params=()):
+    if not STATE_DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(str(STATE_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
+    _register_sqlite_functions(conn)
+    try:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+
+
+def _normalize_dashboard_tz_name(tz_name: str | None):
+    text = (tz_name or "").strip()
+    if not text or text.lower() == "local":
+        return None
+    if text.upper() == "UTC":
+        return "UTC"
+    return text
+
+
+def _coerce_utc_dt(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    if text == "UTC":
+        return None
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _sqlite_dashboard_period(value, granularity, tz_name):
+    dt_utc = _coerce_utc_dt(value)
+    if dt_utc is None:
+        return None
+    tzinfo, _ = _dashboard_viewer_tz(_normalize_dashboard_tz_name(tz_name))
+    dt_local = dt_utc.astimezone(tzinfo)
+    granularity = _normalize_granularity(granularity)
+    if granularity == "minute":
+        return dt_local.replace(second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
+    if granularity == "hour":
+        return dt_local.replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:00")
+    if granularity == "day":
+        return dt_local.date().isoformat()
+    if granularity == "week":
+        monday = (dt_local - timedelta(days=dt_local.weekday())).date()
+        return monday.isoformat()
+    return dt_local.strftime("%Y-%m")
+
+
+def _sqlite_dashboard_period_start(value, granularity, tz_name):
+    label = _sqlite_dashboard_period(value, granularity, tz_name)
+    if not label:
+        return None
+    granularity = _normalize_granularity(granularity)
+    if granularity == "month":
+        return f"{label}-01"
+    return label
+
+
+def _read_cron_jobs():
+    if not CRON_JOBS_PATH.exists():
+        return []
+    try:
+        data = json.loads(CRON_JOBS_PATH.read_text())
+    except Exception:
+        return []
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    return jobs if isinstance(jobs, list) else []
+
+
+def _since_cutoff_epoch(window_hours):
+    wh = _coerce_window_hours(window_hours)
+    if wh <= 0:
+        return None
+    return datetime.now(timezone.utc).timestamp() - (wh * 3600)
+
+
+def _parse_cron_output_ts(path: Path) -> datetime | None:
+    try:
+        naive = datetime.strptime(path.stem, "%Y-%m-%d_%H-%M-%S")
+    except ValueError:
+        return None
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    return naive.replace(tzinfo=local_tz).astimezone(timezone.utc)
+
+
+def _cron_scheduler_runs(window_hours=0):
+    cutoff = None
+    wh = _coerce_window_hours(window_hours)
+    if wh > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=wh)
+    runs = []
+    for job in _read_cron_jobs():
+        job_id = str(job.get("id") or "").strip()
+        if not job_id:
+            continue
+        job_dir = CRON_OUTPUT_DIR / job_id
+        if not job_dir.exists():
+            continue
+        for path in sorted(job_dir.glob("*.md")):
+            ts = _parse_cron_output_ts(path)
+            if ts is None:
+                continue
+            if cutoff is not None and ts < cutoff:
+                continue
+            runs.append({"cron_job_id": job_id, "ts": ts})
+    return runs
+
+
+def _cron_scheduler_totals(window_hours=0):
+    runs = _cron_scheduler_runs(window_hours)
+    counts = {}
+    last_seen = {}
+    for row in runs:
+        job_id = row["cron_job_id"]
+        counts[job_id] = counts.get(job_id, 0) + 1
+        prev = last_seen.get(job_id)
+        if prev is None or row["ts"] > prev:
+            last_seen[job_id] = row["ts"]
+
+    job_meta = {str(job.get("id") or ""): job for job in _read_cron_jobs() if job.get("id")}
+    rows = []
+    for job_id, job in job_meta.items():
+        runs_count = counts.get(job_id, 0)
+        if _coerce_window_hours(window_hours) <= 0 and isinstance(job.get("repeat"), dict):
+            completed = job["repeat"].get("completed")
+            if isinstance(completed, int):
+                runs_count = max(runs_count, completed)
+        last_run = job.get("last_run_at")
+        if not last_run and last_seen.get(job_id):
+            last_run = last_seen[job_id].isoformat()
+        rows.append(
+            {
+                "cron_job_id": job_id,
+                "job_name": job.get("name") or job_id,
+                "schedule_display": job.get("schedule_display") or "",
+                "runs": runs_count,
+                "last_run": last_run,
+                "last_status": job.get("last_status") or "—",
+                "enabled": bool(job.get("enabled", True)),
+            }
+        )
+    return rows
+
+
 def _since_cutoff_iso(window_hours):
     """UTC ISO cutoff matching the stored timestamp format in telemetry.db.
 
@@ -78,7 +242,7 @@ def _since_cutoff_iso(window_hours):
     format and breaks lexicographic comparisons, so generate the cutoff in the
     same format as the stored data.
     """
-    wh = int(window_hours)
+    wh = _coerce_window_hours(window_hours)
     if wh <= 0:
         return None
     return (datetime.now(timezone.utc) - timedelta(hours=wh)).isoformat()
@@ -94,18 +258,25 @@ def _since_clause(window_hours, col="started_at"):
 
 def _normalize_granularity(granularity: str | None) -> str:
     g = (granularity or "day").strip().lower()
-    if g not in {"day", "week", "month"}:
+    if g not in {"minute", "hour", "day", "week", "month"}:
         raise ValueError(f"invalid granularity: {granularity!r}")
     return g
 
 
-def _period_label_expr(col: str, granularity: str) -> str:
+def _sql_string_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _period_label_expr(col: str, granularity: str, tz_name: str | None = None) -> str:
     granularity = _normalize_granularity(granularity)
-    if granularity == "day":
-        return f"DATE({col})"
-    if granularity == "week":
-        return f"DATE({col}, '-' || ((CAST(strftime('%w', {col}) AS INTEGER) + 6) % 7) || ' days')"
-    return f"strftime('%Y-%m', {col})"
+    tz_value = _normalize_dashboard_tz_name(tz_name) or "local"
+    return f"dashboard_period({col}, {_sql_string_literal(granularity)}, {_sql_string_literal(tz_value)})"
+
+
+def _period_start_expr(col: str, granularity: str, tz_name: str | None = None) -> str:
+    granularity = _normalize_granularity(granularity)
+    tz_value = _normalize_dashboard_tz_name(tz_name) or "local"
+    return f"dashboard_period_start({col}, {_sql_string_literal(granularity)}, {_sql_string_literal(tz_value)})"
 
 
 def _active_hermes_session_ids():
@@ -181,7 +352,6 @@ def api_summary(window_hours=24):
             SUM(tokens_out) AS tokens_out,
             ROUND(SUM(cost_usd), 6) AS cost_usd,
             AVG(duration_ms) AS avg_duration_ms,
-            SUM(tool_calls) AS tool_calls,
             SUM(estimated_llm_calls) AS estimated_llm_calls
         FROM runs WHERE {since_clause}
     """)
@@ -191,18 +361,28 @@ def api_summary(window_hours=24):
         FROM llm_calls WHERE {since_clause_ts}
     """)
 
+    tool_summary = _one(
+        f"""
+        SELECT COUNT(*) AS tool_calls
+        FROM tool_calls tc
+        LEFT JOIN runs r ON tc.session_id = r.session_id
+        WHERE {_since_clause(window_hours, "r.started_at")}
+        """
+    )
+    runs["tool_calls"] = int(tool_summary.get("tool_calls") or 0)
+
     top_tools = _rows(f"""
         SELECT tool_name, COUNT(*) AS calls,
                SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END) AS failures,
                AVG(latency_ms) AS avg_ms
         FROM tool_calls tc
-        JOIN runs r ON tc.session_id = r.session_id
+        LEFT JOIN runs r ON tc.session_id = r.session_id
         WHERE {_since_clause(window_hours, "r.started_at")}
         GROUP BY tool_name ORDER BY calls DESC LIMIT 10
     """)
 
     # daily cost chart data
-    daily_window = int(window_hours)
+    daily_window = _coerce_window_hours(window_hours)
     if daily_window == 0:
         daily_cost = _rows("""
             SELECT DATE(started_at) AS day,
@@ -228,7 +408,7 @@ def api_summary(window_hours=24):
         )
 
     return {
-        "window_hours": int(window_hours),
+        "window_hours": daily_window,
         "runs": runs,
         "llm": llm,
         "top_tools": top_tools,
@@ -261,7 +441,7 @@ def api_token_breakdown(window_hours=24):
 
 def api_cron(window_hours=168):
     since_clause = _since_clause(window_hours)
-    return _rows(f"""
+    telemetry_rows = _rows(f"""
         SELECT cron_job_id,
                COUNT(*) AS runs,
                SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS ok_runs,
@@ -277,8 +457,68 @@ def api_cron(window_hours=168):
         WHERE cron_job_id IS NOT NULL
           AND {since_clause}
         GROUP BY cron_job_id
-        ORDER BY cost_usd DESC
     """)
+    telemetry_by_job = {row["cron_job_id"]: row for row in telemetry_rows if row.get("cron_job_id")}
+    scheduler_rows = _cron_scheduler_totals(window_hours)
+    merged = []
+    seen = set()
+
+    for row in scheduler_rows:
+        job_id = row["cron_job_id"]
+        tele = telemetry_by_job.get(job_id, {})
+        merged.append(
+            {
+                "cron_job_id": job_id,
+                "job_name": row.get("job_name") or job_id,
+                "schedule_display": row.get("schedule_display") or "",
+                "runs": int(row.get("runs") or 0),
+                "ok_runs": int(tele.get("ok_runs") or 0),
+                "failed_runs": int(tele.get("failed_runs") or 0),
+                "tokens_in": int(tele.get("tokens_in") or 0),
+                "tokens_out": int(tele.get("tokens_out") or 0),
+                "cache_read_tokens": int(tele.get("cache_read_tokens") or 0),
+                "cache_write_tokens": int(tele.get("cache_write_tokens") or 0),
+                "cost_usd": float(tele.get("cost_usd") or 0.0),
+                "avg_duration_ms": tele.get("avg_duration_ms"),
+                "last_run": row.get("last_run") or tele.get("last_run"),
+                "last_status": row.get("last_status") or "—",
+                "enabled": bool(row.get("enabled", True)),
+            }
+        )
+        seen.add(job_id)
+
+    for row in telemetry_rows:
+        job_id = row.get("cron_job_id")
+        if not job_id or job_id in seen:
+            continue
+        merged.append(
+            {
+                "cron_job_id": job_id,
+                "job_name": job_id,
+                "schedule_display": "",
+                "runs": int(row.get("runs") or 0),
+                "ok_runs": int(row.get("ok_runs") or 0),
+                "failed_runs": int(row.get("failed_runs") or 0),
+                "tokens_in": int(row.get("tokens_in") or 0),
+                "tokens_out": int(row.get("tokens_out") or 0),
+                "cache_read_tokens": int(row.get("cache_read_tokens") or 0),
+                "cache_write_tokens": int(row.get("cache_write_tokens") or 0),
+                "cost_usd": float(row.get("cost_usd") or 0.0),
+                "avg_duration_ms": row.get("avg_duration_ms"),
+                "last_run": row.get("last_run"),
+                "last_status": "—",
+                "enabled": True,
+            }
+        )
+
+    return sorted(
+        merged,
+        key=lambda row: (
+            row.get("last_run") or "",
+            int(row.get("runs") or 0),
+        ),
+        reverse=True,
+    )
 
 
 def api_providers(window_hours=24):
@@ -308,7 +548,8 @@ def api_providers(window_hours=24):
 
 
 def api_provider_health(window_hours=24):
-    effective_window = int(window_hours) if int(window_hours) > 0 else 24
+    requested_window = _coerce_window_hours(window_hours)
+    effective_window = requested_window if requested_window > 0 else 24
     now = datetime.now(timezone.utc)
     current_start = (now - timedelta(hours=effective_window)).isoformat()
     previous_start = (now - timedelta(hours=effective_window * 2)).isoformat()
@@ -535,7 +776,7 @@ def api_runs(
     raw_total_runs = int(raw_total_row.get("total_runs") or 0)
     return {
         "filters": {
-            "hours": int(window_hours),
+            "hours": _coerce_window_hours(window_hours),
             "day": day,
             "model": model,
             "provider": provider,
@@ -666,7 +907,7 @@ def api_requests(
     raw_total_requests = int(raw_total_row.get("total_requests") or 0)
     return {
         "filters": {
-            "hours": int(window_hours),
+            "hours": _coerce_window_hours(window_hours),
             "day": day,
             "model": model,
             "provider": provider,
@@ -1254,8 +1495,9 @@ def api_model_tokens(window_hours=24, limit=100):
     )
 
 
-def api_daily_tokens(window_hours=24, page=1, per_page=15):
+def api_daily_tokens(window_hours=24, page=1, per_page=15, tz_name: str | None = None):
     since_clause_ts = _since_clause(window_hours, "ts")
+    period_expr = _period_label_expr("ts", "day", tz_name)
     page = max(1, int(page))
     per_page = max(1, min(15, int(per_page)))
 
@@ -1263,10 +1505,10 @@ def api_daily_tokens(window_hours=24, page=1, per_page=15):
         f"""
         SELECT COUNT(*) AS total_days
         FROM (
-            SELECT DATE(ts) AS day
+            SELECT {period_expr} AS day
             FROM llm_calls
             WHERE {since_clause_ts}
-            GROUP BY DATE(ts)
+            GROUP BY {period_expr}
         ) d
         """
     )
@@ -1278,7 +1520,7 @@ def api_daily_tokens(window_hours=24, page=1, per_page=15):
     rows = _rows(
         f"""
         SELECT
-            DATE(ts) AS day,
+            {period_expr} AS day,
             COUNT(*) AS api_calls,
             COALESCE(SUM(tokens_in), 0) AS tokens_in,
             COALESCE(SUM(tokens_out), 0) AS tokens_out,
@@ -1293,7 +1535,7 @@ def api_daily_tokens(window_hours=24, page=1, per_page=15):
                 + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
         FROM llm_calls
         WHERE {since_clause_ts}
-        GROUP BY DATE(ts)
+        GROUP BY {period_expr}
         ORDER BY day DESC
         LIMIT ? OFFSET ?
         """,
@@ -1309,58 +1551,259 @@ def api_daily_tokens(window_hours=24, page=1, per_page=15):
     }
 
 
-def api_daily_token_chart(window_hours=24, limit_days=90):
-    since_clause_ts = _since_clause(window_hours, "ts")
-    limit_days = max(1, min(180, int(limit_days)))
-    rows = _rows(
+def api_daily_token_chart(
+    window_hours=24,
+    limit_days=90,
+    include_deleted=False,
+    granularity="day",
+    tz_name: str | None = None,
+):
+    since_clause_ts = _since_clause(window_hours, "lc.ts")
+    since_clause_runs = _since_clause(window_hours, "started_at")
+    since_epoch = _since_cutoff_epoch(window_hours)
+    granularity = _normalize_granularity(granularity)
+    llm_period_expr = _period_label_expr("lc.ts", granularity, tz_name)
+    runs_period_expr = _period_label_expr("started_at", granularity, tz_name)
+    state_period_expr = _period_label_expr("datetime(timestamp, 'unixepoch')", granularity, tz_name)
+    limit_days = max(1, min(3650, int(limit_days)))
+    visible_llm_sql, visible_llm_params = _visible_sessions_clause(
+        "r.session_id", include_deleted=include_deleted
+    )
+    visible_runs_sql, visible_runs_params = _visible_sessions_clause(
+        "session_id", include_deleted=include_deleted
+    )
+
+    llm_rows = _rows(
         f"""
         SELECT *
         FROM (
             SELECT
-                DATE(ts) AS day,
-                COALESCE(SUM(tokens_in), 0) AS tokens_in,
-                COALESCE(SUM(tokens_out), 0) AS tokens_out,
-                COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-                COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
-                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
-                COALESCE(SUM(tokens_in), 0)
-                    + COALESCE(SUM(tokens_out), 0)
-                    + COALESCE(SUM(cache_read_tokens), 0)
-                    + COALESCE(SUM(cache_write_tokens), 0)
-                    + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
-            FROM llm_calls
-            WHERE {since_clause_ts}
-            GROUP BY DATE(ts)
+                {llm_period_expr} AS day,
+                COUNT(*) AS api_calls,
+                ROUND(COALESCE(SUM(lc.cost_usd), 0), 6) AS cost_usd,
+                COALESCE(SUM(lc.tokens_in), 0) AS tokens_in,
+                COALESCE(SUM(lc.tokens_out), 0) AS tokens_out,
+                COALESCE(SUM(lc.cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(SUM(lc.cache_write_tokens), 0) AS cache_write_tokens,
+                COALESCE(SUM(lc.reasoning_tokens), 0) AS reasoning_tokens,
+                COALESCE(SUM(lc.tokens_in), 0)
+                    + COALESCE(SUM(lc.tokens_out), 0)
+                    + COALESCE(SUM(lc.cache_read_tokens), 0)
+                    + COALESCE(SUM(lc.cache_write_tokens), 0)
+                    + COALESCE(SUM(lc.reasoning_tokens), 0) AS total_tokens
+            FROM llm_calls lc
+            LEFT JOIN runs r ON r.session_id = lc.session_id
+            WHERE {since_clause_ts} AND {visible_llm_sql}
+            GROUP BY {llm_period_expr}
             ORDER BY day DESC
             LIMIT ?
         ) d
         ORDER BY day ASC
         """,
-        (limit_days,),
+        (*visible_llm_params, limit_days),
     )
+    run_rows = _rows(
+        f"""
+        SELECT *
+        FROM (
+            SELECT
+                {runs_period_expr} AS day,
+                COUNT(*) AS request_runs
+            FROM runs
+            WHERE {since_clause_runs} AND {visible_runs_sql}
+            GROUP BY {runs_period_expr}
+            ORDER BY day DESC
+            LIMIT ?
+        ) d
+        ORDER BY day ASC
+        """,
+        (*visible_runs_params, limit_days),
+    )
+    tool_rows = _rows(
+        f"""
+        SELECT *
+        FROM (
+            SELECT
+                {_period_label_expr("tc.ts", granularity, tz_name)} AS day,
+                COUNT(*) AS tool_calls
+            FROM tool_calls tc
+            LEFT JOIN runs r ON r.session_id = tc.session_id
+            WHERE {_since_clause(window_hours, "tc.ts")} AND {visible_llm_sql}
+            GROUP BY {_period_label_expr("tc.ts", granularity, tz_name)}
+            ORDER BY day DESC
+            LIMIT ?
+        ) d
+        ORDER BY day ASC
+        """,
+        (*visible_llm_params, limit_days),
+    )
+    cron_rows = _cron_scheduler_runs(window_hours)
+    cron_counts = {}
+    cron_tzinfo, _ = _dashboard_viewer_tz(_normalize_dashboard_tz_name(tz_name))
+    for row in cron_rows:
+        ts = row["ts"].astimezone(cron_tzinfo)
+        if granularity == "month":
+            day = ts.strftime("%Y-%m")
+        elif granularity == "week":
+            monday = (ts - timedelta(days=ts.weekday())).date()
+            day = monday.isoformat()
+        elif granularity == "minute":
+            day = ts.replace(second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
+        elif granularity == "hour":
+            day = ts.replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:00")
+        else:
+            day = ts.date().isoformat()
+        cron_counts[day] = cron_counts.get(day, 0) + 1
+    state_where = "role IN ('user','assistant')"
+    state_params = []
+    if since_epoch is not None:
+        state_where += " AND timestamp >= ?"
+        state_params.append(since_epoch)
+    message_rows = _state_rows(
+        f"""
+        SELECT
+            {state_period_expr} AS day,
+            SUM(CASE WHEN role = 'user' AND TRIM(COALESCE(content, '')) != '' THEN 1 ELSE 0 END) AS user_messages,
+            SUM(CASE WHEN role = 'assistant' AND TRIM(COALESCE(content, '')) != '' THEN 1 ELSE 0 END) AS assistant_messages,
+            SUM(CASE WHEN role = 'user' AND TRIM(COALESCE(content, '')) != '' THEN 1 ELSE 0 END)
+                + SUM(CASE WHEN role = 'assistant' AND TRIM(COALESCE(content, '')) != '' THEN 1 ELSE 0 END) AS message_runs
+        FROM messages
+        WHERE {state_where}
+        GROUP BY {state_period_expr}
+        ORDER BY day ASC
+        """,
+        tuple(state_params),
+    )
+
+    merged = {}
+    for row in llm_rows:
+        day = row["day"]
+        merged[day] = dict(row)
+    for row in run_rows:
+        day = row["day"]
+        target = merged.setdefault(
+            day,
+            {
+                "day": day,
+                "api_calls": 0,
+                "cost_usd": 0.0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        target["request_runs"] = int(row.get("request_runs") or 0)
+    for row in tool_rows:
+        day = row["day"]
+        target = merged.setdefault(
+            day,
+            {
+                "day": day,
+                "api_calls": 0,
+                "cost_usd": 0.0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        target["tool_calls"] = int(row.get("tool_calls") or 0)
+    for day, count in cron_counts.items():
+        target = merged.setdefault(
+            day,
+            {
+                "day": day,
+                "api_calls": 0,
+                "cost_usd": 0.0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        target["cron_job_runs"] = int(count)
+    for row in message_rows:
+        day = row["day"]
+        target = merged.setdefault(
+            day,
+            {
+                "day": day,
+                "api_calls": 0,
+                "cost_usd": 0.0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        target["message_runs"] = int(row.get("message_runs") or 0)
+        target["user_messages"] = int(row.get("user_messages") or 0)
+        target["assistant_messages"] = int(row.get("assistant_messages") or 0)
+
+    rows = [merged[day] for day in sorted(merged.keys())][-limit_days:]
+    for row in rows:
+        row.setdefault("request_runs", 0)
+        row.setdefault("tool_calls", 0)
+        row.setdefault("cron_job_runs", 0)
+        row.setdefault("message_runs", 0)
+        row.setdefault("user_messages", 0)
+        row.setdefault("assistant_messages", 0)
+        billable_tokens = (
+            int(row.get("tokens_in") or 0)
+            + int(row.get("tokens_out") or 0)
+            + int(row.get("cache_write_tokens") or 0)
+            + int(row.get("reasoning_tokens") or 0)
+        )
+        cache_read_tokens = int(row.get("cache_read_tokens") or 0)
+        cost_usd = float(row.get("cost_usd") or 0.0)
+        effective_cost_per_token = (cost_usd / billable_tokens) if billable_tokens > 0 else 0.0
+        estimated_savings_usd = cache_read_tokens * effective_cost_per_token
+        row["estimated_savings_usd"] = round(estimated_savings_usd, 6)
+        total_effective_spend = cost_usd + estimated_savings_usd
+        row["savings_pct"] = (
+            round((estimated_savings_usd / total_effective_spend) * 100, 2)
+            if total_effective_spend > 0
+            else 0.0
+        )
     return rows
 
 
-def api_daily_model_chart(window_hours=24, limit_days=90, top_n=5):
+def api_daily_model_chart(
+    window_hours=24, limit_days=90, top_n=5, include_deleted=False, tz_name: str | None = None
+):
     since_clause_ts = _since_clause(window_hours, "ts")
-    limit_days = max(1, min(180, int(limit_days)))
+    day_expr = _period_label_expr("lc.ts", "day", tz_name)
+    limit_days = max(1, min(3650, int(limit_days)))
     top_n = max(1, min(8, int(top_n)))
+    visible_sql, visible_params = _visible_sessions_clause(
+        "r.session_id", include_deleted=include_deleted
+    )
 
     top_models = _rows(
         f"""
-        SELECT COALESCE(model, '—') AS model,
-               COALESCE(SUM(tokens_in), 0)
-                   + COALESCE(SUM(tokens_out), 0)
-                   + COALESCE(SUM(cache_read_tokens), 0)
-                   + COALESCE(SUM(cache_write_tokens), 0)
-                   + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
-        FROM llm_calls
-        WHERE {since_clause_ts}
-        GROUP BY COALESCE(model, '—')
+        SELECT COALESCE(lc.model, '—') AS model,
+               COALESCE(SUM(lc.tokens_in), 0)
+                   + COALESCE(SUM(lc.tokens_out), 0)
+                   + COALESCE(SUM(lc.cache_read_tokens), 0)
+                   + COALESCE(SUM(lc.cache_write_tokens), 0)
+                   + COALESCE(SUM(lc.reasoning_tokens), 0) AS total_tokens
+        FROM llm_calls lc
+        LEFT JOIN runs r ON r.session_id = lc.session_id
+        WHERE {since_clause_ts} AND {visible_sql}
+        GROUP BY COALESCE(lc.model, '—')
         ORDER BY total_tokens DESC
         LIMIT ?
         """,
-        (top_n,),
+        (*visible_params, top_n),
     )
     model_names = [r["model"] for r in top_models]
 
@@ -1369,21 +1812,23 @@ def api_daily_model_chart(window_hours=24, limit_days=90, top_n=5):
         SELECT *
         FROM (
             SELECT
-                DATE(ts) AS day,
-                COALESCE(model, '—') AS model,
-                COALESCE(SUM(tokens_in), 0)
-                    + COALESCE(SUM(tokens_out), 0)
-                    + COALESCE(SUM(cache_read_tokens), 0)
-                    + COALESCE(SUM(cache_write_tokens), 0)
-                    + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
-            FROM llm_calls
-            WHERE {since_clause_ts}
-            GROUP BY DATE(ts), COALESCE(model, '—')
+                {day_expr} AS day,
+                COALESCE(lc.model, '—') AS model,
+                COALESCE(SUM(lc.tokens_in), 0)
+                    + COALESCE(SUM(lc.tokens_out), 0)
+                    + COALESCE(SUM(lc.cache_read_tokens), 0)
+                    + COALESCE(SUM(lc.cache_write_tokens), 0)
+                    + COALESCE(SUM(lc.reasoning_tokens), 0) AS total_tokens
+            FROM llm_calls lc
+            LEFT JOIN runs r ON r.session_id = lc.session_id
+            WHERE {since_clause_ts} AND {visible_sql}
+            GROUP BY {day_expr}, COALESCE(lc.model, '—')
             ORDER BY day DESC
             LIMIT 100000
         ) d
         ORDER BY day ASC
-        """
+        """,
+        tuple(visible_params),
     )
 
     day_order = []
@@ -1408,7 +1853,12 @@ def api_daily_model_chart(window_hours=24, limit_days=90, top_n=5):
 
 
 def api_model_period_trends(
-    window_hours=24, granularity="day", metric="tokens", top_n=6, limit_periods=24
+    window_hours=24,
+    granularity="day",
+    metric="tokens",
+    top_n=6,
+    limit_periods=24,
+    tz_name: str | None = None,
 ):
     granularity = _normalize_granularity(granularity)
     metric = (metric or "tokens").strip().lower()
@@ -1417,7 +1867,7 @@ def api_model_period_trends(
     top_n = max(1, min(8, int(top_n)))
     limit_periods = max(1, min(36, int(limit_periods)))
     since_clause_ts = _since_clause(window_hours, "ts")
-    period_expr = _period_label_expr("ts", granularity)
+    period_expr = _period_label_expr("ts", granularity, tz_name)
 
     metric_expr = {
         "tokens": "COALESCE(SUM(tokens_in), 0) + COALESCE(SUM(tokens_out), 0) + COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_write_tokens), 0) + COALESCE(SUM(reasoning_tokens), 0)",
@@ -1443,7 +1893,7 @@ def api_model_period_trends(
     period_rows = _rows(
         f"""
         SELECT {period_expr} AS period,
-               MIN(DATE(ts)) AS period_start,
+               MIN({_period_start_expr("ts", granularity, tz_name)}) AS period_start,
                COALESCE(model, '—') AS model,
                COUNT(*) AS api_calls,
                COALESCE(SUM(tokens_in), 0) AS tokens_in,
@@ -1503,15 +1953,17 @@ def api_model_period_trends(
     }
 
 
-def api_model_share_comparison(window_hours=24, granularity="day", limit=12):
+def api_model_share_comparison(
+    window_hours=24, granularity="day", limit=12, tz_name: str | None = None
+):
     granularity = _normalize_granularity(granularity)
     limit = max(1, min(20, int(limit)))
     since_clause_ts = _since_clause(window_hours, "ts")
-    period_expr = _period_label_expr("ts", granularity)
+    period_expr = _period_label_expr("ts", granularity, tz_name)
     rows = _rows(
         f"""
         SELECT {period_expr} AS period,
-               MIN(DATE(ts)) AS period_start,
+               MIN({_period_start_expr("ts", granularity, tz_name)}) AS period_start,
                COALESCE(model, '—') AS model,
                COUNT(*) AS api_calls,
                ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
@@ -1888,6 +2340,20 @@ def _parse_int(value, name: str) -> int:
         raise ValueError(f"invalid {name}: {value!r}") from None
 
 
+def _coerce_window_hours(window_hours) -> float:
+    try:
+        return float(window_hours)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid hours: {window_hours!r}") from None
+
+
+def _parse_window_hours(value, name: str = "hours") -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid {name}: {value!r}") from None
+
+
 # Allowed values for budget config — prevents YAML key injection
 ALLOWED_SCOPES = {"global", "per_cron_job", "per_sender"}
 ALLOWED_WINDOWS = {"daily", "monthly"}
@@ -2029,26 +2495,30 @@ class Handler(SimpleHTTPRequestHandler):
             # API routes
             if path == "/api/summary":
                 qs = parse_qs(parsed.query)
-                return self._json(api_summary(_parse_int(qs.get("hours", [24])[0], "hours")))
+                return self._json(
+                    api_summary(_parse_window_hours(qs.get("hours", [24])[0], "hours"))
+                )
 
             if path == "/api/cron":
                 qs = parse_qs(parsed.query)
-                return self._json(api_cron(_parse_int(qs.get("hours", [168])[0], "hours")))
+                return self._json(api_cron(_parse_window_hours(qs.get("hours", [168])[0], "hours")))
 
             if path == "/api/providers":
                 qs = parse_qs(parsed.query)
-                return self._json(api_providers(_parse_int(qs.get("hours", [24])[0], "hours")))
+                return self._json(
+                    api_providers(_parse_window_hours(qs.get("hours", [24])[0], "hours"))
+                )
 
             if path == "/api/provider-health":
                 qs = parse_qs(parsed.query)
                 return self._json(
-                    api_provider_health(_parse_int(qs.get("hours", [24])[0], "hours"))
+                    api_provider_health(_parse_window_hours(qs.get("hours", [24])[0], "hours"))
                 )
 
             if path == "/api/cache-efficiency":
                 qs = parse_qs(parsed.query)
                 return self._json(
-                    api_cache_efficiency(_parse_int(qs.get("hours", [24])[0], "hours"))
+                    api_cache_efficiency(_parse_window_hours(qs.get("hours", [24])[0], "hours"))
                 )
 
             if path == "/api/runs":
@@ -2056,7 +2526,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(
                     api_runs(
                         _parse_int(qs.get("limit", [50])[0], "limit"),
-                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [0])[0], "hours"),
                         qs.get("day", [None])[0],
                         qs.get("model", [None])[0],
                         qs.get("provider", [None])[0],
@@ -2075,7 +2545,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(
                     api_requests(
                         _parse_int(qs.get("limit", [100])[0], "limit"),
-                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [0])[0], "hours"),
                         qs.get("day", [None])[0],
                         qs.get("model", [None])[0],
                         qs.get("provider", [None])[0],
@@ -2101,7 +2571,7 @@ class Handler(SimpleHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 return self._json(
                     api_tool_analytics(
-                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [0])[0], "hours"),
                         qs.get("day", [None])[0],
                         qs.get("model", [None])[0],
                         qs.get("provider", [None])[0],
@@ -2119,7 +2589,7 @@ class Handler(SimpleHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 return self._json(
                     api_error_center(
-                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [0])[0], "hours"),
                         qs.get("day", [None])[0],
                         qs.get("model", [None])[0],
                         qs.get("provider", [None])[0],
@@ -2137,7 +2607,7 @@ class Handler(SimpleHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 return self._json(
                     api_model_tokens(
-                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [24])[0], "hours"),
                         _parse_int(qs.get("limit", [100])[0], "limit"),
                     )
                 )
@@ -2146,7 +2616,7 @@ class Handler(SimpleHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 return self._json(
                     api_model_efficiency(
-                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [0])[0], "hours"),
                         _parse_int(qs.get("limit", [50])[0], "limit"),
                         qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
                     )
@@ -2156,7 +2626,7 @@ class Handler(SimpleHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 return self._json(
                     api_tool_failure_heatmap(
-                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [0])[0], "hours"),
                         _parse_int(qs.get("limit", [80])[0], "limit"),
                         qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
                     )
@@ -2166,7 +2636,7 @@ class Handler(SimpleHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 return self._json(
                     api_cron_failure_waste(
-                        _parse_int(qs.get("hours", [0])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [0])[0], "hours"),
                         _parse_int(qs.get("limit", [50])[0], "limit"),
                         qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
                     )
@@ -2174,52 +2644,65 @@ class Handler(SimpleHTTPRequestHandler):
 
             if path == "/api/daily-tokens":
                 qs = parse_qs(parsed.query)
+                tz_name = qs.get("tz", [None])[0]
                 return self._json(
                     api_daily_tokens(
-                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [24])[0], "hours"),
                         _parse_int(qs.get("page", [1])[0], "page"),
                         _parse_int(qs.get("per_page", [15])[0], "per_page"),
+                        tz_name,
                     )
                 )
 
             if path == "/api/daily-token-chart":
                 qs = parse_qs(parsed.query)
+                tz_name = qs.get("tz", [None])[0]
                 return self._json(
                     api_daily_token_chart(
-                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [24])[0], "hours"),
                         _parse_int(qs.get("limit_days", [90])[0], "limit_days"),
+                        qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
+                        qs.get("granularity", ["day"])[0],
+                        tz_name,
                     )
                 )
 
             if path == "/api/daily-model-chart":
                 qs = parse_qs(parsed.query)
+                tz_name = qs.get("tz", [None])[0]
                 return self._json(
                     api_daily_model_chart(
-                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [24])[0], "hours"),
                         _parse_int(qs.get("limit_days", [90])[0], "limit_days"),
                         _parse_int(qs.get("top_n", [5])[0], "top_n"),
+                        qs.get("include_deleted", ["0"])[0] in {"1", "true", "yes"},
+                        tz_name,
                     )
                 )
 
             if path == "/api/model-period-trends":
                 qs = parse_qs(parsed.query)
+                tz_name = qs.get("tz", [None])[0]
                 return self._json(
                     api_model_period_trends(
-                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [24])[0], "hours"),
                         qs.get("granularity", ["day"])[0],
                         qs.get("metric", ["tokens"])[0],
                         _parse_int(qs.get("top_n", [6])[0], "top_n"),
                         _parse_int(qs.get("limit_periods", [24])[0], "limit_periods"),
+                        tz_name,
                     )
                 )
 
             if path == "/api/model-share-comparison":
                 qs = parse_qs(parsed.query)
+                tz_name = qs.get("tz", [None])[0]
                 return self._json(
                     api_model_share_comparison(
-                        _parse_int(qs.get("hours", [24])[0], "hours"),
+                        _parse_window_hours(qs.get("hours", [24])[0], "hours"),
                         qs.get("granularity", ["day"])[0],
                         _parse_int(qs.get("limit", [12])[0], "limit"),
+                        tz_name,
                     )
                 )
 
@@ -2238,7 +2721,7 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/token-breakdown":
                 qs = parse_qs(parsed.query)
                 return self._json(
-                    api_token_breakdown(_parse_int(qs.get("hours", [24])[0], "hours"))
+                    api_token_breakdown(_parse_window_hours(qs.get("hours", [24])[0], "hours"))
                 )
         except ValueError as e:
             return self._json({"error": str(e)}, 400)
