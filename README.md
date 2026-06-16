@@ -305,10 +305,17 @@ If you already installed the plugin via Option B (manual clone) above, you don't
 cd ~/.hermes/plugins/hermes-telemetry
 git pull
 hermes gateway restart
-# (no separate restart for the dashboard process, but reload the page)
+# IMPORTANT: also restart the dashboard process so its FastAPI app
+# remounts the plugin's backend routes. `_mount_plugin_api_routes` runs
+# once at startup; /api/dashboard/plugins/rescan refreshes the tab/slot
+# registry but does NOT remount the Python router. Without a dashboard
+# restart you'll see the tab render but every endpoint return 404 with
+# "No such API endpoint: /api/plugins/hermes-telemetry/...".
+hermes dashboard --stop
+hermes dashboard      # or with your usual flags (--host, --insecure, etc.)
 ```
 
-To force the Hermes dashboard to rescan plugins without restarting it:
+To force the Hermes dashboard to rescan plugin manifests (frontend / slots only — does NOT remount the Python backend):
 
 ```bash
 curl -sS http://localhost:<dashboard-port>/api/dashboard/plugins/rescan
