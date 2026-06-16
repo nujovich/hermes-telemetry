@@ -14,16 +14,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Verify version matches tag
+      - name: Verify version matches tag (across all 4 sources)
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"; TAG="${TAG#v}"
-          PYVER=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          echo "tag=$TAG  pyproject=$PYVER"
-          if [ "$TAG" != "$PYVER" ]; then
-            echo "::error::tag $TAG ≠ pyproject $PYVER"
-            exit 1
-          fi
-          echo "Version OK: $PYVER"
+          python - <<'PY'
+          import json, os, pathlib, re, sys, tomllib
+
+          tag = os.environ["GITHUB_REF"].removeprefix("refs/tags/").lstrip("v")
+          root = pathlib.Path(".")
+          pyver = tomllib.load(open(root / "pyproject.toml", "rb"))["project"]["version"]
+          init  = re.search(r'^__version__\s*=\s*"([^"]+)"',
+                            (root / "__init__.py").read_text(), re.M).group(1)
+          plug  = re.search(r'^version:\s*"?([\d.]+)"?',
+                            (root / "plugin.yaml").read_text(), re.M).group(1)
+          manif = json.loads((root / "dashboard" / "manifest.json").read_text())["version"]
+
+          sources = {"git tag": tag, "pyproject.toml": pyver, "__init__.py": init,
+                     "plugin.yaml": plug, "dashboard/manifest.json": manif}
+          if len(set(sources.values())) != 1:
+              for k, v in sources.items():
+                  print(f"  {k}: {v}")
+              sys.exit("::error::version drift between tag and source files")
+          print(f"Version OK: {tag}")
+          PY
       - name: Extract release notes from CHANGELOG
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"; VERSION="${VERSION#v}"

@@ -222,6 +222,67 @@ hermes gateway restart
 
 -----
 
+## Hermes Dashboard Plugin
+
+`hermes-telemetry` also ships as a **Hermes dashboard plugin**. When the Hermes web dashboard is running, it auto-discovers the plugin from this same install path — no extra steps. You get a dedicated **Telemetry** tab plus widgets injected into the built-in pages.
+
+### What you get
+
+- A `/telemetry` tab with sub-tabs: **Summary**, **Runs**, **Requests**, **Providers**, **Cron**, **Budgets**.
+- Slot widgets on the existing dashboard pages:
+  - `sessions:top` — last run summary (cost · tokens · model).
+  - `cron:top` — 7-day cron cost and failure badge.
+  - `header-right` — 24h spend + global daily budget level (semáforo).
+  - `analytics:bottom` — daily cost chart (Chart.js loaded from CDN).
+
+### How discovery works
+
+When the Hermes dashboard process starts, it scans for `~/.hermes/plugins/<name>/dashboard/manifest.json` (verified against [`hermes_cli/web_server.py`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/web_server.py)). Because the standalone dashboard at `dashboard/serve.py` and the plugin manifest at `dashboard/manifest.json` live in the same directory, **a single `git pull` brings both surfaces up to date**.
+
+### Install / update (git pull, no PyPI)
+
+If you already installed the plugin via Option B (manual clone) above, you don't need to do anything — `git pull` updates both the runtime hooks and the dashboard plugin surface in lockstep:
+
+```bash
+cd ~/.hermes/plugins/hermes-telemetry
+git pull
+hermes gateway restart
+# (no separate restart for the dashboard process, but reload the page)
+```
+
+To force the Hermes dashboard to rescan plugins without restarting it:
+
+```bash
+curl -sS http://localhost:<dashboard-port>/api/dashboard/plugins/rescan
+```
+
+### Backend routes (mounted at `/api/plugins/hermes-telemetry/*`)
+
+The plugin exposes a read-only FastAPI router. The DB connection opens with `PRAGMA query_only=ON`; the plugin **never writes** to `telemetry.db`.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | Smoke endpoint. |
+| GET | `/summary?window_hours=24` | Run/LLM totals + daily cost series. |
+| GET | `/token-breakdown?window_hours=24` | Tokens by component. |
+| GET | `/runs?limit=50&window_hours=0` | Recent runs. |
+| GET | `/requests?limit=100&window_hours=0` | Recent LLM calls. |
+| GET | `/providers?window_hours=24` | Per-provider totals. |
+| GET | `/cron?window_hours=168` | Per-cron-job aggregate. |
+| GET | `/session/{session_id}` | Single-session detail. |
+| GET | `/budget` | Global daily/monthly budget status. |
+
+### The two dashboards: when to use each
+
+| Surface | Lives at | Best for |
+|---------|----------|----------|
+| **Standalone** | `dashboard/serve.py` — `python serve.py` → `http://localhost:8765` | Headless / SSH access, cron-only deployments, environments without the Hermes web dashboard. |
+| **Hermes plugin** | `dashboard/manifest.json` + `dashboard/plugin_api.py` | Interactive use alongside other Hermes features. Theming, header/sidebar slots, native auth. |
+
+They share **zero Python code** — only the SQLite DB. The isolation is enforced by `tests/test_dashboard_plugin_isolation.py`.
+
+-----
+
 ## Quick Start
 
 1. Install and enable the plugin (see above)
