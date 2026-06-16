@@ -793,12 +793,48 @@ def test_nim_openrouter_collision_excluded_for_nvidia(tmp_path, monkeypatch):
     assert abs(cost_or - (0.09 + 0.45)) < 1e-9
 
 
-def test_nim_free_variant_resolves_zero(caplog):
-    """A :free promo variant is unpriced → $0.00 (handled by zero-cost fallback)."""
+def test_nim_ultra_free_without_config_hits_paid_prefix():
+    """After seeding the paid `nemotron-3-ultra`, a bare `:free` call with NO
+    manual pricing entry resolves to the PAID price via prefix match. This is the
+    documented collision the README's PLEASE-READ notice tells users to avoid by
+    declaring the free tier manually before 2026-06-18 (issue #32)."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000}, "nvidia/nemotron-3-ultra:free", provider="nvidia"
+    )
+    assert abs(cost - 0.50) < 1e-9
+
+
+def test_nim_ultra_free_with_subscription_resolves_zero(tmp_path, monkeypatch):
+    """With the manual `_subscription` $0 entry, the exact match wins over the
+    paid prefix and the free tier correctly costs $0 (issue #32)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    (tmp_path / "telemetry" / "pricing.yaml").write_text(
+        "models:\n"
+        '  "nvidia/nemotron-3-ultra:free":\n'
+        "    input: 0.0\n"
+        "    output: 0.0\n"
+        "    _subscription: true\n"
+    )
+    pricing.reload_custom_pricing()
     cost = pricing.estimate_cost(
         {"input_tokens": 1_000_000}, "nvidia/nemotron-3-ultra:free", provider="nvidia"
     )
     assert cost == 0.0
+    pricing.reload_custom_pricing()
+
+
+def test_nim_ultra_paid_resolves_bare_and_suffixed():
+    """The paid seed answers both the bare id and the OpenRouter-style suffixed
+    id (via prefix), so cost>0 once the promo ends — what fires the alert."""
+    bare = pricing.estimate_cost(
+        {"input_tokens": 1_000_000}, "nvidia/nemotron-3-ultra", provider="nvidia"
+    )
+    suffixed = pricing.estimate_cost(
+        {"input_tokens": 1_000_000}, "nvidia/nemotron-3-ultra-550b-a55b", provider="nvidia"
+    )
+    assert abs(bare - 0.50) < 1e-9
+    assert abs(suffixed - 0.50) < 1e-9
 
 
 def test_nim_seed_survives_simulated_refresh():
@@ -828,7 +864,10 @@ def test_is_explicitly_priced_zero_price_model():
 
 def test_is_explicitly_priced_unknown_model():
     assert pricing.is_explicitly_priced("completely-unknown-xyz-model") is False
-    assert pricing.is_explicitly_priced("nvidia/nemotron-3-ultra:free") is False
+    # A genuinely unknown nvidia id (no prefix seed) stays unpriced. Note:
+    # `nvidia/nemotron-3-ultra:free` is NO LONGER unknown — it now resolves via
+    # the paid `nemotron-3-ultra` prefix (issue #32), covered by the NIM tests.
+    assert pricing.is_explicitly_priced("nvidia/totally-unknown-model") is False
 
 
 def test_is_explicitly_priced_subscription_model(tmp_path, monkeypatch):

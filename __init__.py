@@ -285,13 +285,20 @@ def register(ctx) -> None:  # noqa: ANN001
             cost = pricing.estimate_cost(full_usage, effective_model, provider)
             latency_ms = int(api_duration * 1000)
 
-            # Free→paid transition detection (issue #16).
+            # Free→paid transition detection (issues #16/#32).
             # Only models with explicit pricing (not unknown-model fallback) are
             # tracked: an unknown model at $0 is not "free by design" and should
             # not trigger a false alert when it later gets a real price entry.
+            # is_free_tier_transition also catches the id-change case, where a
+            # provider drops a `:free` suffix (or renames the promo to its paid
+            # base) so the paid call arrives under a different model id than the
+            # `:free` row we recorded — e.g. nemotron-3-ultra:free → nemotron-3-ultra.
             if cost == 0.0 and pricing.is_explicitly_priced(effective_model, provider):
                 db.record_free_model(effective_model, provider)
-            elif cost > 0.0 and db.is_known_free_model(effective_model, provider):
+            elif cost > 0.0 and (
+                db.is_known_free_model(effective_model, provider)
+                or db.is_free_tier_transition(effective_model, provider)
+            ):
                 with _pending_free_paid_lock:
                     if session_id not in _pending_free_paid_alerts:
                         _pending_free_paid_alerts[session_id] = (effective_model, cost)

@@ -702,3 +702,52 @@ def test_backfill_does_not_overwrite_specific_provider_row():
     ).fetchall()
     providers = {r[0] for r in rows}
     assert providers == {"nous", ""}
+
+
+# ---------------------------------------------------------------------------
+# is_free_tier_transition — id-change detection (issue #32)
+# ---------------------------------------------------------------------------
+
+
+def test_free_tier_transition_bare_id_rename():
+    """Paid call under the bare id matches the stored `<id>:free` row."""
+    db.record_free_model("nvidia/nemotron-3-ultra:free", "nvidia")
+    # `:free` suffix dropped — paid call arrives as the bare id
+    assert db.is_free_tier_transition("nvidia/nemotron-3-ultra", "nvidia")
+
+
+def test_free_tier_transition_suffixed_paid_id():
+    """Paid call under a `<base>-…` suffixed id matches the stored `<base>:free`."""
+    db.record_free_model("nvidia/nemotron-3-ultra:free", "nvidia")
+    assert db.is_free_tier_transition("nvidia/nemotron-3-ultra-550b-a55b", "nvidia")
+
+
+def test_free_tier_transition_matches_wildcard_provider():
+    """Backfilled provider='' rows match a transition under any provider."""
+    db.backfill_known_free_models(["nvidia/nemotron-3-ultra:free"])
+    assert db.is_free_tier_transition("nvidia/nemotron-3-ultra", "nvidia")
+    assert db.is_free_tier_transition("nvidia/nemotron-3-ultra-550b-a55b", "openrouter")
+
+
+def test_free_tier_transition_ignores_unrelated_model():
+    """An unrelated paid model does not false-positive off a `:free` row."""
+    db.record_free_model("nvidia/nemotron-3-ultra:free", "nvidia")
+    assert not db.is_free_tier_transition("nvidia/nemotron-super-49b", "nvidia")
+
+
+def test_free_tier_transition_requires_token_boundary():
+    """Prefix match only at a separator — `…-ultraX` must not match `…-ultra:free`."""
+    db.record_free_model("nvidia/nemotron-3-ultra:free", "nvidia")
+    # No separator after the base → not a transition
+    assert not db.is_free_tier_transition("nvidia/nemotron-3-ultrablend", "nvidia")
+
+
+def test_free_tier_transition_false_without_free_row():
+    """No `:free` row recorded → never a transition."""
+    assert not db.is_free_tier_transition("nvidia/nemotron-3-ultra", "nvidia")
+
+
+def test_free_tier_transition_provider_scoped():
+    """A specific-provider `:free` row does not match a different provider."""
+    db.record_free_model("nvidia/nemotron-3-ultra:free", "nvidia")
+    assert not db.is_free_tier_transition("nvidia/nemotron-3-ultra", "openrouter")

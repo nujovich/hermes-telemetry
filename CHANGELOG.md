@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Free→paid transition detection now handles the **id-change** case (issue #32):
+  when a provider drops a `:free` suffix (or renames a promo to its paid base)
+  so the paid call arrives under a different model id than the recorded `:free`
+  row. `db.is_free_tier_transition(model, provider)` matches a stored
+  `<id>:free` row both for the bare rename (`nemotron-3-ultra:free` →
+  `nemotron-3-ultra`) and for a suffixed paid id at a token boundary
+  (`nemotron-3-ultra-550b-a55b`). Wired into `post_api_request` alongside the
+  existing `is_known_free_model` check.
+- `nvidia/nemotron-3-ultra` paid seed in `_DEFAULT_PRICING` (OpenRouter rate
+  pending NIM-direct confirmation). Covers both the bare id and the suffixed
+  `…-550b-a55b` form via prefix, so cost becomes non-zero once the `:free`
+  promo ends 2026-06-18 — which is what fires the transition alert.
+
+### Notes
+- **Free Nemotron Ultra users**: declare `nvidia/nemotron-3-ultra:free` at `$0`
+  with `_subscription: true` in `pricing.yaml` before 2026-06-18. This both
+  silences the estimated-price warning and seeds the model as known-free so the
+  free→paid alert fires when billing starts. See the README **PLEASE READ**
+  notice. A built-in default price cannot suppress the estimated-price warning —
+  only the manual `_subscription` flag can.
+
 ## [0.5.0] - 2026-06-15
 
 ### Added

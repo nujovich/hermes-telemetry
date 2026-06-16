@@ -68,14 +68,21 @@ _DEFAULT_PRICING: dict[str, dict] = {
     # nemotron normalize to it). Seeds live here, source-neutral and in code, so
     # they (1) survive an OpenRouter sync untouched and (2) are selected when the
     # provider-aware guard excludes a same-id OpenRouter entry for a NIM call.
-    # Prices per build.nvidia.com, verified 2026-06. The `:free` promo variants
-    # (e.g. nemotron-3-ultra:free) resolve to $0 via the unknown-model fallback
+    # Prices per build.nvidia.com, verified 2026-06. Most `:free` promo variants
+    # (e.g. nemotron-3-super:free) resolve to $0 via the unknown-model fallback
     # and need no entry — see issue #12.
     "nvidia/nemotron-3-super-120b-a12b": dict(input=0.10, output=0.50),
     "nvidia/nemotron-super-49b": dict(input=0.10, output=0.40),
     "nvidia/nemotron-70b-instruct": dict(input=1.20, output=1.20),
     "nvidia/nemotron-nano-12b-vl": dict(input=0.20, output=0.60),
     "nvidia/nemotron-nano-9b": dict(input=0.04, output=0.16),
+    # nemotron-3-ultra: the `:free` promo ends 2026-06-18, after which the
+    # gateway drops the `:free` suffix and bills `nvidia/nemotron-3-ultra` (and
+    # the suffixed `…-550b-a55b` form, caught by prefix match). Seeding the paid
+    # price here makes cost>0 once the promo ends, which is what fires the
+    # free→paid transition alert (issues #16/#32). Price is the OpenRouter rate
+    # pending confirmation of the NIM-direct figure.
+    "nvidia/nemotron-3-ultra": dict(input=0.50, output=2.50),
     # ── Meta (via OpenRouter / providers) ───────────────────────────────────
     "meta-llama/llama-3.1-405b-instruct": dict(input=2.70, output=2.70),
     "meta-llama/llama-3.1-70b-instruct": dict(input=0.52, output=0.75),

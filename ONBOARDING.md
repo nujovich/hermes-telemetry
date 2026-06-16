@@ -80,7 +80,7 @@ hermes-telemetry/
 │   └── serve.py         ← stdlib HTTP server, port 8765, --host flag.
 ├── tests/
 │   ├── conftest.py      ← Autouse HERMES_HOME isolation (see Test Isolation).
-│   └── test_*.py        ← 253 tests. All in-memory SQLite, no live gateway.
+│   └── test_*.py        ← 262 tests. All in-memory SQLite, no live gateway.
 ├── config.example.yaml  ← Annotated pricing.yaml example.
 └── budget.example.yaml  ← Annotated budget.yaml example.
 ```
@@ -647,6 +647,34 @@ that fell through to the `$0.00` unknown-model fallback. Without this guard, any
 unrecognized model would be recorded as "free" and trigger spurious alerts when
 the pricing table is later populated.
 
+### Id-change transitions (`is_free_tier_transition`, issue #32)
+
+A `known_free_models` row is keyed on the model id seen at $0. But some providers
+move a model from free to paid by **changing the id** — dropping a `:free` suffix
+(or renaming the promo to its paid base) — so the first paid call arrives under a
+different id than the recorded `:free` row, and a plain `is_known_free_model`
+lookup misses.
+
+`is_free_tier_transition(model, provider)` in `db.py` bridges that gap. For an
+incoming paid `model` it returns `True` if a stored `<id>:free` row matches via
+either:
+
+1. **Bare rename** — `model + ":free"` is a known-free row
+   (`nvidia/nemotron-3-ultra` ← `nvidia/nemotron-3-ultra:free`).
+2. **Suffixed paid id** — a stored `<base>:free` whose `<base>` is a prefix of
+   `model` at a token boundary (`-`, `:`, `/`, `_`), so
+   `nvidia/nemotron-3-ultra-550b-a55b` ← `nvidia/nemotron-3-ultra:free` but an
+   unrelated `…-ultrablend` does not false-positive.
+
+`post_api_request` checks `is_known_free_model(...) OR is_free_tier_transition(...)`
+on the `cost > 0.0` branch. The concrete case: the `nvidia/nemotron-3-ultra:free`
+promo ends 2026-06-18 and bills as `nvidia/nemotron-3-ultra`; the paid price is
+seeded in `_DEFAULT_PRICING` so `cost > 0` once billing starts, and the reverse
+lookup connects the paid id back to the user's recorded `:free` row to fire the
+alert. See the README **PLEASE READ** notice for the required user-side config
+(`_subscription: true` on the `:free` entry — needed to suppress the
+estimated-price warning, which a default price cannot do).
+
 ---
 
 ## Pricing Auto-Refresh
@@ -873,6 +901,24 @@ with `pytest --basetemp=DIR`.
 - **253 tests** (was 233): `test_init.py` gained free→paid detection, queueing,
   injection, and backfill tests; `test_db.py` and `test_pricing.py` gained
   corresponding unit tests.
+
+### Unreleased — Free→paid id-change handling (issue #32)
+
+- **`is_free_tier_transition(model, provider)`** in `db.py`: reverse-looks-up a
+  stored `<id>:free` row when a provider moves a model to paid under a *different*
+  id (dropped `:free` suffix or suffixed paid id at a token boundary). Wired into
+  `post_api_request` as `is_known_free_model(...) OR is_free_tier_transition(...)`.
+- **`nvidia/nemotron-3-ultra` paid seed** in `_DEFAULT_PRICING` (OpenRouter rate,
+  NIM-direct pending). Catches the bare id (exact) and the `…-550b-a55b` form
+  (prefix), making `cost > 0` after the 2026-06-18 promo end — which fires the
+  alert. **Known trade-off**: the paid prefix also matches `…-ultra:free`, so a
+  user *without* the manual `_subscription` $0 entry sees the free tier priced at
+  the paid rate before 2026-06-18. Mitigated by the README **PLEASE READ** notice;
+  the manual entry both fixes the collision (exact match wins) and suppresses the
+  estimated-price warning (which a default price cannot do).
+- **262 tests** (was 253): `test_db.py` gained 7 `is_free_tier_transition` cases;
+  `test_pricing.py` gained the ultra paid-seed + `:free` collision/`_subscription`
+  cases.
 
 ---
 

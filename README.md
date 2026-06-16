@@ -14,7 +14,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 253 passing](https://img.shields.io/badge/Tests-253%20passing-green.svg)](https://img.shields.io/badge/Tests-253%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 262 passing](https://img.shields.io/badge/Tests-262%20passing-green.svg)](https://img.shields.io/badge/Tests-262%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -562,6 +562,26 @@ models:
     _subscription: true  # declared $0 — survives every OpenRouter refresh
 ```
 
+> ### ⚠️ PLEASE READ — if you use free Nemotron Ultra before June 18, 2026
+>
+> The `nvidia/nemotron-3-ultra:free` promo **ends June 18, 2026**, after which the
+> model bills as `nvidia/nemotron-3-ultra`. To get the free→paid alert *and* avoid
+> a spurious estimated-price warning, you **must** declare the free tier manually
+> in `pricing.yaml` — no exception:
+>
+> ```yaml
+> models:
+>   nvidia/nemotron-3-ultra:free:
+>     input: 0.0
+>     output: 0.0
+>     _subscription: true   # REQUIRED: silences the estimated-price warning
+> ```
+>
+> Then restart Hermes. This seeds the model as known-free so that, once the promo
+> ends, hermes-telemetry detects the jump to paid (even though the id changes) and
+> warns you in-context. The `_subscription: true` flag is what keeps `/budget` from
+> flagging it as an estimated-price model — a built-in default price cannot do this.
+
 ### `budget.yaml`
 
 Configure spend guardrails. No file → budgets disabled.
@@ -619,7 +639,7 @@ The plugin can automatically fetch model pricing from OpenRouter’s public API,
   - Previously auto-fetched models are updated when prices change
   - Models are tagged with `_auto: true` and `_source: openrouter` — the `_source` tag is load-bearing: it drives the provider-aware guard above
 
-> **NVIDIA NIM** (`build.nvidia.com`) is supported out of the box: the Nemotron lineup ships as built-in seed prices, so NIM-served calls cost correctly even though NIM has no auto-refresh source. The seeds are immune to OpenRouter syncs, and a NIM call never borrows OpenRouter's rate for a colliding model id. `nvidia/...:free` promo variants resolve to `$0.00`.
+> **NVIDIA NIM** (`build.nvidia.com`) is supported out of the box: the Nemotron lineup ships as built-in seed prices, so NIM-served calls cost correctly even though NIM has no auto-refresh source. The seeds are immune to OpenRouter syncs, and a NIM call never borrows OpenRouter's rate for a colliding model id. Most `nvidia/...:free` promo variants resolve to `$0.00`; the `nemotron-3-ultra:free` promo ends 2026-06-18 (see the **PLEASE READ** notice above).
 
 ### Estimated-Price Models
 
@@ -904,7 +924,7 @@ global    $0.1812 / $2.00    9%  [daily]
 |Pricing auto-refresh (OpenRouter API)|✅ 320 models fetched, manual overrides preserved   |
 |Estimated-price model handling       |✅ Negative prices → $0.00, budget degradation      |
 |Dashboard (HTML, auto-refresh 30s)   |✅ Charts, tables, budget bar, provider distribution|
-|253 tests pass                       |✅                                                  |
+|262 tests pass                       |✅                                                  |
 
 -----
 
@@ -931,19 +951,19 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (253 tests):**
+**Test suite (262 tests):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
-|`test_pricing.py`                |57   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds, subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`|
+|`test_pricing.py`                |60   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds (incl. `nemotron-3-ultra` paid + `:free` collision), subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`|
 |`test_telemetry_cli.py`          |32   |CLI subcommands (stats/budget), all window variants, text + `--json` output, entry point smoke test                            |
-|`test_db.py`                     |38   |Schema v1→v5 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes), `known_free_models` CRUD, `backfill_known_free_models`|
+|`test_db.py`                     |45   |Schema v1→v5 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes), `known_free_models` CRUD, `backfill_known_free_models`, `is_free_tier_transition` (id-change detection)|
 |`test_setup.py`                  |21   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |
 |`test_dashboard.py`              |21   |HTML dashboard rendering, auto-refresh, chart data endpoints, viewer-timezone budget windows                                   |
 |`test_budget.py`                 |20   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload|
 |`test_stats_providers.py`        |14   |Real vs estimated per provider, `/stats providers` output format, Nous warning dedup                                           |
 |`test_pricing_refresh.py`        |14   |Auto-refresh from OpenRouter API, change detection, manual override preservation, subscription-model metadata                  |
-|`test_init.py`                   |23   |Cron session ID regex, tool success/failure parsing, free→paid transition alert (detection, queueing, injection, backfill)     |
+|`test_init.py`                   |13   |Cron session ID regex, tool success/failure parsing, free→paid transition alert (detection, queueing, injection, backfill)     |
 |`test_subagent_reconciliation.py`|9    |Parent + child hook sequence, token reconciliation, no double-counting                                                         |
 |`test_stats_models.py`           |8    |Per-model breakdown, `/stats models` output format                                                                             |
 |`test_pricing_hot_reload.py`     |3    |In-process cache invalidation on pricing update                                                                                |
