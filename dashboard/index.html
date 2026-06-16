@@ -229,18 +229,18 @@
         <div class="settings-group">
           <label for="windowSelect">View time</label>
           <select id="windowSelect" onchange="closeSettingsMenu(); loadAll({showShell:true})">
-            <option value="0" selected>All time</option>
-            <option value="24">Today</option>
-            <option value="168">This week</option>
-            <option value="720">This month</option>
-            <option value="0.25">Last 15m</option>
-            <option value="0.5">Last 30m</option>
-            <option value="1">Last 1h</option>
-            <option value="3">Last 3h</option>
-            <option value="24">Last 24h</option>
-            <option value="48">Last 2 days</option>
-            <option value="2160">Last 90 days</option>
-            <option value="8760">Last 1 year</option>
+            <option value="all" selected>All time</option>
+            <option value="today">Today</option>
+            <option value="this_week">This week</option>
+            <option value="this_month">This month</option>
+            <option value="15m">Last 15m</option>
+            <option value="30m">Last 30m</option>
+            <option value="1h">Last 1h</option>
+            <option value="3h">Last 3h</option>
+            <option value="24h">Last 24h</option>
+            <option value="2d">Last 2 days</option>
+            <option value="90d">Last 90 days</option>
+            <option value="1y">Last 1 year</option>
           </select>
         </div>
         <div class="settings-group">
@@ -253,6 +253,8 @@
         <div class="settings-group">
           <label for="homeTrendGranularitySelect">Chart view</label>
           <select id="homeTrendGranularitySelect" onchange="closeSettingsMenu(); setHomeTrendGranularity(this.value)">
+            <option value="auto" selected>Auto</option>
+            <option value="minute">Minute</option>
             <option value="hour">Hourly</option>
             <option value="day">Daily</option>
             <option value="week">Weekly</option>
@@ -367,10 +369,10 @@ if (window.Chart?.defaults) {
   Chart.defaults.color = '#c9d1d9';
 }
 let currentDailyTokensPage = 1;
-let lastWindowHours = null;
+let lastWindowPreset = null;
 let currentPage = 'home';
 let currentUsageGranularity = 'day';
-let currentHomeTrendGranularity = 'day';
+let currentHomeTrendGranularity = 'auto';
 let currentUsageMetric = 'tokens';
 let currentMetricTrendMetric = 'tokens';
 let currentDrilldown = {};
@@ -497,8 +499,56 @@ function closeSettingsMenu() {
   $('#settingsPanel')?.classList.remove('open');
   $('#settingsToggle')?.classList.remove('open');
 }
+function startOfToday(mode, now = new Date()) {
+  return mode === 'utc'
+    ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0))
+    : new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+}
+function startOfWeek(mode, now = new Date()) {
+  const base = startOfToday(mode, now);
+  const weekday = mode === 'utc' ? now.getUTCDay() : now.getDay();
+  const daysFromMonday = (weekday + 6) % 7;
+  base.setDate(base.getDate() - daysFromMonday);
+  return base;
+}
+function startOfMonth(mode, now = new Date()) {
+  return mode === 'utc'
+    ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0))
+    : new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+}
+function resolveWindowPreset(preset = $('#windowSelect')?.value || 'all', mode = currentDayBoundaryMode) {
+  const now = new Date();
+  const rollingHours = {
+    all: 0,
+    '15m': 0.25,
+    '30m': 0.5,
+    '1h': 1,
+    '3h': 3,
+    '24h': 24,
+    '2d': 48,
+    '90d': 2160,
+    '1y': 8760,
+  };
+  if (Object.prototype.hasOwnProperty.call(rollingHours, preset)) {
+    return { preset, hours: rollingHours[preset], mode: 'rolling' };
+  }
+  const start = preset === 'today'
+    ? startOfToday(mode, now)
+    : preset === 'this_week'
+      ? startOfWeek(mode, now)
+      : preset === 'this_month'
+        ? startOfMonth(mode, now)
+        : null;
+  if (!start) return { preset: 'all', hours: 0, mode: 'rolling' };
+  return { preset, hours: Math.max(0, (now.getTime() - start.getTime()) / 3600000), mode: 'calendar' };
+}
+function autoHomeTrendGranularity(preset = $('#windowSelect')?.value || 'all') {
+  if (['15m', '30m', '1h', '3h'].includes(preset)) return 'minute';
+  if (['today', '24h', '2d'].includes(preset)) return 'hour';
+  return 'day';
+}
 function granularityLabel(g) {
-  return ({ hour: 'Hourly', day: 'Daily', week: 'Weekly', month: 'Monthly' }[g]) || 'Daily';
+  return ({ minute: 'Minutely', hour: 'Hourly', day: 'Daily', week: 'Weekly', month: 'Monthly' }[g]) || 'Daily';
 }
 function setUsageGranularity(g) {
   if (!['day', 'week', 'month'].includes(g) || g === currentUsageGranularity) return;
@@ -516,7 +566,7 @@ function setMetricTrendMetric(metric) {
   loadAll({showShell:false});
 }
 function setHomeTrendGranularity(g) {
-  if (!['hour', 'day', 'week', 'month'].includes(g) || g === currentHomeTrendGranularity) return;
+  if (!['auto', 'minute', 'hour', 'day', 'week', 'month'].includes(g) || g === currentHomeTrendGranularity) return;
   currentHomeTrendGranularity = g;
   const select = $('#homeTrendGranularitySelect');
   if (select) select.value = g;
@@ -763,14 +813,24 @@ function fmtHourLabel(value, opts = {}) {
     : { hour: 'numeric' }).format(localDate);
 }
 
-function effectiveHomeTrendGranularity(hoursValue = $('#windowSelect')?.value || '0') {
-  const hours = Number(hoursValue);
-  if (currentHomeTrendGranularity === 'day' && hours > 0 && hours <= 24) return 'hour';
-  return currentHomeTrendGranularity;
+function fmtMinuteLabel(value, opts = {}) {
+  const parts = parseHourBucketParts(value);
+  if (!parts) return value;
+  const localDate = new Date(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0, 0);
+  return new Intl.DateTimeFormat(undefined, opts.full
+    ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+    : { hour: 'numeric', minute: '2-digit' }).format(localDate);
+}
+
+function effectiveHomeTrendGranularity(windowPreset = $('#windowSelect')?.value || 'all') {
+  return currentHomeTrendGranularity === 'auto'
+    ? autoHomeTrendGranularity(windowPreset)
+    : currentHomeTrendGranularity;
 }
 
 function fmtTrendPeriodLabel(value, granularity = effectiveHomeTrendGranularity()) {
   if (!value) return '—';
+  if (granularity === 'minute') return fmtMinuteLabel(value);
   if (granularity === 'hour') return fmtHourLabel(value);
   if (granularity === 'month') {
     const d = parseDashboardTs(`${value}-01T00:00:00Z`);
@@ -796,9 +856,9 @@ function buildMetricTrendSummary(rows) {
   return summary;
 }
 
-function renderMetricTrendCard(rows, hours, summaryOverrides = {}) {
+function renderMetricTrendCard(rows, windowPreset, summaryOverrides = {}) {
   const trendRows = rows || [];
-  const effectiveGranularity = effectiveHomeTrendGranularity(hours);
+  const effectiveGranularity = effectiveHomeTrendGranularity(windowPreset);
   const summary = { ...buildMetricTrendSummary(trendRows), ...(summaryOverrides || {}) };
   const metrics = ['tokens', 'api_calls', 'request_runs', 'messages', 'tool_calls', 'cron_job_runs', 'cost', 'savings'];
   const chartRows = getMetricTrendRows(trendRows, currentMetricTrendMetric);
@@ -994,8 +1054,34 @@ function clearInvestigationSearch() {
   loadAll({showShell:false});
 }
 
-function buildRunsQuery(hours, limit = 30) {
-  const qs = new URLSearchParams({ hours: String(hours), limit: String(limit) });
+function homeTrendLimitFor(windowPreset, hours, granularity) {
+  if (granularity === 'minute') return Math.max(20, Math.ceil(hours * 60) + 2);
+  if (granularity === 'hour') return Math.max(24, Math.ceil(hours) + 2);
+  if (granularity === 'week') return Math.max(16, Math.ceil(hours / (24 * 7)) + 2);
+  if (granularity === 'month') return Math.max(12, Math.ceil(hours / (24 * 30)) + 2);
+  return windowPreset === 'all' ? 3650 : Math.max(14, Math.ceil(hours / 24) + 2);
+}
+
+function selectedWindowLabel(windowPreset) {
+  return {
+    all: 'all time',
+    today: 'today',
+    this_week: 'this week',
+    this_month: 'this month',
+    '15m': 'last 15m',
+    '30m': 'last 30m',
+    '1h': 'last 1h',
+    '3h': 'last 3h',
+    '24h': 'last 24h',
+    '2d': 'last 2 days',
+    '90d': 'last 90 days',
+    '1y': 'last 1 year',
+  }[windowPreset] || 'selected range';
+}
+
+function buildRunsQuery(windowPreset, limit = 30) {
+  const scope = resolveWindowPreset(windowPreset);
+  const qs = new URLSearchParams({ hours: String(scope.hours), limit: String(limit) });
   for (const [key, value] of Object.entries(currentDrilldown)) {
     if (value != null && value !== '') qs.set(key, value);
   }
@@ -1435,9 +1521,11 @@ function drawMetricTrendChart(canvasId, rows) {
   const chartRows = getMetricTrendRows(rows, currentMetricTrendMetric);
   if (!canvas || !chartRows.length) return;
   const meta = trendMetricMeta(currentMetricTrendMetric);
-  const effectiveGranularity = effectiveHomeTrendGranularity();
+  const windowPreset = $('#windowSelect')?.value || 'all';
+  const effectiveGranularity = effectiveHomeTrendGranularity(windowPreset);
   const labels = chartRows.map(row => fmtTrendPeriodLabel(row.day, effectiveGranularity));
   const fullLabels = chartRows.map(row => {
+    if (effectiveGranularity === 'minute') return fmtMinuteLabel(row.day, { full: true });
     if (effectiveGranularity === 'hour') return fmtHourLabel(row.day, { full: true });
     if (effectiveGranularity === 'week') return `Week of ${row.day}`;
     if (effectiveGranularity === 'month') return fmtTrendPeriodLabel(row.day, 'month');
@@ -1789,27 +1877,29 @@ async function loadAll(options = {}) {
   isLoading = true;
   const showShell = options.showShell ?? !$('#app')?.dataset?.loaded;
   const app = $('#app');
-  const hours = $('#windowSelect').value;
+  const windowPreset = $('#windowSelect').value;
+  const windowScope = resolveWindowPreset(windowPreset);
+  const hours = String(windowScope.hours);
   const homeTrendGranularitySelect = $('#homeTrendGranularitySelect');
-  const effectiveHomeGranularity = effectiveHomeTrendGranularity(hours);
+  const effectiveHomeGranularity = effectiveHomeTrendGranularity(windowPreset);
   if (homeTrendGranularitySelect) homeTrendGranularitySelect.value = currentHomeTrendGranularity;
-  if (hours !== lastWindowHours) {
+  if (windowPreset !== lastWindowPreset) {
     currentDailyTokensPage = 1;
-    lastWindowHours = hours;
+    lastWindowPreset = windowPreset;
   }
   setLoadStatus(options.reason === 'auto' ? 'Auto loading…' : 'Loading…', 'loading');
   const startedAt = performance.now();
   if (showShell || !app.dataset.loaded) app.innerHTML = loadingShell();
 
   try {
-    const chartHours = Number(hours);
-    const chartLimitDays = hours === '0' ? 3650 : Math.max(14, Math.ceil(Number(hours) / 24) + 2);
+    const chartHours = Number(windowScope.hours);
+    const chartLimitDays = homeTrendLimitFor(windowPreset, chartHours, effectiveHomeGranularity);
     const trendLimit = currentUsageGranularity === 'month' ? 18 : currentUsageGranularity === 'week' ? 24 : 21;
     const [summary, cron, providers, providerHealth, runsData, budget, tokenBreakdown, modelTokens, modelEfficiency, dailyTokens, dailyTokenChart, dailyModelChart, modelPeriodTrends, modelShareComparison, cacheEfficiency, requestForensics, toolAnalytics, toolFailureHeatmap, errorCenter, cronFailureWaste] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
       fetchJSON(`/api/providers?hours=${hours}`),
-      fetchJSON(`/api/provider-health?hours=${hours === '0' ? 24 : hours}`),
+      fetchJSON(`/api/provider-health?hours=${chartHours === 0 ? 24 : hours}`),
       fetchJSON(`/api/runs?limit=30&hours=${hours}`),
       fetchJSON(withViewerTimezone('/api/budget')),
       fetchJSON(`/api/token-breakdown?hours=${hours}`),
@@ -1821,10 +1911,10 @@ async function loadAll(options = {}) {
       fetchJSON(`/api/model-period-trends?hours=${hours}&granularity=${currentUsageGranularity}&metric=${currentUsageMetric}&top_n=6&limit_periods=${trendLimit}`),
       fetchJSON(`/api/model-share-comparison?hours=${hours}&granularity=${currentUsageGranularity}&limit=12`),
       fetchJSON(`/api/cache-efficiency?hours=${hours}`),
-      fetchJSON(`/api/requests?${buildRunsQuery(hours, 60)}`),
-      fetchJSON(`/api/tool-analytics?${buildRunsQuery(hours, 100)}&include_deleted=1`),
+      fetchJSON(`/api/requests?${buildRunsQuery(windowPreset, 60)}`),
+      fetchJSON(`/api/tool-analytics?${buildRunsQuery(windowPreset, 100)}&include_deleted=1`),
       fetchJSON(`/api/tool-failure-heatmap?hours=${hours}&limit=80`),
-      fetchJSON(`/api/error-center?${buildRunsQuery(hours, 100)}`),
+      fetchJSON(`/api/error-center?${buildRunsQuery(windowPreset, 100)}`),
       fetchJSON(`/api/cron-failure-waste?hours=${hours}&limit=50`),
     ]);
     if (requestId !== latestLoadRequestId) return;
@@ -1832,7 +1922,7 @@ async function loadAll(options = {}) {
     const r = summary.runs || {};
     const l = summary.llm || {};
     const runs = runsData?.rows || [];
-    const investigationRuns = await fetchJSON(`/api/runs?${buildRunsQuery(hours, 40)}`);
+    const investigationRuns = await fetchJSON(`/api/runs?${buildRunsQuery(windowPreset, 40)}`);
     if (requestId !== latestLoadRequestId) return;
     currentDailyTokensPage = dailyTokens?.page || 1;
 
@@ -1850,21 +1940,14 @@ async function loadAll(options = {}) {
       html += '</div>';
 
       const cronSummaryRuns = (cron || []).reduce((sum, row) => sum + Number(row.runs || 0), 0);
-      html += renderMetricTrendCard(dailyTokenChart, hours, { cron_job_runs: cronSummaryRuns });
+      html += renderMetricTrendCard(dailyTokenChart, windowPreset, { cron_job_runs: cronSummaryRuns });
 
       // --- budget ---
       html += renderBudget(budget);
 
       // --- charts row 1: daily cost + top tools ---
       let dailyTitle;
-      switch (hours) {
-        case '24': dailyTitle = 'Daily Cost (last 24h)'; break;
-        case '168': dailyTitle = 'Daily Cost (last 7 days)'; break;
-        case '720': dailyTitle = 'Daily Cost (last 30 days)'; break;
-        case '2160': dailyTitle = 'Daily Cost (last 90 days)'; break;
-        case '0': dailyTitle = 'Daily Cost (all time)'; break;
-        default: dailyTitle = 'Daily Cost';
-      }
+      dailyTitle = `Daily Cost (${selectedWindowLabel(windowPreset)})`;
       html += '<div class="chart-row">';
       html += renderChartCard('dailyCost', dailyTitle, 'chart-daily');
       html += renderChartCard('topTools', 'Top Tools by Calls', 'chart-tools');

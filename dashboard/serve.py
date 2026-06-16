@@ -126,6 +126,8 @@ def _sqlite_dashboard_period(value, granularity, tz_name):
     tzinfo, _ = _dashboard_viewer_tz(_normalize_dashboard_tz_name(tz_name))
     dt_local = dt_utc.astimezone(tzinfo)
     granularity = _normalize_granularity(granularity)
+    if granularity == "minute":
+        return dt_local.replace(second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
     if granularity == "hour":
         return dt_local.replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:00")
     if granularity == "day":
@@ -256,7 +258,7 @@ def _since_clause(window_hours, col="started_at"):
 
 def _normalize_granularity(granularity: str | None) -> str:
     g = (granularity or "day").strip().lower()
-    if g not in {"hour", "day", "week", "month"}:
+    if g not in {"minute", "hour", "day", "week", "month"}:
         raise ValueError(f"invalid granularity: {granularity!r}")
     return g
 
@@ -1645,6 +1647,8 @@ def api_daily_token_chart(
         elif granularity == "week":
             monday = (ts - timedelta(days=ts.weekday())).date()
             day = monday.isoformat()
+        elif granularity == "minute":
+            day = ts.replace(second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
         elif granularity == "hour":
             day = ts.replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:00")
         else:

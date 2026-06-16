@@ -554,6 +554,53 @@ def test_daily_token_chart_supports_hourly_granularity(serve_module, monkeypatch
     assert rows[2]["api_calls"] == 1
 
 
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="zoneinfo requires Python 3.9+")
+def test_daily_token_chart_supports_minute_granularity(serve_module, monkeypatch, tmp_path):
+    state_db = tmp_path / "state.db"
+    _seed_state_db(
+        state_db,
+        [
+            (datetime(2026, 6, 13, 10, 15, tzinfo=timezone.utc).timestamp(), "user", "u1"),
+            (datetime(2026, 6, 13, 10, 15, tzinfo=timezone.utc).timestamp(), "assistant", "a1"),
+            (datetime(2026, 6, 13, 10, 17, tzinfo=timezone.utc).timestamp(), "user", "u2"),
+        ],
+    )
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-13T10:10:00+00:00")
+    db.start_run("minute-a", model="gpt-5.4", platform="discord")
+    db.record_llm_call(
+        "minute-a", "2026-06-13T10:15:20+00:00", "gpt-5.4", "openai-codex", 100, 20, 0.01, 50
+    )
+    db.record_tool_call("minute-a", "2026-06-13T10:15:30+00:00", "read_file", True, 10)
+    db.end_run("minute-a", "ok", ended_at="2026-06-13T10:15:40+00:00")
+
+    monkeypatch.setattr(db, "_utcnow", lambda: "2026-06-13T10:16:00+00:00")
+    db.start_run("minute-b", model="gpt-5.4", platform="cron")
+    db.record_llm_call(
+        "minute-b", "2026-06-13T10:17:10+00:00", "gpt-5.4", "openai-codex", 200, 30, 0.02, 50
+    )
+    db.end_run("minute-b", "ok", ended_at="2026-06-13T10:17:20+00:00")
+
+    rows = serve_module.api_daily_token_chart(
+        window_hours=0, limit_days=20, granularity="minute", tz_name="UTC"
+    )
+
+    by_day = {row["day"]: row for row in rows}
+    assert set(by_day) == {
+        "2026-06-13T10:10",
+        "2026-06-13T10:15",
+        "2026-06-13T10:16",
+        "2026-06-13T10:17",
+    }
+    assert by_day["2026-06-13T10:10"]["request_runs"] == 1
+    assert by_day["2026-06-13T10:15"]["api_calls"] == 1
+    assert by_day["2026-06-13T10:15"]["tool_calls"] == 1
+    assert by_day["2026-06-13T10:15"]["message_runs"] == 2
+    assert by_day["2026-06-13T10:16"]["request_runs"] == 1
+    assert by_day["2026-06-13T10:17"]["api_calls"] == 1
+
+
 def test_daily_token_chart_includes_requests_cost_savings_and_messages(
     serve_module, monkeypatch, tmp_path
 ):
