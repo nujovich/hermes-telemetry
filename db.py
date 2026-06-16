@@ -455,8 +455,6 @@ def _build_where_clause(
         if date_to is not None:
             where_parts.append("started_at < ?")
             params.append(date_to)
-        else:
-            where_parts.append("started_at < datetime('now')")
     elif window_hours is not None:
         where_parts.append(f"started_at >= {_run_hours_ago_expr(window_hours)}")
     else:
@@ -479,8 +477,6 @@ def _build_where_clause_ts(
         if date_to is not None:
             where_parts.append("ts < ?")
             params.append(date_to)
-        else:
-            where_parts.append("ts < datetime('now')")
     elif window_hours is not None:
         where_parts.append(f"ts >= {_run_hours_ago_expr(window_hours)}")
     else:
@@ -502,8 +498,6 @@ def _build_tools_where(
         if date_to is not None:
             where_parts.append("r.started_at < ?")
             params.append(date_to)
-        else:
-            where_parts.append("r.started_at < datetime('now')")
     elif window_hours is not None:
         where_parts.append(f"r.started_at >= {_run_hours_ago_expr(window_hours)}")
     else:

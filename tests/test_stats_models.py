@@ -226,3 +226,55 @@ def test_stats_models_zero_cost_mixed_emits_both_footers(tmp_path, monkeypatch):
     assert "subscription/free tier (declared in pricing.yaml" in out
     assert "no price entry in pricing.yaml" in out
     assert "/setup pricing auto" in out
+
+
+# ---------------------------------------------------------------------------
+# date_from / date_to filtering (PR #35)
+# ---------------------------------------------------------------------------
+
+
+def test_stats_models_date_from_filters_older_rows():
+    """`date_from` excludes rows older than the cutoff while keeping newer ones.
+
+    Regression: an earlier draft added `ts < datetime('now')` as an implicit
+    upper bound when `date_to` was None, but SQLite's `datetime('now')` returns
+    space-separated text while real `ts` values are ISO-T with offset, so the
+    string comparison filtered every row out.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    pre = (now - timedelta(hours=12)).isoformat()
+    post = (now - timedelta(minutes=30)).isoformat()
+    cutoff = (now - timedelta(hours=6)).isoformat()
+
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call("s1", pre, "deepseek/v4-pro", "nous", 100, 50, 5.0, 100)
+    db.record_llm_call("s1", post, "deepseek/v4-pro", "nous", 100, 50, 0.002, 100)
+
+    rows = db.stats_by_model(date_from=cutoff)
+    assert len(rows) == 1
+    assert rows[0]["total_calls"] == 1
+    assert abs(rows[0]["cost_usd"] - 0.002) < 1e-9
+
+
+def test_stats_models_date_range_bounds_both_sides():
+    """Both `date_from` and `date_to` bound the window inclusively/exclusively."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    too_old = (now - timedelta(hours=20)).isoformat()
+    in_window = (now - timedelta(hours=10)).isoformat()
+    too_new = (now - timedelta(hours=1)).isoformat()
+    lo = (now - timedelta(hours=15)).isoformat()
+    hi = (now - timedelta(hours=5)).isoformat()
+
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call("s1", too_old, "m", "p", 1, 1, 1.0, 10)
+    db.record_llm_call("s1", in_window, "m", "p", 1, 1, 2.0, 10)
+    db.record_llm_call("s1", too_new, "m", "p", 1, 1, 4.0, 10)
+
+    rows = db.stats_by_model(date_from=lo, date_to=hi)
+    assert len(rows) == 1
+    assert rows[0]["total_calls"] == 1
+    assert abs(rows[0]["cost_usd"] - 2.0) < 1e-9

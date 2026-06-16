@@ -259,8 +259,7 @@ def _models_block(
     lines = [
         f"hermes-telemetry — models ({label})",
         "=" * 108,
-        f"  {'Provider':<20} {'Model':<46} {'Calls':>6} {'Real':>6} "
-        f"{'Est':>5} {'Cost':>12}  Notes",
+        f"  {'Provider':<20} {'Model':<46} {'Calls':>6} {'Real':>6} {'Est':>5} {'Cost':>12}  Notes",
         "  " + "-" * 106,
     ]
     sub_zero_count = 0
