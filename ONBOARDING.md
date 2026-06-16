@@ -396,17 +396,38 @@ already uses `INSERT OR IGNORE`).
 
 ## Pricing Engine
 
+### Pricing files (v0.6+)
+
+Two files, two owners:
+
+- **`~/.hermes/telemetry/pricing.yaml`** — *manual overrides only*. Never
+  written by the plugin. Namespaced by provider under `overrides:` with `"*"`
+  as the neutral bucket.
+- **`~/.hermes/telemetry/pricing.auto.yaml`** — *machine-managed*. Fully
+  rewritten by `pricing_refresh` on each run. Namespaced by source under
+  `sources:`. Hand edits will be overwritten on the next refresh.
+
+This split is what makes provider-specific pricing possible: the same model
+id can carry one price under `overrides.nous` and another under
+`sources.openrouter`, picked correctly per call.
+
+**Legacy shim**: an unmigrated pre-v0.6 `pricing.yaml` (flat `models:` map)
+keeps working — entries with `_source` route through the provider-aware
+guard as before; untagged entries land in the neutral bucket. A one-shot
+automatic migration on plugin load splits the file (see "Migration" below).
+
 ### Lookup priority chain
 
 `estimate_cost(usage, model, provider="")` resolves a price by trying these in order:
 
-1. **Custom YAML** (`~/.hermes/telemetry/pricing.yaml`, `models:` section) — exact match, case-insensitive
-2. **Built-in table** (`_DEFAULT_PRICING`) — exact match
-3. **`:free` suffix rule** — any id ending in `:free` resolves to an explicit `$0`
-   (`{"input": 0.0, "output": 0.0}`), **before** the prefix fallback. See below.
-4. **Prefix fallback** — scans all of the above plus `_PREFIX_PRICING`, **longest prefix wins**
-5. **Google symmetric form** — if the above misses, tries `gemini-X` ↔ `google/gemini-X`
-6. **Unknown** → returns `$0.00`, logs a one-time WARNING
+1. **`overrides.<provider>.<model>`** — exact, manual provider-namespaced override
+2. **`sources.<src>.<model>`** — exact, auto-fetched, gated by the source-eligibility guard
+3. **`overrides."*".<model>`** — exact, provider-neutral manual override
+4. **`_DEFAULT_PRICING[<model>]`** — exact, built-in
+5. **`:free` suffix rule** — any id ending in `:free` → explicit `$0`, before the prefix scan
+6. **Prefix fallback** — scans the same candidate chain plus `_PREFIX_PRICING`, longest prefix wins
+7. **Google symmetric form** — if the above misses, tries `gemini-X` ↔ `google/gemini-X`
+8. **Unknown** → returns `$0.00`, logs a one-time WARNING per `(model, provider)` pair
 
 **`:free` suffix rule (issue #32):** OpenRouter advertises free-tier variants with
 a `:free` suffix (e.g. `nvidia/nemotron-3-ultra-550b-a55b:free`). These are `$0` by
@@ -467,20 +488,42 @@ with no seeded paid base.)
 
 ### Pricing metadata tags (`_`-prefixed)
 
-Three `_`-prefixed keys live on pricing entries and are **stripped from the
-price dict** by `_load_custom_pricing` (captured into parallel structures
-`model_sources` / `subscription_models` so the price math never sees them):
+Two `_`-prefixed keys live on pricing entries in v0.6+ (the third, `_source`,
+became redundant: source is now the YAML namespace itself in
+`pricing.auto.yaml`, and manual entries no longer need an explicit source tag
+because they live in `pricing.yaml`):
 
-| Tag | Meaning | Effect |
-|-----|---------|--------|
-| `_source` | Which source wrote the entry (`openrouter`, `google-ai`, ...) | Drives the provider-aware guard |
-| `_estimated_price` | OpenRouter model with no fixed price (negative→$0) | Counted by `estimated_price_share`; degrades hard budget verdicts to soft under `warn_only` |
-| `_subscription` | A **declared** $0 (flat-sub / free-tier) rate, hand-added | Distinguishes a genuine $0 from a lookup miss; tracked in `_meta.subscription_models`; **excluded** from `estimated_price_models` |
+| Tag | Lives in | Effect |
+|-----|----------|--------|
+| `_estimated_price` | `pricing.auto.yaml` under `sources.<src>.<m>` (auto-tagged by the source when no fixed price is available) | Counted by `estimated_price_share`; degrades hard budget verdicts to soft under `warn_only`. **Excluded** from `get_known_free_models()` so a placeholder $0 never falsely seeds the free→paid alert. |
+| `_subscription` | `pricing.yaml` under `overrides.<provider>.<m>` (hand-added) | Distinguishes a genuine $0 (flat-sub / free-tier) from a lookup miss. Tracked in the loader's `subscription_models` set. |
 
-**Adding a subscription/flat-rate model:** enter it under the provider's
-**native (bare) id** with `input: 0.0`, `output: 0.0`, `_subscription: true`.
-The bare id is never returned by OpenRouter, so it never collides with an
-auto-fetched entry and survives every refresh untouched.
+**Adding a subscription/flat-rate model:** put it under
+`overrides.<provider>.<bare-id>` (or `overrides."*".<bare-id>` if the rate
+applies regardless of provider) with `input: 0.0`, `output: 0.0`,
+`_subscription: true`. It lives in the manual file, so refresh runs never
+touch it.
+
+### Migration from legacy pricing.yaml
+
+`pricing.migrate_legacy_pricing()` runs once on plugin load (guarded by
+`~/.hermes/telemetry/.migrated_v0.6`). When it sees a pre-v0.6 file, it:
+
+1. Detects duplicate `models:` keys via `yaml.compose` (the silent PyYAML
+   "last value wins" — the original collision bug) and logs a WARNING per
+   collision with the kept value.
+2. Copies the original to `pricing.yaml.bak`.
+3. Routes `_source`-tagged entries into `pricing.auto.yaml` under
+   `sources.<source>` and untagged entries into `pricing.yaml` under
+   `overrides."*"`. `_subscription` / `_estimated_price` flags are preserved
+   on the destination entries.
+4. Moves `_meta.estimated_price_models` to top-level
+   `estimated_price_models` of the auto file.
+5. Touches the sentinel.
+
+Failure at any step leaves the original file untouched and the sentinel
+absent, so the legacy read shim keeps serving and the next plugin load
+retries.
 
 ### Google-symmetric normalization (added v0.4.0)
 

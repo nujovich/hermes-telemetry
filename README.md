@@ -522,73 +522,95 @@ Configuration lives in `~/.hermes/telemetry/`:
 
 ```
 ~/.hermes/telemetry/
-├── telemetry.db      ← SQLite database (WAL mode)
-├── telemetry.log     ← plugin log (errors / debug)
-├── pricing.yaml      ← optional pricing overrides
-└── budget.yaml       ← optional spend budgets
+├── telemetry.db        ← SQLite database (WAL mode)
+├── telemetry.log       ← plugin log (errors / debug)
+├── pricing.yaml        ← manual pricing overrides (hand-edit)
+├── pricing.auto.yaml   ← auto-fetched pricing (machine-managed)
+└── budget.yaml         ← optional spend budgets
 ```
 
 If these files don’t exist, the plugin still works — it just uses defaults (all models at $0.00, budgets disabled).
 
-### `pricing.yaml`
+### `pricing.yaml` (manual overrides)
 
-Override model prices in USD per 1 million tokens. Without overrides, unknown models log a one-time warning and record cost as `$0.00`.
+Hand-edit this file to override model prices in USD per 1 million tokens.
+The plugin **never writes to this file** — it's safe to edit. Auto-fetched
+prices live in the sibling `pricing.auto.yaml` (see below).
 
-**Full format:**
+**Format (v0.6+):**
 
 ```yaml
-models:
-  # Free model
-  "openrouter/owl-alpha":
-    input: 0.00
-    output: 0.00
+overrides:
+  nous:                                  # provider name — exact match against
+                                         # the gateway's `provider` field
+    "deepseek/deepseek-v4-pro":
+      input: 1.60
+      output: 3.20
+      cache_read: 0.14
 
-  # Paid model with full cache/reasoning split
-  "openrouter/anthropic/claude-sonnet-4-6":
-    input: 3.00
-    output: 15.00
-    cache_read: 0.30
-    cache_write: 3.75
-    reasoning: 15.00
+  openrouter:
+    "anthropic/claude-sonnet-4-6":
+      input: 3.00
+      output: 15.00
+      cache_read: 0.30
+      cache_write: 3.75
 
-  # Minimal override (cache prices derived from multipliers)
-  "openrouter/anthropic/claude-opus-4-7":
-    input: 5.00
-    output: 25.00
+  "*":                                   # provider-neutral fallback — used when
+                                         # no provider-specific entry matches
+    qwen3.7-plus:
+      input: 0.0
+      output: 0.0
+      _subscription: true                # declares a flat-sub $0 (vs unknown)
 
 defaults:
-  cache_read_multiplier: 0.10   # cache_read = input * 0.10 if not specified
-  cache_write_multiplier: 1.25  # cache_write = input * 1.25 if not specified
+  cache_read_multiplier: 0.10            # cache_read = input * 0.10 if absent
+  cache_write_multiplier: 1.25           # cache_write = input * 1.25 if absent
 ```
 
-**Matching rules (in order):**
+**Lookup precedence** (most specific first):
 
-1. Exact match (case-insensitive) against `models:` keys in your YAML
-1. Exact match against the built-in pricing table (~35 models)
-1. Longest-prefix match (e.g. `claude-sonnet` matches `claude-sonnet-4-6-future`)
-1. Unknown → `$0.00` with a one-time warning in `telemetry.log`
+1. `overrides.<provider>.<model>` — exact, manual provider-specific
+2. `sources.<src>.<model>` (from `pricing.auto.yaml`) — gated by the
+   source-eligibility guard so OpenRouter-sourced rates never cost a
+   Nous/NIM call
+3. `overrides."*".<model>` — exact, provider-neutral
+4. Built-in pricing table (~35 models)
+5. `:free` suffix → `$0` (before any prefix scan)
+6. Longest-prefix match across the same chain
+7. Unknown → `$0.00` + one-time WARNING per `(model, provider)`
 
-Prices are auto-fetched from the OpenRouter API and cached locally.
+Same model id under two providers is fully supported: e.g. Nous serves
+`deepseek/deepseek-v4-pro` on a subscription while OpenRouter charges
+per-token at a different rate. Put the Nous version under
+`overrides.nous` and let the refresher manage the OpenRouter side.
 
-**Provider-aware lookup.** Each candidate is filtered by the call's provider so
-an OpenRouter-sourced price is never applied to a call another provider served
-(e.g. the OpenRouter Qwen rate must not cost a Nous Portal call, and a NIM call
-of `nvidia/...` must not borrow OpenRouter's rate for the same id). Entries
-auto-fetched from OpenRouter carry `_source: openrouter` and are skipped for
-non-OpenRouter calls; built-in and hand-added entries (no `_source`) are
-provider-neutral.
+**Subscription / flat-rate models.** Place them under the provider's native
+id (or under `"*"` for a provider-neutral rate) with `input: 0.0`,
+`output: 0.0`, `_subscription: true`. The manual file is never overwritten,
+so the entry survives every refresh.
 
-**Subscription / flat-rate models.** If a provider serves a model on a flat
-subscription or free tier (incremental per-token cost = $0), declare it under
-the provider's **native model id** so it stays distinct from a lookup miss:
+### `pricing.auto.yaml` (machine-managed)
+
+Auto-fetched from OpenRouter (and Google AI's pricing table) by the
+in-process refresher (24h cadence) or via
+`python -m hermes_telemetry.pricing_refresh`. Each run **fully replaces**
+the file — anything you put here by hand is lost on the next refresh.
+Use `pricing.yaml` for overrides instead.
 
 ```yaml
-models:
-  qwen3.7-plus:          # Nous Portal's native id (not the OpenRouter qwen/ form)
-    input: 0.0
-    output: 0.0
-    _subscription: true  # declared $0 — survives every OpenRouter refresh
+sources:
+  openrouter:
+    "deepseek/deepseek-v4-pro": {input: 0.435, output: 0.87}
+  google-ai:
+    "gemini-2.5-pro": {input: 1.25, output: 10.0, cache_read: 0.125}
+estimated_price_models: [openrouter/auto, ...]   # _estimated_price flagged
+last_refresh: "2026-06-16T10:00:00Z"
 ```
+
+**Upgrading from a pre-v0.6 install:** the plugin migrates your existing
+`pricing.yaml` automatically on the next load. A `.bak` is kept, and any
+silent duplicate-key collisions are logged as WARNINGs (the bug this
+schema split fixed).
 
 ### `budget.yaml`
 

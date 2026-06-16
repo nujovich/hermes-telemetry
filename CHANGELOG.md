@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-16
+
+### Changed
+- **Pricing schema split into two files.** `pricing.yaml` is now manual
+  overrides only (machine never writes to it), namespaced by provider under
+  `overrides:` with `"*"` as the neutral bucket. `pricing.auto.yaml` is the
+  machine-managed file written by `pricing_refresh`, namespaced by source
+  under `sources:`. The same model id can carry different prices under
+  different providers without colliding (e.g. `deepseek/deepseek-v4-pro`
+  at Nous-Portal rates and OpenRouter rates simultaneously).
+- **Lookup precedence is now provider-aware end-to-end**:
+  `overrides.<provider>` → `sources.<src>` (with the source-eligibility
+  guard from issue #24) → `overrides."*"` → `_DEFAULT_PRICING` → `:free`
+  suffix → prefix scan. Models that previously had a colliding manual
+  override and auto entry under the same key may see their price change at
+  the upgrade — the manual side wins now (which is what was intended; the
+  silent PyYAML "last-key-wins" was the bug, not the intent).
+- `pricing_refresh` rewrites `pricing.auto.yaml` in full on each run instead
+  of merging into `pricing.yaml`. The auto file no longer carries
+  `_meta.auto_models` (collisions are structurally impossible).
+- `budget.py`, `db.py`, and `stats.py` now read estimated-price metadata
+  through `pricing.get_estimated_price_models()` instead of opening the
+  YAML directly. `stats.py` also stops escaping the HERMES_HOME isolation
+  via `Path.home()`.
+
+### Added
+- **Automatic, idempotent migration on plugin load**: an existing legacy
+  `pricing.yaml` (flat `models:` map) is split into the two new files; a
+  `.bak` is written and a `.migrated_v0.6` sentinel prevents re-migration.
+  Duplicate model-ids in the legacy file (the silent PyYAML collision that
+  motivated the split) are logged as WARNINGs listing which value was
+  kept — so the bug is visible from now on rather than invisible.
+- `pricing.get_estimated_price_models()` public API — single source of
+  truth replacing three direct `yaml.safe_load` callsites.
+- Legacy-format read shim in `pricing.py`: an unmigrated `pricing.yaml`
+  still resolves identically to before, including `_source`-tagged entries
+  routing through the provider-aware guard.
+
+### Fixed
+- Estimated-price entries (`_estimated_price: true`, input/output forced
+  to 0 as placeholders) no longer leak into `get_known_free_models()` and
+  no longer falsely seed the free→paid transition alert (issue #16
+  latent path).
+
 ## [0.5.1] - 2026-06-16
 
 ### Added
