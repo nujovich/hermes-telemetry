@@ -968,3 +968,143 @@ def test_get_known_free_models_includes_subscription_models(tmp_path, monkeypatc
     assert "hermes-4-qwen-72b" in models
     assert "paid-model" not in models
     pricing.reload_custom_pricing()
+
+
+# ---------------------------------------------------------------------------
+# v0.6 schema — overrides.<provider> vs sources.<src> + estimated_price
+# ---------------------------------------------------------------------------
+
+
+def _write_v06_pricing(tmp_path, monkeypatch, manual: str, auto: str | None = None) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    tele = tmp_path / "telemetry"
+    tele.mkdir(exist_ok=True)
+    (tele / "pricing.yaml").write_text(manual)
+    if auto is not None:
+        (tele / "pricing.auto.yaml").write_text(auto)
+    pricing.reload_custom_pricing()
+
+
+def test_overrides_vs_auto_same_model_id(tmp_path, monkeypatch):
+    """Nous override and OpenRouter auto entry coexist for the same model id;
+    each provider sees its own price (issue #X: provider-x-model collision)."""
+    _write_v06_pricing(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        overrides:
+          nous:
+            "deepseek/deepseek-v4-pro":
+              input: 1.60
+              output: 3.20
+        """),
+        textwrap.dedent("""
+        sources:
+          openrouter:
+            "deepseek/deepseek-v4-pro":
+              input: 0.435
+              output: 0.87
+        """),
+    )
+    nous_cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "deepseek/deepseek-v4-pro",
+        provider="nous",
+    )
+    or_cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "deepseek/deepseek-v4-pro",
+        provider="openrouter",
+    )
+    assert abs(nous_cost - (1.60 + 3.20)) < 1e-9
+    assert abs(or_cost - (0.435 + 0.87)) < 1e-9
+    pricing.reload_custom_pricing()
+
+
+def test_estimated_price_excluded_from_known_free(tmp_path, monkeypatch):
+    """`_estimated_price: true` entries have input/output=0 by convention but
+    must NOT leak into known-free (issue #16 latent bug, fixed in v0.6)."""
+    _write_v06_pricing(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        overrides:
+          "*":
+            "sub-model":
+              input: 0.0
+              output: 0.0
+              _subscription: true
+        """),
+        textwrap.dedent("""
+        sources:
+          openrouter:
+            "estimated-x":
+              input: 0.0
+              output: 0.0
+              _estimated_price: true
+            "legit-free":
+              input: 0.0
+              output: 0.0
+        estimated_price_models:
+          - estimated-x
+        """),
+    )
+    free = pricing.get_known_free_models()
+    estimated = pricing.get_estimated_price_models()
+    assert "sub-model" in free
+    assert "legit-free" in free
+    assert "estimated-x" not in free
+    assert "estimated-x" in estimated
+    assert pricing.is_explicitly_priced("sub-model") is True
+    assert pricing.is_explicitly_priced("estimated-x") is True
+    pricing.reload_custom_pricing()
+
+
+def test_legacy_migration_with_collision(tmp_path, monkeypatch, caplog):
+    """Migration of a legacy pricing.yaml with a duplicate-key collision logs a
+    WARNING, writes the .bak, splits into pricing.yaml + pricing.auto.yaml, and
+    is idempotent on the second invocation."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    tele = tmp_path / "telemetry"
+    tele.mkdir()
+    legacy = tele / "pricing.yaml"
+    # Two entries with the same key — manual one (no _source) first, then the
+    # auto-fetched one (PyYAML "last value wins" silently drops the manual).
+    legacy.write_text(
+        textwrap.dedent("""
+        models:
+          "deepseek/deepseek-v4-pro":
+            input: 1.60
+            output: 3.20
+          "deepseek/deepseek-v4-pro":
+            input: 0.435
+            output: 0.87
+            _auto: true
+            _source: openrouter
+          "nvidia/nemotron-3-super-120b-a12b":
+            input: 0.10
+            output: 0.50
+        _meta:
+          auto_models:
+            - deepseek/deepseek-v4-pro
+          estimated_price_models: []
+        """)
+    )
+    pricing.reload_custom_pricing()
+    with caplog.at_level("WARNING", logger="hermes_telemetry.pricing"):
+        migrated = pricing.migrate_legacy_pricing()
+    assert migrated is True
+    assert (tele / "pricing.yaml.bak").exists()
+    assert (tele / ".migrated_v0.6").exists()
+    assert (tele / "pricing.auto.yaml").exists()
+    # The duplicate key was flagged
+    assert any("duplicate key" in r.message for r in caplog.records)
+    # The auto file carries the openrouter side
+    pricing.reload_custom_pricing()
+    cache = pricing._load_custom_pricing()
+    assert "deepseek/deepseek-v4-pro" in cache["sources"]["openrouter"]
+    # The neutral overrides bucket keeps the untagged manual entry
+    assert "nvidia/nemotron-3-super-120b-a12b" in cache["overrides"]["*"]
+    # Second invocation is a no-op (sentinel present)
+    assert pricing.migrate_legacy_pricing() is False
+    pricing.reload_custom_pricing()

@@ -624,3 +624,160 @@ def reload_custom_pricing() -> None:
     """Force-reload pricing on next lookup (useful in tests and after writes)."""
     global _custom_pricing
     _custom_pricing = None
+
+
+# ---------------------------------------------------------------------------
+# Legacy → v0.6 migration
+# ---------------------------------------------------------------------------
+
+_MIGRATION_SENTINEL = ".migrated_v0.6"
+
+
+def _detect_duplicate_keys(path: Path) -> list[str]:
+    """Return model-ids that appear more than once in `models:` of a legacy file.
+
+    PyYAML silently keeps "last value wins" for duplicate keys; this scans the
+    parse tree with yaml.compose so duplicates are preserved and we can flag
+    the silent collisions that caused issue #X (Nous/OpenRouter same-id case).
+    """
+    try:
+        import yaml
+
+        with open(path) as f:
+            root = yaml.compose(f)
+    except Exception:
+        return []
+    if root is None or not hasattr(root, "value"):
+        return []
+    for k_node, v_node in getattr(root, "value", []):
+        if getattr(k_node, "value", None) == "models" and hasattr(v_node, "value"):
+            keys = [getattr(kn, "value", None) for kn, _vn in v_node.value]
+            seen: set[str] = set()
+            dups: list[str] = []
+            for k in keys:
+                if k is None:
+                    continue
+                if k in seen and k not in dups:
+                    dups.append(k)
+                seen.add(k)
+            return dups
+    return []
+
+
+def migrate_legacy_pricing() -> bool:
+    """Split a legacy ``pricing.yaml`` into ``pricing.yaml`` + ``pricing.auto.yaml``.
+
+    Idempotent: guarded by a sentinel file (``.migrated_v0.6``) so it runs at
+    most once per HERMES_HOME. Returns True if a migration ran, False otherwise.
+
+    Steps when invoked on a legacy file:
+      1. Detect duplicate ``models:`` keys (silent PyYAML "last wins" — the
+         original bug) and log a WARNING per collision listing which value PyYAML
+         kept. Migration proceeds with that same kept value, so behaviour
+         doesn't shift unexpectedly.
+      2. Copy the file to ``pricing.yaml.bak``.
+      3. Split entries: ``_source``-tagged go to ``pricing.auto.yaml`` under
+         ``sources.<source>``; untagged entries go to ``pricing.yaml`` under
+         ``overrides."*"``. Subscription / estimated_price flags are preserved.
+      4. ``_meta.estimated_price_models`` moves to top-level
+         ``estimated_price_models`` of the auto file.
+      5. Touch the sentinel.
+
+    Failure at any step logs ERROR and leaves the original file untouched so the
+    legacy shim keeps serving reads — the sentinel is NOT created, so the next
+    plugin load retries.
+    """
+    manual_path, auto_path = _pricing_paths()
+    sentinel = manual_path.parent / _MIGRATION_SENTINEL
+    if sentinel.exists():
+        return False
+    if not manual_path.exists():
+        return False
+
+    try:
+        data = _load_yaml(manual_path)
+    except Exception:
+        return False
+    if not data or not _is_legacy_shape(data):
+        return False
+
+    try:
+        import shutil
+
+        import yaml
+
+        duplicates = _detect_duplicate_keys(manual_path)
+        for dup in duplicates:
+            kept = data.get("models", {}).get(dup)
+            logger.warning(
+                "hermes-telemetry: pricing.yaml duplicate key %r during v0.6 "
+                "migration — PyYAML kept %r (last value wins). Verify this is "
+                "the price you want and re-edit pricing.yaml if not.",
+                dup,
+                kept,
+            )
+
+        # Partition entries.
+        overrides_neutral: dict[str, dict] = {}
+        sources: dict[str, dict[str, dict]] = {}
+        raw_models = data.get("models") or {}
+        for model, entry in raw_models.items():
+            if not isinstance(entry, dict):
+                continue
+            clean = {
+                k: v
+                for k, v in entry.items()
+                if not k.startswith("_") and v is not None and not isinstance(v, bool)
+            }
+            # Preserve subscription / estimated_price flags on the destination entry
+            if entry.get("_subscription"):
+                clean["_subscription"] = True
+            if entry.get("_estimated_price"):
+                clean["_estimated_price"] = True
+            src = entry.get("_source")
+            if src:
+                sources.setdefault(str(src).lower(), {})[str(model)] = clean
+            else:
+                overrides_neutral[str(model)] = clean
+
+        defaults = data.get("defaults") or {}
+        meta = data.get("_meta") or {}
+        estimated_price_models = list(meta.get("estimated_price_models") or [])
+
+        new_manual: dict = {}
+        if overrides_neutral:
+            new_manual["overrides"] = {"*": overrides_neutral}
+        else:
+            new_manual["overrides"] = {}
+        if defaults:
+            new_manual["defaults"] = dict(defaults)
+
+        new_auto: dict = {"sources": sources}
+        if estimated_price_models:
+            new_auto["estimated_price_models"] = sorted(estimated_price_models)
+        if meta.get("last_refresh"):
+            new_auto["last_refresh"] = meta["last_refresh"]
+        if meta.get("sources"):
+            new_auto["sources_list"] = list(meta["sources"])
+
+        backup = manual_path.with_suffix(manual_path.suffix + ".bak")
+        shutil.copy2(manual_path, backup)
+
+        manual_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(manual_path, "w") as f:
+            yaml.dump(new_manual, f, default_flow_style=False, sort_keys=False)
+        with open(auto_path, "w") as f:
+            yaml.dump(new_auto, f, default_flow_style=False, sort_keys=False)
+
+        sentinel.touch()
+        reload_custom_pricing()
+        logger.info(
+            "hermes-telemetry: migrated pricing.yaml to v0.6 schema "
+            "(backup at %s, auto entries in %s)",
+            backup,
+            auto_path,
+        )
+        return True
+    except Exception as exc:
+        logger.error("hermes-telemetry: pricing.yaml v0.6 migration failed: %s", exc)
+        return False

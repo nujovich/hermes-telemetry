@@ -85,11 +85,18 @@ def _try_pricing_refresh(log: logging.Logger) -> None:
     )
     ttl = 86400  # 24h
     try:
+        from . import pricing, pricing_refresh
+
+        # v0.6 schema migration runs before any refresh decision: a legacy
+        # pricing.yaml has to be split into manual + auto files BEFORE the
+        # refresher tries to write to the auto file. Idempotent via its own
+        # sentinel — no-ops once migrated.
+        pricing.migrate_legacy_pricing()
+
         if sentinel.exists():
             elapsed = _time.time() - sentinel.stat().st_mtime
             if elapsed < ttl:
                 return
-        from . import pricing, pricing_refresh
 
         # refresh_pricing returns (changes, manual_overrides).
         changes, _overrides = pricing_refresh.refresh_pricing()
