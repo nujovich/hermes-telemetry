@@ -228,7 +228,31 @@ hermes gateway restart
 
 ### Screenshots
 
-**Dedicated Telemetry tab — Cron view**
+**Dedicated Telemetry tab — Summary**
+
+[![Summary](docs/plugin/01-summary.png)](docs/plugin/01-summary.png)
+
+*The default sub-tab. Six stat cards summarise the last 24h: cost, total runs (with failed split), API calls, tokens in / out, and average latency. All values come from `/api/plugins/hermes-telemetry/summary`.*
+
+**Runs**
+
+[![Runs](docs/plugin/02-runs.png)](docs/plugin/02-runs.png)
+
+*One row per session in the last 7 days: started_at, session id, platform (cli / cron / telegram), model, provider, status, cost and token counts. Cron sessions surface as `cron_<job>_…` and any `error` status row appears with its status column.*
+
+**Requests**
+
+[![Requests](docs/plugin/03-requests.png)](docs/plugin/03-requests.png)
+
+*Per-API-call detail (`/api/plugins/hermes-telemetry/requests`): timestamp, model, provider, tokens, cost, latency, and an `Est?` column that flags rows recorded with `estimated=1` (provider returned no usage info — counts came from the fallback estimator).*
+
+**Providers**
+
+[![Providers](docs/plugin/04-providers.png)](docs/plugin/04-providers.png)
+
+*Aggregated by provider: total calls, how many of those were estimated, total cost, and tokens in / out. Useful for spotting a provider whose share of the bill is disproportionate to its share of traffic.*
+
+**Cron**
 
 [![Cron tab](docs/plugin/05-cron-tab.png)](docs/plugin/05-cron-tab.png)
 
