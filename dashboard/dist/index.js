@@ -20,10 +20,10 @@
 
   const { React } = SDK;
   const h = React.createElement;
-  const {
-    Card, CardHeader, CardTitle, CardContent, Badge,
-    Tabs, TabsList, TabsTrigger,
-  } = SDK.components;
+  // Defensive destructure: older Hermes SDKs may not expose Tabs* — the
+  // tab page renders its own button-based switcher so it never depends
+  // on shadcn Tabs being present in the host shell.
+  const { Card, CardHeader, CardTitle, CardContent, Badge } = SDK.components;
   const { useState, useEffect, useRef } = SDK.hooks;
 
   const PLUGIN = "hermes-telemetry";
@@ -206,6 +206,23 @@
     { id: "budgets",   label: "Budgets",   render: BudgetsPanel },
   ];
 
+  function TabBar({ tabs, active, onChange }) {
+    return h("div", { className: "flex items-center gap-1 border-b border-border" },
+      tabs.map((t) => {
+        const isActive = t.id === active;
+        const cls = isActive
+          ? "px-3 py-1 text-sm font-medium border-b-2 border-foreground cursor-pointer"
+          : "px-3 py-1 text-sm text-muted-foreground hover:text-foreground cursor-pointer";
+        return h("button", {
+          key: t.id,
+          type: "button",
+          onClick: () => onChange(t.id),
+          className: cls,
+        }, t.label);
+      }),
+    );
+  }
+
   function TelemetryPage() {
     const [active, setActive] = useState("summary");
     const Panel = (TABS.find((t) => t.id === active) || TABS[0]).render;
@@ -218,10 +235,7 @@
           ),
         ),
         h(CardContent, { className: "flex flex-col gap-4" },
-          h(Tabs, { value: active, onValueChange: setActive },
-            h(TabsList, null, TABS.map((t) =>
-              h(TabsTrigger, { key: t.id, value: t.id }, t.label))),
-          ),
+          h(TabBar, { tabs: TABS, active, onChange: setActive }),
           h(Panel, null),
         ),
       ),
