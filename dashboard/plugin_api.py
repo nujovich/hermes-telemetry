@@ -350,3 +350,32 @@ def budget() -> dict:
         "scopes": scopes,
         "on_estimated": (cfg.get("on_estimated", {}) or {}).get("mode", "warn_only"),
     }
+
+
+@router.get("/tier-transitions")
+def tier_transitions(window_hours: int = 72) -> dict:
+    """Recent free→paid model transitions, newest first.
+
+    Powers the dashboard ``alerts:top`` slot. ``window_hours <= 0`` returns
+    the full history. The table is created by the runtime (db.py schema v6);
+    missing-table is treated as "nothing flipped yet" so the dashboard stays
+    functional on pre-v6 installs.
+    """
+    wh = _coerce_window_hours(window_hours)
+    sql_base = (
+        "SELECT model, provider, detected_at, session_id,"
+        " first_paid_cost_usd, first_free_seen_at"
+        " FROM free_paid_transitions"
+    )
+    if wh > 0:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=wh)).isoformat()
+        sql = sql_base + " WHERE detected_at >= ? ORDER BY detected_at DESC"
+        params: tuple = (cutoff,)
+    else:
+        sql = sql_base + " ORDER BY detected_at DESC"
+        params = ()
+    try:
+        rows = _rows(sql, params)
+    except sqlite3.OperationalError:
+        rows = []
+    return {"window_hours": wh, "rows": rows}

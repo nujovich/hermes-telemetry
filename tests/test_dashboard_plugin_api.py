@@ -167,6 +167,40 @@ def test_budget_with_yaml(plugin_api, tmp_path, monkeypatch):
     assert scopes["global/daily"]["level"] == "ok"  # no spend
 
 
+def test_tier_transitions_empty(plugin_api):
+    out = plugin_api.tier_transitions(window_hours=72)
+    assert out == {"window_hours": 72, "rows": []}
+
+
+def test_tier_transitions_returns_recorded_flip(plugin_api):
+    import db as runtime_db
+
+    runtime_db.record_free_model("owl-alpha", "nous")
+    runtime_db.record_free_paid_transition("owl-alpha", "nous", "sess-x", 0.5)
+    out = plugin_api.tier_transitions(window_hours=72)
+    assert out["window_hours"] == 72
+    assert len(out["rows"]) == 1
+    row = out["rows"][0]
+    assert row["model"] == "owl-alpha"
+    assert row["provider"] == "nous"
+    assert row["session_id"] == "sess-x"
+    assert abs(row["first_paid_cost_usd"] - 0.5) < 1e-9
+
+
+def test_tier_transitions_window_filters_old_rows(plugin_api):
+    import db as runtime_db
+
+    runtime_db.record_free_paid_transition("recent", "p", "s", 0.1)
+    runtime_db._get_conn().execute(
+        "INSERT INTO free_paid_transitions"
+        "(model, provider, detected_at, session_id, first_paid_cost_usd, first_free_seen_at)"
+        " VALUES (?, ?, datetime('now', '-100 hours'), ?, ?, NULL)",
+        ("old", "p", "s", 0.1),
+    )
+    out = plugin_api.tier_transitions(window_hours=72)
+    assert [r["model"] for r in out["rows"]] == ["recent"]
+
+
 def test_db_connection_is_read_only(plugin_api):
     """plugin_api opens the DB with PRAGMA query_only — writes must fail."""
     import sqlite3

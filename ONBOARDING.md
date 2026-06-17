@@ -362,6 +362,7 @@ table before applying.
 | v3 | `runs.sender_id`. New table: `budget_alerts` (anti-spam ledger) |
 | v4 | `runs`: `cache_read_tokens`, `cache_write_tokens` (per-session/cron cache breakdown) |
 | v5 | New table: `known_free_models` (free→paid transition tracking) |
+| v6 | New table: `free_paid_transitions` (historical free→paid flips for the dashboard `alerts:top` slot) |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -620,6 +621,19 @@ the operator is aware of the change.
 `pre_llm_call` now handles two independent injection paths: budget alerts (one per
 window per scope, anti-spam via `budget_alerts` table) and free→paid alerts (one
 per detection event, state held in `_pending_free_paid_alerts`).
+
+### Dashboard persistence (`free_paid_transitions`, schema v6)
+
+The in-memory `_pending_free_paid_alerts` dict is ephemeral — consumed by
+`pre_llm_call` and lost on plugin reload. To power the dashboard `alerts:top`
+slot (historical view of "which models flipped"), every detection in
+`post_api_request` also calls `db.record_free_paid_transition(model, provider,
+session_id, cost)` which `INSERT OR IGNORE`s into the v6 `free_paid_transitions`
+table. PRIMARY KEY `(model, provider)` — only the FIRST flip is recorded; later
+paid calls on the same pair are no-ops. The dashboard endpoint
+`GET /tier-transitions?window_hours=72` reads from this table (read-only,
+`PRAGMA query_only=ON`). The widget hides itself when no transitions fall in
+the window, so the slot is invisible during the happy path.
 
 ### `known_free_models` table schema
 

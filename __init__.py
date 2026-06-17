@@ -9,7 +9,7 @@ Errors are caught silently — telemetry never takes down a session.
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 import json
 import logging
@@ -302,6 +302,10 @@ def register(ctx) -> None:  # noqa: ANN001
                 with _pending_free_paid_lock:
                     if session_id not in _pending_free_paid_alerts:
                         _pending_free_paid_alerts[session_id] = (effective_model, cost)
+                # Persist for the dashboard `alerts:top` slot. INSERT OR IGNORE
+                # keeps only the first flip per (model, provider) — re-runs of
+                # the same paid model do not overwrite the detection point.
+                db.record_free_paid_transition(effective_model, provider, session_id, cost)
                 tele_log.info(
                     "free→paid transition detected: model=%r provider=%r cost=%.6f session=%s",
                     effective_model,
