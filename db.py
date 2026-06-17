@@ -1225,6 +1225,91 @@ def stats_by_model(
     return result
 
 
+def efficiency_runs(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    """Return per-session efficiency scores (0-100) based on token productivity.
+
+    Efficiency Score formula:
+        base = 40
+        output_contribution = MIN(60, (tokens_out / MAX(tokens_in, 1)) * 40)
+        error_penalty = CASE status:
+            'error' → 30, 'interrupted' → 10, else 0
+        turn_penalty = MIN(30, api_calls * 1.5)
+        score = MAX(0, MIN(100, base + output_contribution - error_penalty - turn_penalty))
+
+    Returns sessions ordered by score (highest efficiency first).
+    Scores are computed in Python after the SQL query.
+    """
+    conn = _get_conn()
+    where_sql, params = _build_where_clause(window_hours, date_from, date_to)
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            session_id,
+            COALESCE(cron_job_id, '')         AS cron_job_id,
+            COALESCE(status, 'running')        AS status,
+            COALESCE(tokens_in, 0)             AS tokens_in,
+            COALESCE(tokens_out, 0)            AS tokens_out,
+            COALESCE(api_calls, 0)             AS api_calls,
+            ROUND(COALESCE(cost_usd, 0.0), 6)  AS cost_usd,
+            started_at
+        FROM runs
+        WHERE {where_sql}
+          AND status != 'running'
+        ORDER BY started_at DESC
+        LIMIT 100
+        """,
+        params,
+    ).fetchall()
+
+    result = []
+    for r in rows:
+        tokens_in = r["tokens_in"]
+        tokens_out = r["tokens_out"]
+        api_calls = r["api_calls"]
+        status = r["status"]
+
+        # Output contribution: up to 60 points from token productivity
+        output_ratio = tokens_out / tokens_in if tokens_in > 0 else 0.0
+        output_contribution = min(60.0, output_ratio * 40.0)
+
+        # Error penalty. The only non-"running" run statuses the plugin ever
+        # writes are 'ok', 'error', and 'interrupted' (see __init__.py session
+        # end); 'error' is the real failure status, so it carries the heavy
+        # penalty. ('failed'/'cancelled' are subagent child_status values, not
+        # run statuses, and never reach this query.)
+        error_penalty = {
+            "error": 30,
+            "interrupted": 10,
+        }.get(status, 0)
+
+        # Turn penalty: each API call costs 1.5 points, max 30
+        turn_penalty = min(30.0, api_calls * 1.5)
+
+        score = 40.0 + output_contribution - error_penalty - turn_penalty
+        score = max(0.0, min(100.0, score))
+
+        result.append(
+            {
+                "session_id": r["session_id"],
+                "cron_job_id": r["cron_job_id"],
+                "status": status,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "api_calls": api_calls,
+                "cost_usd": r["cost_usd"],
+                "efficiency_score": round(score, 1),
+                "started_at": r["started_at"],
+            }
+        )
+
+    # Sort by efficiency score descending
+    result.sort(key=lambda x: x["efficiency_score"], reverse=True)
+    return result
+
+
 def close_thread_conn() -> None:
     """Close this thread's connection — call on clean thread exit if needed."""
     conn = getattr(_local, "conn", None)

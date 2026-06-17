@@ -478,3 +478,72 @@ def model_unavailable(window_hours: int = 72) -> dict:
     except sqlite3.OperationalError:
         rows = []
     return {"window_hours": wh, "rows": rows}
+
+
+# ---------------------------------------------------------------------------
+# Efficiency score
+# ---------------------------------------------------------------------------
+def _compute_efficiency(tokens_in: int, tokens_out: int, api_calls: int, status: str) -> float:
+    """Compute an efficiency score (0-100) for a single session.
+
+    Kept in sync with ``db.efficiency_runs``. Only 'ok', 'error', and
+    'interrupted' are ever stored as run statuses; 'error' is the real
+    failure status and carries the heavy penalty.
+    """
+    output_ratio = tokens_out / tokens_in if tokens_in > 0 else 0.0
+    output_contribution = min(60.0, output_ratio * 40.0)
+    error_penalty = {"error": 30, "interrupted": 10}.get(status, 0)
+    turn_penalty = min(30.0, api_calls * 1.5)
+    score = 40.0 + output_contribution - error_penalty - turn_penalty
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+@router.get("/efficiency")
+def efficiency(window_hours: int = 24) -> dict:
+    """Return per-session efficiency scores and aggregate stats."""
+    sc = _since_clause(window_hours, "started_at")
+    rows = _rows(
+        f"""
+        SELECT session_id,
+               COALESCE(cron_job_id, '')         AS cron_job_id,
+               COALESCE(status, 'running')        AS status,
+               COALESCE(tokens_in, 0)             AS tokens_in,
+               COALESCE(tokens_out, 0)            AS tokens_out,
+               COALESCE(api_calls, 0)             AS api_calls,
+               ROUND(COALESCE(cost_usd, 0.0), 6)  AS cost_usd,
+               started_at
+        FROM runs
+        WHERE {sc}
+          AND status != 'running'
+        ORDER BY started_at DESC
+        LIMIT 100
+    """
+    )
+    scored = []
+    for r in rows:
+        scored.append(
+            {
+                "session_id": r["session_id"],
+                "cron_job_id": r["cron_job_id"],
+                "status": r["status"],
+                "tokens_in": r["tokens_in"],
+                "tokens_out": r["tokens_out"],
+                "api_calls": r["api_calls"],
+                "cost_usd": r["cost_usd"],
+                "efficiency_score": _compute_efficiency(
+                    r["tokens_in"], r["tokens_out"], r["api_calls"], r["status"]
+                ),
+                "started_at": r["started_at"],
+            }
+        )
+
+    scored.sort(key=lambda x: x["efficiency_score"], reverse=True)
+
+    avg = sum(s["efficiency_score"] for s in scored) / len(scored) if scored else 0.0
+
+    return {
+        "window_hours": _coerce_window_hours(window_hours),
+        "sessions_scored": len(scored),
+        "average_score": round(avg, 1),
+        "sessions": scored,
+    }
