@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Free→paid model transition widget in `/telemetry`
+
+A new `TierTransitionsWidget` rendered at the top of `TelemetryPage`
+surfaces models that flipped from $0 to a paid charge within the last
+72h. Builds on the existing detection in `post_api_request` (issues
+#16/#32) by persisting every flip to a new `free_paid_transitions`
+table, so the dashboard has a historical record beyond the one-shot
+in-memory alert. Verified end-to-end against a live Hermes install.
+
+- **Schema v6**: new `free_paid_transitions(model, provider,
+  detected_at, session_id, first_paid_cost_usd, first_free_seen_at)`
+  table. PRIMARY KEY `(model, provider)` — first flip per pair wins;
+  later paid calls are no-ops via `INSERT OR IGNORE`.
+- **`post_api_request` persistence**: in addition to queueing the
+  one-shot in-context alert, every detected flip now calls
+  `db.record_free_paid_transition(...)` so the dashboard sees it on
+  reload.
+- **Read-only endpoint** `GET /api/plugins/hermes-telemetry/tier-transitions?window_hours=72`
+  returns `{ window_hours, rows: [...] }`. Missing-table is treated
+  as "nothing flipped yet" so pre-v6 installs keep working.
+- **Widget**: badge turns `destructive` if any flip is within 24h;
+  shows up to 5 rows (`model · provider · was free for Nd · first
+  charge $X`). Hides itself when no flips fall in the window — the
+  page is unchanged on the happy path.
+- **No new shell slot**: rendered inside `TelemetryPage`, not via
+  `registerSlot()`. The Hermes shell only mounts slots from its
+  catalogue (`sessions:top`, `cron:top`, `header-right`,
+  `analytics:bottom`); registering an unknown slot name is a silent
+  no-op. CLAUDE.md and ONBOARDING.md now record this rule so it isn't
+  re-learned the hard way.
+
 ## [0.6.0] - 2026-06-16
 
 ### Added — Hermes dashboard plugin surface

@@ -167,6 +167,26 @@ def test_unknown_model_does_not_queue_free_to_paid_alert(tmp_path, monkeypatch):
     assert not db.is_known_free_model(model, provider)
 
 
+def test_free_to_paid_transition_is_persisted_for_dashboard(tmp_path, monkeypatch):
+    """Detecting a free→paid flip also writes to free_paid_transitions."""
+    import db
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    db.close_thread_conn()
+
+    db.record_free_model("owl-alpha", "nous")
+    # Mirror the post_api_request branch: known-free + cost>0 → record transition.
+    model, provider, cost = "owl-alpha", "nous", 1.5
+    if cost > 0.0 and db.is_known_free_model(model, provider):
+        db.record_free_paid_transition(model, provider, "sess-dash", cost)
+
+    rows = db.recent_free_paid_transitions(window_hours=0)
+    assert len(rows) == 1
+    assert rows[0]["model"] == "owl-alpha"
+    assert rows[0]["session_id"] == "sess-dash"
+
+
 def test_free_to_paid_alert_fires_only_once_per_session():
     """Alert is cleared from _pending after first pre_llm_call injection."""
     _init_mod._pending_free_paid_alerts["sess-once"] = ("some-model", 0.99)

@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -142,6 +142,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v3(conn)
     _migrate_v4(conn)
     _migrate_v5(conn)
+    _migrate_v6(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -250,6 +251,36 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (5, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v6(conn: sqlite3.Connection) -> None:
+    """Add v6 schema: free_paid_transitions table — historical record of
+    every model that flipped from $0 to a paid charge. Powers the free→paid
+    widget rendered inside TelemetryPage. One row per (model, provider) —
+    first flip wins."""
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 6")
+    if cur.fetchone() is not None:
+        return
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS free_paid_transitions (
+            model                TEXT NOT NULL,
+            provider             TEXT NOT NULL DEFAULT '',
+            detected_at          TEXT NOT NULL,
+            session_id           TEXT,
+            first_paid_cost_usd  REAL NOT NULL DEFAULT 0.0,
+            first_free_seen_at   TEXT,
+            PRIMARY KEY (model, provider)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_free_paid_detected ON free_paid_transitions(detected_at)"
+    )
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (6, ?)",
         (_utcnow(),),
     )
 
@@ -927,6 +958,58 @@ def is_free_tier_transition(model: str, provider: str = "") -> bool:
         if base and model.startswith(base) and model[len(base) : len(base) + 1] in "-:/_":
             return True
     return False
+
+
+def record_free_paid_transition(
+    model: str,
+    provider: str,
+    session_id: str | None,
+    first_paid_cost_usd: float,
+) -> None:
+    """Persist the first time *model* (previously seen at $0) was charged.
+
+    INSERT OR IGNORE — one row per (model, provider). ``first_free_seen_at`` is
+    looked up from ``known_free_models`` so the dashboard can show how long
+    the model was free before flipping.
+    """
+    conn = _get_conn()
+    seen = conn.execute(
+        "SELECT first_seen_at FROM known_free_models"
+        " WHERE model = ? AND (provider = ? OR provider = '')"
+        " ORDER BY provider DESC LIMIT 1",
+        (model, provider),
+    ).fetchone()
+    first_free_seen_at = seen[0] if seen else None
+    conn.execute(
+        "INSERT OR IGNORE INTO free_paid_transitions"
+        "(model, provider, detected_at, session_id, first_paid_cost_usd, first_free_seen_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (model, provider, _utcnow(), session_id, first_paid_cost_usd, first_free_seen_at),
+    )
+
+
+def recent_free_paid_transitions(window_hours: int = 72) -> list[dict]:
+    """Return free→paid transitions detected within the last *window_hours*.
+
+    ``window_hours <= 0`` returns the full history. Newest first.
+    """
+    conn = _get_conn()
+    if window_hours and window_hours > 0:
+        rows = conn.execute(
+            "SELECT model, provider, detected_at, session_id,"
+            " first_paid_cost_usd, first_free_seen_at"
+            " FROM free_paid_transitions"
+            f" WHERE detected_at >= {_run_hours_ago_expr(window_hours)}"
+            " ORDER BY detected_at DESC"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT model, provider, detected_at, session_id,"
+            " first_paid_cost_usd, first_free_seen_at"
+            " FROM free_paid_transitions"
+            " ORDER BY detected_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def backfill_known_free_models(models: list) -> int:
