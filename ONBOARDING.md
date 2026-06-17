@@ -362,7 +362,7 @@ table before applying.
 | v3 | `runs.sender_id`. New table: `budget_alerts` (anti-spam ledger) |
 | v4 | `runs`: `cache_read_tokens`, `cache_write_tokens` (per-session/cron cache breakdown) |
 | v5 | New table: `known_free_models` (free→paid transition tracking) |
-| v6 | New table: `free_paid_transitions` (historical free→paid flips for the dashboard `alerts:top` slot) |
+| v6 | New table: `free_paid_transitions` (historical free→paid flips for the widget rendered inside `TelemetryPage`) |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -625,15 +625,20 @@ per detection event, state held in `_pending_free_paid_alerts`).
 ### Dashboard persistence (`free_paid_transitions`, schema v6)
 
 The in-memory `_pending_free_paid_alerts` dict is ephemeral — consumed by
-`pre_llm_call` and lost on plugin reload. To power the dashboard `alerts:top`
-slot (historical view of "which models flipped"), every detection in
-`post_api_request` also calls `db.record_free_paid_transition(model, provider,
-session_id, cost)` which `INSERT OR IGNORE`s into the v6 `free_paid_transitions`
-table. PRIMARY KEY `(model, provider)` — only the FIRST flip is recorded; later
+`pre_llm_call` and lost on plugin reload. To give the dashboard a historical
+view of "which models flipped", every detection in `post_api_request` also
+calls `db.record_free_paid_transition(model, provider, session_id, cost)`
+which `INSERT OR IGNORE`s into the v6 `free_paid_transitions` table.
+PRIMARY KEY `(model, provider)` — only the FIRST flip is recorded; later
 paid calls on the same pair are no-ops. The dashboard endpoint
 `GET /tier-transitions?window_hours=72` reads from this table (read-only,
-`PRAGMA query_only=ON`). The widget hides itself when no transitions fall in
-the window, so the slot is invisible during the happy path.
+`PRAGMA query_only=ON`). The widget (`TierTransitionsWidget`) is rendered
+**inside `TelemetryPage`**, NOT via `registerSlot`: no shell slot in the
+verified catalogue (`sessions:top`, `cron:top`, `header-right`,
+`analytics:bottom`) fits a "tier change" surface, and registering an
+unknown slot name is a silent no-op. The widget hides itself when no
+transitions fall in the window, so the page is unchanged during the happy
+path.
 
 ### `known_free_models` table schema
 
@@ -1237,6 +1242,25 @@ source; the four slots we register are:
 | `cron:top` | 7-day cron cost + failure badge. |
 | `header-right` | 24h spend + budget level (variant=destructive on hard breach). |
 | `analytics:bottom` | Daily cost line chart (Chart.js via CDN, graceful degradation). |
+
+### Slot names are NOT free-form — verify before adding new ones
+
+The shell only renders slots whose names appear in its catalogue
+(`extending-the-dashboard.md:590-600`). Registering an unknown slot via
+`registerSlot()` is a silent no-op: the widget loads but nothing on the
+page ever mounts it. **Do not invent slot names** — `alerts:top`,
+`warnings:top`, etc. do not exist. The four above are the entire
+verified catalogue as of this writing.
+
+If you need a new visible surface and none of the four fit, render the
+widget **inside `TelemetryPage`** (the plugin's own tab) instead — that
+page is fully under our control. The free→paid transitions widget is
+rendered this way (see `dist/index.js`, `TelemetryPage`), not via
+`registerSlot`, precisely because no shell slot fit.
+
+When new slots are added upstream, re-verify the catalogue at
+`https://raw.githubusercontent.com/NousResearch/hermes-agent/main/docs/extending-the-dashboard.md`
+and update this table.
 
 The SDK does not currently expose an `useActiveSession` hook, so
 `sessions:top` shows the most recent run instead of the per-row session.

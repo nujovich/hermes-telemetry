@@ -356,10 +356,10 @@ def budget() -> dict:
 def tier_transitions(window_hours: int = 72) -> dict:
     """Recent free→paid model transitions, newest first.
 
-    Powers the dashboard ``alerts:top`` slot. ``window_hours <= 0`` returns
-    the full history. The table is created by the runtime (db.py schema v6);
-    missing-table is treated as "nothing flipped yet" so the dashboard stays
-    functional on pre-v6 installs.
+    Powers the free→paid widget rendered inside ``TelemetryPage``.
+    ``window_hours <= 0`` returns the full history. The table is created by
+    the runtime (db.py schema v6); missing-table is treated as "nothing
+    flipped yet" so the dashboard stays functional on pre-v6 installs.
     """
     wh = _coerce_window_hours(window_hours)
     sql_base = (

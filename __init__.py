@@ -302,7 +302,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 with _pending_free_paid_lock:
                     if session_id not in _pending_free_paid_alerts:
                         _pending_free_paid_alerts[session_id] = (effective_model, cost)
-                # Persist for the dashboard `alerts:top` slot. INSERT OR IGNORE
+                # Persist for the dashboard free→paid widget. INSERT OR IGNORE
                 # keeps only the first flip per (model, provider) — re-runs of
                 # the same paid model do not overwrite the detection point.
                 db.record_free_paid_transition(effective_model, provider, session_id, cost)

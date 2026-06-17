@@ -227,6 +227,7 @@
     const [active, setActive] = useState("summary");
     const Panel = (TABS.find((t) => t.id === active) || TABS[0]).render;
     return h("div", { className: "flex flex-col gap-4" },
+      h(TierTransitionsWidget, null),
       h(Card, null,
         h(CardHeader, null,
           h("div", { className: "flex items-center gap-3" },
@@ -401,5 +402,8 @@
   P.registerSlot(PLUGIN, "cron:top", CronTopWidget);
   P.registerSlot(PLUGIN, "header-right", HeaderRightWidget);
   P.registerSlot(PLUGIN, "analytics:bottom", AnalyticsBottomChart);
-  P.registerSlot(PLUGIN, "alerts:top", TierTransitionsWidget);
+  // TierTransitionsWidget is rendered inside TelemetryPage, NOT via
+  // registerSlot — the Hermes shell only renders slots from its catalogue
+  // (sessions:top, cron:top, header-right, analytics:bottom) and silently
+  // drops anything else. See ONBOARDING.md § Slot widgets.
 })();

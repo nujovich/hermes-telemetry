@@ -257,8 +257,9 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
 
 def _migrate_v6(conn: sqlite3.Connection) -> None:
     """Add v6 schema: free_paid_transitions table — historical record of
-    every model that flipped from $0 to a paid charge. Powers the dashboard
-    ``alerts:top`` slot. One row per (model, provider) — first flip wins."""
+    every model that flipped from $0 to a paid charge. Powers the free→paid
+    widget rendered inside TelemetryPage. One row per (model, provider) —
+    first flip wins."""
     cur = conn.execute("SELECT version FROM schema_version WHERE version = 6")
     if cur.fetchone() is not None:
         return
