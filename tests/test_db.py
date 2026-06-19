@@ -804,3 +804,93 @@ def test_free_tier_transition_provider_scoped():
     """A specific-provider `:free` row does not match a different provider."""
     db.record_free_model("nvidia/nemotron-3-ultra:free", "nvidia")
     assert not db.is_free_tier_transition("nvidia/nemotron-3-ultra", "openrouter")
+
+
+# ---------------------------------------------------------------------------
+# model_unavailable_alerts — issue #43
+# ---------------------------------------------------------------------------
+
+
+def test_model_unavailable_insert_first_occurrence():
+    """First 404 for a (model, provider) inserts a row with occurrences=1."""
+    db.record_model_unavailable("nvidia/foo:free", "nous", 404, "Model not found")
+    row = db.get_model_unavailable("nvidia/foo:free", "nous")
+    assert row is not None
+    assert row["model"] == "nvidia/foo:free"
+    assert row["provider"] == "nous"
+    assert row["error_code"] == 404
+    assert row["error_message"] == "Model not found"
+    assert row["occurrences"] == 1
+    assert row["first_seen_at"] == row["last_seen_at"]
+
+
+def test_model_unavailable_increments_on_repeat():
+    """Repeated 404s for the same (model, provider) bump occurrences without
+    duplicating rows; first_seen_at is preserved, last_seen_at advances."""
+    db.record_model_unavailable("nvidia/foo:free", "nous", 404, "first")
+    first_row = db.get_model_unavailable("nvidia/foo:free", "nous")
+    first_seen = first_row["first_seen_at"]
+
+    db.record_model_unavailable("nvidia/foo:free", "nous", 404, "second")
+    db.record_model_unavailable("nvidia/foo:free", "nous", 404, "third")
+
+    row = db.get_model_unavailable("nvidia/foo:free", "nous")
+    assert row["occurrences"] == 3
+    assert row["first_seen_at"] == first_seen  # never overwritten
+    assert row["last_seen_at"] >= first_seen
+    # Latest message wins so the user sees the most recent diagnostic
+    assert row["error_message"] == "third"
+
+    # And there's still exactly one row for this pair
+    only = db.recent_model_unavailable(window_hours=0)
+    assert len([r for r in only if r["model"] == "nvidia/foo:free"]) == 1
+
+
+def test_model_unavailable_provider_scoped():
+    """Same model on different providers are independent rows."""
+    db.record_model_unavailable("foo:free", "nous", 404, "a")
+    db.record_model_unavailable("foo:free", "openrouter", 404, "b")
+    nous_row = db.get_model_unavailable("foo:free", "nous")
+    or_row = db.get_model_unavailable("foo:free", "openrouter")
+    assert nous_row is not None and or_row is not None
+    assert nous_row["error_message"] == "a"
+    assert or_row["error_message"] == "b"
+    assert nous_row["occurrences"] == 1
+    assert or_row["occurrences"] == 1
+
+
+def test_model_unavailable_get_missing_returns_none():
+    """Lookup for a (model, provider) that never 404'd returns None."""
+    assert db.get_model_unavailable("never-seen", "nous") is None
+
+
+def test_model_unavailable_recent_orders_by_last_seen_desc():
+    """recent_model_unavailable returns newest last_seen_at first."""
+    # Older row, hand-crafted timestamps to avoid relying on time.sleep
+    conn = db._get_conn()
+    conn.execute(
+        "INSERT INTO model_unavailable_alerts"
+        "(model, provider, error_code, error_message,"
+        " first_seen_at, last_seen_at, occurrences)"
+        " VALUES (?, ?, 404, 'old', datetime('now', '-100 hours'),"
+        "         datetime('now', '-100 hours'), 1)",
+        ("old-model", "nous"),
+    )
+    db.record_model_unavailable("new-model", "nous", 404, "new")
+
+    full = db.recent_model_unavailable(window_hours=0)
+    assert [r["model"] for r in full[:2]] == ["new-model", "old-model"]
+
+    # window_hours filter excludes the 100h-old row
+    recent = db.recent_model_unavailable(window_hours=72)
+    assert [r["model"] for r in recent] == ["new-model"]
+
+
+def test_model_unavailable_truncated_message_roundtrip():
+    """A long error_message is stored and retrieved verbatim (truncation is the
+    caller's responsibility — the column has no length limit, but the plugin
+    side caps at 500 chars to keep the table tidy)."""
+    long_msg = "x" * 500
+    db.record_model_unavailable("m", "p", 404, long_msg)
+    row = db.get_model_unavailable("m", "p")
+    assert row["error_message"] == long_msg

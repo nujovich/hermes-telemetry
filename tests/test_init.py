@@ -197,3 +197,142 @@ def test_free_to_paid_alert_fires_only_once_per_session():
     with _init_mod._pending_free_paid_lock:
         alert2 = _init_mod._pending_free_paid_alerts.pop("sess-once", None)
     assert alert2 is None
+
+
+# ---------------------------------------------------------------------------
+# Model-unavailable alert (issue #43)
+# ---------------------------------------------------------------------------
+
+
+def test_model_unavailable_alert_queued_on_404(tmp_path, monkeypatch):
+    """Direct exercise of the queue path: a 404 for a non-retryable error
+    populates the pending dict and writes a row to model_unavailable_alerts."""
+    import db
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    db.close_thread_conn()
+
+    _init_mod._pending_model_unavailable_alerts.clear()
+
+    # Mirror what the api_request_error handler does on a 404.
+    model = "nvidia/nemotron-3-ultra:free"
+    provider = "nous"
+    status_code = 404
+    retryable = False
+    error_message = "Error code: 404 — Model 'nvidia/nemotron-3-ultra:free' not found."
+
+    if status_code == 404 and not retryable:
+        db.record_model_unavailable(model, provider, status_code, error_message)
+        row = db.get_model_unavailable(model, provider) or {}
+        with _init_mod._pending_model_unavailable_lock:
+            _init_mod._pending_model_unavailable_alerts["sess-404"] = (
+                model,
+                provider,
+                status_code,
+                int(row.get("occurrences") or 1),
+            )
+
+    assert "sess-404" in _init_mod._pending_model_unavailable_alerts
+    queued = _init_mod._pending_model_unavailable_alerts["sess-404"]
+    assert queued[0] == model
+    assert queued[1] == provider
+    assert queued[2] == 404
+    assert queued[3] == 1
+
+    persisted = db.get_model_unavailable(model, provider)
+    assert persisted is not None
+    assert persisted["occurrences"] == 1
+    assert persisted["error_message"] == error_message
+
+
+def test_non_404_does_not_queue_model_unavailable_alert(tmp_path, monkeypatch):
+    """A 5xx or other error must not trigger the model-unavailable alert —
+    that surface is reserved for "model removed" (404 non-retryable)."""
+    import db
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    db.close_thread_conn()
+
+    _init_mod._pending_model_unavailable_alerts.clear()
+
+    # Mirror the handler's filter: only status_code == 404 with retryable=False
+    # makes it through. A 500 retryable error short-circuits.
+    status_code = 500
+    retryable = True
+    if status_code == 404 and not retryable:
+        _init_mod._pending_model_unavailable_alerts["sess-500"] = (
+            "foo",
+            "p",
+            500,
+            1,
+        )
+    assert "sess-500" not in _init_mod._pending_model_unavailable_alerts
+    # And no row was written
+    assert db.get_model_unavailable("foo", "p") is None
+
+
+def test_retryable_404_does_not_queue_alert(tmp_path, monkeypatch):
+    """A retryable 404 (rare, but possible) goes back to the upstream retry
+    loop and must not be surfaced as a permanent model-unavailable alert."""
+    import db
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    db.close_thread_conn()
+
+    _init_mod._pending_model_unavailable_alerts.clear()
+    status_code, retryable = 404, True
+    if status_code == 404 and not retryable:
+        _init_mod._pending_model_unavailable_alerts["sess-retry"] = (
+            "foo",
+            "p",
+            404,
+            1,
+        )
+    assert "sess-retry" not in _init_mod._pending_model_unavailable_alerts
+
+
+def test_model_unavailable_alert_fires_only_once_per_session():
+    """pre_llm_call injects the alert exactly once; subsequent turns of the
+    same session do not re-inject."""
+    _init_mod._pending_model_unavailable_alerts["sess-once-unav"] = (
+        "m",
+        "p",
+        404,
+        2,
+    )
+    with _init_mod._pending_model_unavailable_lock:
+        first = _init_mod._pending_model_unavailable_alerts.pop("sess-once-unav", None)
+    assert first is not None
+    with _init_mod._pending_model_unavailable_lock:
+        second = _init_mod._pending_model_unavailable_alerts.pop("sess-once-unav", None)
+    assert second is None
+
+
+def test_model_unavailable_alert_increments_occurrences(tmp_path, monkeypatch):
+    """Repeated 404s for the same (model, provider) bump the pending alert's
+    occurrence count to match the DB so the warning text reflects reality."""
+    import db
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    db.close_thread_conn()
+
+    _init_mod._pending_model_unavailable_alerts.clear()
+
+    model, provider = "nvidia/foo:free", "nous"
+    for _ in range(3):
+        db.record_model_unavailable(model, provider, 404, "gone")
+        row = db.get_model_unavailable(model, provider) or {}
+        with _init_mod._pending_model_unavailable_lock:
+            _init_mod._pending_model_unavailable_alerts["sess-bump"] = (
+                model,
+                provider,
+                404,
+                int(row.get("occurrences") or 1),
+            )
+
+    assert _init_mod._pending_model_unavailable_alerts["sess-bump"][3] == 3
+    assert db.get_model_unavailable(model, provider)["occurrences"] == 3

@@ -41,6 +41,13 @@ _nous_estimated_warned: set = set()
 _pending_free_paid_alerts: dict[str, tuple[str, float]] = {}
 _pending_free_paid_lock = threading.Lock()
 
+# Model-unavailable alerts (issue #43).
+# Maps session_id → (model, provider, error_code, occurrences) for the latest
+# 404 (or other "model removed") error captured by the api_request_error hook.
+# Injected into context by pre_llm_call exactly once per session, then cleared.
+_pending_model_unavailable_alerts: dict[str, tuple[str, str, int, int]] = {}
+_pending_model_unavailable_lock = threading.Lock()
+
 # Characters per token estimate (used when usage=None)
 _CHARS_PER_TOKEN = 4
 
@@ -334,6 +341,99 @@ def register(ctx) -> None:  # noqa: ANN001
     ctx.register_hook("post_api_request", post_api_request)
 
     # ------------------------------------------------------------------
+    # api_request_error  — model-unavailable detection (issue #43)
+    # Fired by agent/conversation_loop.py at the moment of a non-retryable
+    # client error. We act ONLY on 404 (model removed/deprecated) so the user
+    # finds out when e.g. a `:free` promo ends and hermes-agent does not
+    # silently re-route. Higher status codes are observed but not surfaced
+    # here — they belong to other features.
+    # kwargs (verified against hermes_cli/plugins.py VALID_HOOKS and
+    # agent/conversation_loop.py at the _invoke_api_request_error_hook call
+    # site): session_id, task_id, turn_id, api_request_id, api_call_count,
+    # api_start_time, api_kwargs (dict, includes "model" the request asked for),
+    # error_type, error_message, status_code, retry_count, max_retries,
+    # retryable, reason
+    # ------------------------------------------------------------------
+    def api_request_error(
+        session_id: str = "",
+        api_kwargs: dict | None = None,
+        error_type: str = "",
+        error_message: str = "",
+        status_code: int | None = None,
+        retryable: bool = True,
+        reason: str = "",
+        model: str = "",
+        provider: str = "",
+        **_kw,
+    ) -> None:
+        try:
+            if status_code != 404:
+                return
+            # Conservative filter: 404 must be non-retryable to count as a true
+            # "model gone" signal. A retryable 404 (rare, but possible from a
+            # routing proxy) gets surfaced in the upstream retry loop instead.
+            if retryable:
+                return
+
+            # Resolve the model id from api_kwargs (what the agent actually
+            # sent on the wire) first, falling back to the top-level kwarg.
+            req_model = ""
+            if isinstance(api_kwargs, dict):
+                req_model = str(api_kwargs.get("model") or "")
+            if not req_model:
+                req_model = str(model or "")
+            if not req_model:
+                tele_log.debug("api_request_error: status_code=404 with no model id — ignored")
+                return
+
+            # Resolve the provider: prefer the hook kwarg, else look up the
+            # session's recorded provider (set by record_llm_call earlier in
+            # the session). Empty string is acceptable — get_run may be None
+            # for sessions that 404 on their very first API call.
+            req_provider = str(provider or "")
+            if not req_provider and session_id:
+                try:
+                    run = db.get_run(session_id)
+                    if run:
+                        req_provider = run.get("provider") or ""
+                except Exception:
+                    req_provider = ""
+
+            # Truncate error_message to a sane bound so a verbose upstream
+            # message doesn't bloat the row or the injected context.
+            msg = (error_message or "")[:500]
+
+            db.record_model_unavailable(req_model, req_provider, 404, msg)
+
+            if session_id:
+                with _pending_model_unavailable_lock:
+                    # Upsert the in-memory pending entry: latest 404 wins for
+                    # this session, occurrences mirrors the DB count after the
+                    # record_model_unavailable upsert above.
+                    row = db.get_model_unavailable(req_model, req_provider) or {}
+                    occ = int(row.get("occurrences") or 1)
+                    _pending_model_unavailable_alerts[session_id] = (
+                        req_model,
+                        req_provider,
+                        404,
+                        occ,
+                    )
+
+            tele_log.info(
+                "model-unavailable 404 captured: model=%r provider=%r "
+                "reason=%r retry_count=%s session=%s",
+                req_model,
+                req_provider,
+                reason,
+                _kw.get("retry_count"),
+                session_id,
+            )
+        except Exception as exc:
+            tele_log.error("api_request_error hook failed: %s", exc)
+
+    ctx.register_hook("api_request_error", api_request_error)
+
+    # ------------------------------------------------------------------
     # post_tool_call
     # Fired after each tool execution.
     # kwargs: tool_name, result, duration_ms, session_id, task_id, args
@@ -479,6 +579,26 @@ def register(ctx) -> None:  # noqa: ANN001
                     session_id,
                     alert_model,
                     alert_cost,
+                )
+            with _pending_model_unavailable_lock:
+                unav = _pending_model_unavailable_alerts.pop(session_id, None)
+            if unav:
+                u_model, u_provider, u_code, u_occ = unav
+                provider_label = f" on `{u_provider}`" if u_provider else ""
+                ctx_parts.append(
+                    f"⚠️ [hermes-telemetry] Model `{u_model}` is no longer available"
+                    f"{provider_label} (HTTP {u_code}). Seen {u_occ} time(s). "
+                    f"If the model was renamed or deprecated (e.g. a `:free` promo "
+                    f"ending), update your config/cron to use the new id."
+                )
+                tele_log.info(
+                    "model-unavailable alert injected for session=%s model=%r "
+                    "provider=%r code=%s occurrences=%s",
+                    session_id,
+                    u_model,
+                    u_provider,
+                    u_code,
+                    u_occ,
                 )
             if ctx_parts:
                 return {"context": "\n\n".join(ctx_parts)}
