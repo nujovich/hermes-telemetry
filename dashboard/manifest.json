@@ -3,7 +3,7 @@
   "label": "Telemetry",
   "description": "Tokens, cost, latency and budgets — hermes-telemetry plugin",
   "icon": "Activity",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "tab": { "path": "/telemetry", "position": "after:analytics" },
   "slots": ["sessions:top", "cron:top", "header-right", "analytics:bottom"],
   "entry": "dist/index.js",

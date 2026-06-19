@@ -261,8 +261,8 @@ def test_schema_v2_columns():
     assert "estimated_llm_calls" in runs_cols
 
 
-def test_schema_v6_provider_assumed_columns():
-    """v6 adds provider_assumed on llm_calls and provider_assumed_calls on runs."""
+def test_schema_v7_provider_assumed_columns():
+    """v7 adds provider_assumed on llm_calls and provider_assumed_calls on runs."""
     conn = db._get_conn()
     llm_cols = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)").fetchall()}
     assert "provider_assumed" in llm_cols
@@ -823,6 +823,59 @@ def test_free_tier_transition_suffixed_paid_id():
     """Paid call under a `<base>-…` suffixed id matches the stored `<base>:free`."""
     db.record_free_model("nvidia/nemotron-3-ultra:free", "nvidia")
     assert db.is_free_tier_transition("nvidia/nemotron-3-ultra-550b-a55b", "nvidia")
+
+
+# ---------------------------------------------------------------------------
+# free_paid_transitions — historical record for the dashboard alerts slot
+# ---------------------------------------------------------------------------
+
+
+def test_schema_v6_recorded():
+    from db import _get_conn
+
+    versions = {row[0] for row in _get_conn().execute("SELECT version FROM schema_version")}
+    assert 6 in versions
+
+
+def test_record_free_paid_transition_persists_row():
+    db.record_free_model("owl-alpha", "nous")
+    db.record_free_paid_transition("owl-alpha", "nous", "sess-1", 0.25)
+    rows = db.recent_free_paid_transitions(window_hours=0)
+    assert len(rows) == 1
+    assert rows[0]["model"] == "owl-alpha"
+    assert rows[0]["provider"] == "nous"
+    assert rows[0]["session_id"] == "sess-1"
+    assert abs(rows[0]["first_paid_cost_usd"] - 0.25) < 1e-9
+    # first_free_seen_at copied from the known_free_models row
+    assert rows[0]["first_free_seen_at"] is not None
+
+
+def test_record_free_paid_transition_is_idempotent_per_model():
+    db.record_free_model("owl-alpha", "nous")
+    db.record_free_paid_transition("owl-alpha", "nous", "sess-1", 0.25)
+    db.record_free_paid_transition("owl-alpha", "nous", "sess-2", 9.99)
+    rows = db.recent_free_paid_transitions(window_hours=0)
+    assert len(rows) == 1
+    # First flip wins — second call is a no-op.
+    assert rows[0]["session_id"] == "sess-1"
+    assert abs(rows[0]["first_paid_cost_usd"] - 0.25) < 1e-9
+
+
+def test_recent_free_paid_transitions_window_filter():
+    """Rows older than the window are excluded; window<=0 returns everything."""
+    db.record_free_paid_transition("recent-model", "p", "s", 0.1)
+    # Backdate one row to 100h ago — outside a 72h window. Use the same module
+    # object the autouse fixture resets, not a standalone `from db import …`.
+    db._get_conn().execute(
+        "INSERT INTO free_paid_transitions"
+        "(model, provider, detected_at, session_id, first_paid_cost_usd, first_free_seen_at)"
+        " VALUES (?, ?, datetime('now', '-100 hours'), ?, ?, NULL)",
+        ("old-model", "p", "s", 0.1),
+    )
+    recent = db.recent_free_paid_transitions(window_hours=72)
+    assert [r["model"] for r in recent] == ["recent-model"]
+    full = db.recent_free_paid_transitions(window_hours=0)
+    assert {r["model"] for r in full} == {"recent-model", "old-model"}
 
 
 def test_free_tier_transition_matches_wildcard_provider():
