@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -144,6 +144,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v5(conn)
     _migrate_v6(conn)
     _migrate_v7(conn)
+    _migrate_v8(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -310,6 +311,43 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (7, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v8(conn: sqlite3.Connection) -> None:
+    """Add v8 schema: model_unavailable_alerts table — surfaces 404s from the
+    `api_request_error` hook so the user is notified when a model is removed
+    (e.g. a `:free` promo end where hermes-agent does NOT silently re-route).
+    Sibling to free_paid_transitions: same family of provider-side changes, but
+    the call fails entirely instead of just billing real money.
+
+    One row per (model, provider); repeated 404s bump ``occurrences`` and
+    ``last_seen_at`` rather than inserting duplicates.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 8")
+    if cur.fetchone() is not None:
+        return
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS model_unavailable_alerts (
+            model           TEXT NOT NULL,
+            provider        TEXT NOT NULL DEFAULT '',
+            error_code      INTEGER NOT NULL,
+            error_message   TEXT,
+            first_seen_at   TEXT NOT NULL,
+            last_seen_at    TEXT NOT NULL,
+            occurrences     INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (model, provider)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_model_unavailable_last_seen"
+        " ON model_unavailable_alerts(last_seen_at)"
+    )
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (8, ?)",
         (_utcnow(),),
     )
 
@@ -1032,6 +1070,80 @@ def record_free_paid_transition(
         " VALUES (?, ?, ?, ?, ?, ?)",
         (model, provider, _utcnow(), session_id, first_paid_cost_usd, first_free_seen_at),
     )
+
+
+# ---------------------------------------------------------------------------
+# Model-unavailable alerts (issue #43)
+# Sibling of free_paid_transitions: same family of provider-side changes
+# (deprecation / promo end) but the call fails with 404 instead of billing.
+# ---------------------------------------------------------------------------
+def record_model_unavailable(
+    model: str,
+    provider: str,
+    error_code: int,
+    error_message: str | None = None,
+) -> None:
+    """Upsert a model-unavailable alert row.
+
+    First time a (model, provider) returns 404: insert a new row with
+    ``occurrences=1`` and ``first_seen_at == last_seen_at``.
+    Subsequent 404s for the same pair: bump ``occurrences`` and refresh
+    ``last_seen_at`` / ``error_message`` (latest message wins) without
+    overwriting ``first_seen_at``.
+    """
+    now = _utcnow()
+    conn = _get_conn()
+    conn.execute(
+        """
+        INSERT INTO model_unavailable_alerts
+            (model, provider, error_code, error_message,
+             first_seen_at, last_seen_at, occurrences)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
+        ON CONFLICT(model, provider) DO UPDATE SET
+            last_seen_at  = excluded.last_seen_at,
+            error_code    = excluded.error_code,
+            error_message = excluded.error_message,
+            occurrences   = model_unavailable_alerts.occurrences + 1
+        """,
+        (model, provider, error_code, error_message, now, now),
+    )
+
+
+def get_model_unavailable(model: str, provider: str = "") -> dict | None:
+    """Return the current alert row for (model, provider), or None."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT model, provider, error_code, error_message,"
+        " first_seen_at, last_seen_at, occurrences"
+        " FROM model_unavailable_alerts"
+        " WHERE model = ? AND provider = ?",
+        (model, provider),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def recent_model_unavailable(window_hours: int = 72) -> list[dict]:
+    """Return model-unavailable alerts whose *last_seen_at* falls within the
+    last *window_hours*. ``window_hours <= 0`` returns the full history.
+    Newest (most-recently-seen) first.
+    """
+    conn = _get_conn()
+    if window_hours and window_hours > 0:
+        rows = conn.execute(
+            "SELECT model, provider, error_code, error_message,"
+            " first_seen_at, last_seen_at, occurrences"
+            " FROM model_unavailable_alerts"
+            f" WHERE last_seen_at >= {_run_hours_ago_expr(window_hours)}"
+            " ORDER BY last_seen_at DESC"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT model, provider, error_code, error_message,"
+            " first_seen_at, last_seen_at, occurrences"
+            " FROM model_unavailable_alerts"
+            " ORDER BY last_seen_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def recent_free_paid_transitions(window_hours: int = 72) -> list[dict]:

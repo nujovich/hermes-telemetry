@@ -363,6 +363,8 @@ table before applying.
 | v4 | `runs`: `cache_read_tokens`, `cache_write_tokens` (per-session/cron cache breakdown) |
 | v5 | New table: `known_free_models` (free→paid transition tracking) |
 | v6 | New table: `free_paid_transitions` (historical free→paid flips for the widget rendered inside `TelemetryPage`) |
+| v7 | `llm_calls.provider_assumed` flag + `runs.provider_assumed_calls` counter (provider-assumed pricing visibility, issue #42) |
+| v8 | New table: `model_unavailable_alerts` (404s captured via `api_request_error` — model removed/deprecated by provider) |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -1157,21 +1159,52 @@ commands, which use `register_command`).
 
 ## Valid Hooks Reference
 
-All 16 hooks available in `VALID_HOOKS` (`hermes_cli/plugins.py`):
+All hooks available in `VALID_HOOKS` (`hermes_cli/plugins.py`):
 
 ```
 pre_tool_call, post_tool_call, transform_terminal_output, transform_tool_result,
 transform_llm_output, pre_llm_call, post_llm_call, pre_api_request, post_api_request,
-on_session_start, on_session_end, on_session_finalize, on_session_reset,
-subagent_stop, pre_gateway_dispatch, pre_approval_request, post_approval_response
+api_request_error, on_session_start, on_session_end, on_session_finalize,
+on_session_reset, subagent_start, subagent_stop, pre_gateway_dispatch,
+pre_approval_request, post_approval_response
 ```
 
-This plugin uses 10 of these. Hooks not used (and why):
+Hooks not used (and why):
 - `transform_*` — output mutation, not needed for telemetry
 - `on_session_reset` — fired by `/reset`; would be useful for clearing session
   state without restart, but not yet wired
+- `subagent_start` — only `subagent_stop` is consumed (no token data on start)
 - `pre_gateway_dispatch` / `pre_approval_request` / `post_approval_response` —
   documented as "observers only"; cannot block or modify
+
+### `api_request_error` — model-unavailable detection (issue #43)
+
+Fires at the moment of a non-retryable client error from
+`agent/conversation_loop.py`, before the exception is diluted into the
+`RuntimeError` that surfaces in `cron.scheduler`. Verified kwargs:
+
+| kwarg            | Notes                                                                |
+|------------------|----------------------------------------------------------------------|
+| `session_id`     | The active session                                                   |
+| `api_kwargs`     | Dict; the requested model id lives in `api_kwargs["model"]`          |
+| `error_type`     | Exception class name, e.g. `"NotFoundError"` for a 404               |
+| `error_message`  | Full message including the status code and the model id              |
+| `status_code`    | HTTP status (404 for model-not-found)                                |
+| `retryable`      | False for 404s                                                       |
+| `reason`         | Classifier enum, e.g. `"model_not_found"`                            |
+| `retry_count`, `max_retries`, `task_id`, `turn_id`, `api_request_id`, `api_call_count`, `api_start_time` | Other context fields, kept via `**_kw` |
+
+The plugin filters to `status_code == 404 AND retryable is False` and:
+
+1. Upserts `model_unavailable_alerts` keyed on `(model, provider)`. Repeated
+   404s bump `occurrences` and refresh `last_seen_at`; `first_seen_at` is
+   preserved.
+2. Queues a pending entry in `_pending_model_unavailable_alerts[session_id]`
+   so the next `pre_llm_call` injects a one-shot warning that names the
+   model, provider, status, and occurrence count.
+
+Sibling to free→paid: same family of provider-side changes (deprecation,
+`:free` promo end) but the call fails entirely instead of just billing.
 
 ---
 

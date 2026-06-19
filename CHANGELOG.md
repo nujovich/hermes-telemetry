@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Model-unavailable alert via `api_request_error` (issue #43)
+
+Surfaces 404s (model removed/deprecated by the provider) the same way the
+free→paid alert surfaces price flips: a one-shot in-context warning on the
+next `pre_llm_call`, plus a persisted row for the dashboard.
+
+- New hook handler `api_request_error` (registered in `__init__.py`) filters
+  to `status_code == 404` AND `retryable is False`. The Explorer-style "model
+  not found" signal is captured at the source in
+  `agent/conversation_loop.py` — long before the error is diluted into the
+  `RuntimeError` that hits `cron.scheduler`.
+- Schema **v7** adds `model_unavailable_alerts (model, provider, error_code,
+  error_message, first_seen_at, last_seen_at, occurrences)` with PK
+  `(model, provider)`. Repeated 404s for the same pair bump `occurrences`
+  and refresh `last_seen_at` via `INSERT ... ON CONFLICT DO UPDATE`.
+- New DB helpers: `record_model_unavailable()`, `get_model_unavailable()`,
+  `recent_model_unavailable(window_hours)`.
+- New in-process queue `_pending_model_unavailable_alerts[session_id]`; the
+  next `pre_llm_call` injects a warning that names the model, provider,
+  status code, and occurrence count, then clears the entry (one-shot per
+  session, same pattern as the free→paid alert).
+- 11 new tests: `test_db.py` covers upsert + idempotency + provider
+  scoping + window filtering + long-message roundtrip; `test_init.py`
+  covers the filter (404 non-retryable only), the queue path, one-shot
+  injection, and occurrence counting against the DB.
+
+Concrete trigger: the `nvidia/nemotron-3-ultra:free` cutoff at 8 PM ET on
+2026-06-18. `hermes-agent` does NOT silently re-route a 404 — it raises
+`NotFoundError` and the cron job ends. Pre-#43, telemetry recorded nothing
+about the failure; the user found out only by greppping `agent.log`.
+
+> **Schema note:** rebased on top of #42 — this migration is now **v8** (the
+> v7 slot belongs to the `provider_assumed` columns added by #42).
+
 ### Fixed
 
 - **Provider-aware pricing guard no longer records `cost=0` on real paid calls**
