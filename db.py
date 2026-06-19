@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -143,6 +143,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v4(conn)
     _migrate_v5(conn)
     _migrate_v6(conn)
+    _migrate_v7(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -285,6 +286,34 @@ def _migrate_v6(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    """Add v7 schema: provider_assumed flag on llm_calls and a per-session
+    counter on runs (issue #42).
+
+    Marks calls whose cost used a provider-assumed rate — a source-ineligible
+    (OpenRouter) price applied to a call another provider served, because no
+    source-eligible price existed. The cost is real spend; the flag only lets
+    stats / dashboard surface it as 'assumed' so the user can pin the rate."""
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 7")
+    if cur.fetchone() is not None:
+        return
+
+    try:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN provider_assumed INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # already exists
+
+    try:
+        conn.execute("ALTER TABLE runs ADD COLUMN provider_assumed_calls INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # already exists
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (7, ?)",
+        (_utcnow(),),
+    )
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -367,14 +396,16 @@ def record_llm_call(
     cache_write_tokens: int = 0,
     reasoning_tokens: int = 0,
     estimated: bool = False,
+    provider_assumed: bool = False,
 ) -> None:
     conn = _get_conn()
     conn.execute(
         """
         INSERT INTO llm_calls
             (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms,
-             cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated,
+             provider_assumed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -389,6 +420,7 @@ def record_llm_call(
             cache_write_tokens,
             reasoning_tokens,
             1 if estimated else 0,
+            1 if provider_assumed else 0,
         ),
     )
     _ensure_run_row(session_id, ts)
@@ -419,6 +451,12 @@ def record_llm_call(
     if estimated:
         conn.execute(
             "UPDATE runs SET estimated_llm_calls = estimated_llm_calls + 1 WHERE session_id = ?",
+            (session_id,),
+        )
+    if provider_assumed:
+        conn.execute(
+            "UPDATE runs SET provider_assumed_calls = provider_assumed_calls + 1 "
+            "WHERE session_id = ?",
             (session_id,),
         )
 
@@ -755,7 +793,8 @@ def stats_by_provider(
     """Per-provider breakdown for /stats providers.
 
     Returns one row per provider seen in llm_calls within the window:
-      provider, total_calls, real_calls, estimated_calls, estimated_pct, cost_usd
+      provider, total_calls, real_calls, estimated_calls, estimated_pct,
+      provider_assumed_calls, provider_assumed_pct, cost_usd
     """
     conn = _get_conn()
     where_sql, params = _build_where_clause_ts(window_hours, date_from, date_to)
@@ -767,6 +806,7 @@ def stats_by_provider(
             COUNT(*)                                            AS total_calls,
             SUM(CASE WHEN estimated = 0 THEN 1 ELSE 0 END)    AS real_calls,
             SUM(CASE WHEN estimated = 1 THEN 1 ELSE 0 END)    AS estimated_calls,
+            SUM(CASE WHEN provider_assumed = 1 THEN 1 ELSE 0 END) AS provider_assumed_calls,
             ROUND(SUM(cost_usd), 6)                            AS cost_usd
         FROM llm_calls
         WHERE {where_sql}
@@ -780,7 +820,9 @@ def stats_by_provider(
         row = dict(r)
         total = row.get("total_calls") or 0
         est = row.get("estimated_calls") or 0
+        assumed = row.get("provider_assumed_calls") or 0
         row["estimated_pct"] = (est / total) if total else 0.0
+        row["provider_assumed_pct"] = (assumed / total) if total else 0.0
         result.append(row)
     return result
 
@@ -791,7 +833,8 @@ def stats_by_model(
     """Per-model breakdown within each provider, for /stats models.
 
     Returns one row per (provider, model) seen in llm_calls within the window:
-      provider, model, total_calls, real_calls, estimated_calls, estimated_pct, cost_usd
+      provider, model, total_calls, real_calls, estimated_calls, estimated_pct,
+      provider_assumed_calls, provider_assumed_pct, cost_usd
 
     Ordered by provider (asc) then call count (desc) so each provider's busiest
     models surface first — this is the view that exposes dated models costing
@@ -808,6 +851,7 @@ def stats_by_model(
             COUNT(*)                                          AS total_calls,
             SUM(CASE WHEN estimated = 0 THEN 1 ELSE 0 END)   AS real_calls,
             SUM(CASE WHEN estimated = 1 THEN 1 ELSE 0 END)   AS estimated_calls,
+            SUM(CASE WHEN provider_assumed = 1 THEN 1 ELSE 0 END) AS provider_assumed_calls,
             ROUND(SUM(cost_usd), 6)                           AS cost_usd
         FROM llm_calls
         WHERE {where_sql}
@@ -821,7 +865,9 @@ def stats_by_model(
         row = dict(r)
         total = row.get("total_calls") or 0
         est = row.get("estimated_calls") or 0
+        assumed = row.get("provider_assumed_calls") or 0
         row["estimated_pct"] = (est / total) if total else 0.0
+        row["provider_assumed_pct"] = (assumed / total) if total else 0.0
         result.append(row)
     return result
 

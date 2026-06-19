@@ -285,6 +285,14 @@ def register(ctx) -> None:  # noqa: ANN001
             cost = pricing.estimate_cost(full_usage, effective_model, provider)
             latency_ms = int(api_duration * 1000)
 
+            # Provider-assumed pricing (issue #42): the cost is real spend, but it
+            # used a source-ineligible (OpenRouter) rate because no source-eligible
+            # price existed for this provider. Flag the row so /stats and the
+            # dashboard can surface it; estimate_cost already warned once. Only a
+            # nonzero cost is meaningfully "assumed" — a $0 row (e.g. usage=None
+            # with an empty stash) is not a pricing question, so don't flag it.
+            provider_assumed = cost > 0.0 and pricing.is_provider_assumed(effective_model, provider)
+
             # Free→paid transition detection (issues #16/#32).
             # Only models with explicit pricing (not unknown-model fallback) are
             # tracked: an unknown model at $0 is not "free by design" and should
@@ -327,6 +335,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 cache_write_tokens=cache_write_tok,
                 reasoning_tokens=reasoning_tok,
                 estimated=estimated,
+                provider_assumed=provider_assumed,
             )
         except Exception as exc:
             tele_log.error("post_api_request hook failed: %s", exc)

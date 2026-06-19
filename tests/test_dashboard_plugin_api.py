@@ -64,6 +64,50 @@ def _seed(rows_runs=(), rows_llm=(), rows_tool=()):
         runtime_db.record_tool_call(**r)
 
 
+def test_requests_and_providers_expose_provider_assumed(plugin_api):
+    """The /requests and /providers endpoints surface the provider_assumed flag
+    and per-provider assumed count (issue #42)."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[{"session_id": "sa", "model": "moonshotai/kimi-k2.6", "platform": "cli"}],
+        rows_llm=[
+            {
+                "session_id": "sa",
+                "ts": now,
+                "model": "moonshotai/kimi-k2.6",
+                "provider": "nous",
+                "tokens_in": 100,
+                "tokens_out": 50,
+                "cost_usd": 0.0004,
+                "latency_ms": 100,
+                "provider_assumed": True,
+            },
+            {
+                "session_id": "sa",
+                "ts": now,
+                "model": "claude-sonnet-4-6",
+                "provider": "nous",
+                "tokens_in": 100,
+                "tokens_out": 50,
+                "cost_usd": 0.001,
+                "latency_ms": 100,
+                "provider_assumed": False,
+            },
+        ],
+    )
+
+    reqs = plugin_api.requests(limit=10, window_hours=24)
+    flags = {r["model"]: r["provider_assumed"] for r in reqs["rows"]}
+    assert flags["moonshotai/kimi-k2.6"] == 1
+    assert flags["claude-sonnet-4-6"] == 0
+
+    providers = plugin_api.providers(window_hours=24)
+    nous = next(r for r in providers["rows"] if r["provider"] == "nous")
+    assert nous["provider_assumed_calls"] == 1
+
+
 def test_health(plugin_api):
     out = plugin_api.health()
     assert out["ok"] is True

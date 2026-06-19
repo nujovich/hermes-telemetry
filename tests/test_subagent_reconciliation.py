@@ -489,3 +489,58 @@ def test_subagent_stop_failure_statuses(status):
     ).fetchone()
     assert row is not None, f"No tool_calls row recorded for child_status={status!r}"
     assert row[0] == 0, f"child_status={status!r} should record ok=False but got ok={row[0]}."
+
+
+# ---------------------------------------------------------------------------
+# Provider-assumed pricing end-to-end (issue #42): a paid call whose only price
+# is an OpenRouter-sourced entry under a different provider must record cost>0
+# AND flag the row provider_assumed=1 (not a silent $0).
+# ---------------------------------------------------------------------------
+
+
+def test_post_api_request_flags_provider_assumed(tmp_path):
+    import hermes_telemetry.db as db
+    import hermes_telemetry.pricing as pricing
+
+    # Seed an OpenRouter-sourced price into the isolated HERMES_HOME.
+    tele = tmp_path / "telemetry"
+    tele.mkdir(parents=True, exist_ok=True)
+    (tele / "pricing.yaml").write_text(
+        'models:\n  "moonshotai/kimi-k2.6":\n    input: 0.68\n    output: 3.41\n'
+        "    _source: openrouter\n"
+    )
+    pricing.reload_custom_pricing()
+
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+
+    SID = "sess_assumed_001"
+    ctx.fire("on_session_start", session_id=SID, model="moonshotai/kimi-k2.6", platform="cli")
+    ctx.fire("pre_api_request", session_id=SID, api_call_count=0, approx_input_tokens=1_000_000)
+    ctx.fire(
+        "post_api_request",
+        session_id=SID,
+        model="moonshotai/kimi-k2.6",
+        provider="nous",
+        api_duration=1.0,
+        api_call_count=0,
+        assistant_content_chars=4_000_000,
+        usage={
+            "input_tokens": 1_000_000,
+            "output_tokens": 1_000_000,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+    )
+
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT cost_usd, provider_assumed, estimated FROM llm_calls WHERE session_id = ?",
+        (SID,),
+    ).fetchone()
+    assert row is not None
+    assert row["provider_assumed"] == 1  # flagged, not silently dropped
+    assert row["estimated"] == 0  # real usage, not a usage=None estimate
+    assert abs(row["cost_usd"] - (0.68 + 3.41)) < 1e-9  # real cost recorded, NOT $0
+    pricing.reload_custom_pricing()

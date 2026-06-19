@@ -132,6 +132,7 @@
         { key: "cost_usd",   label: "Cost",    render: (r) => fmtUsd(r.cost_usd) },
         { key: "latency_ms", label: "Latency", render: (r) => fmtMs(r.latency_ms) },
         { key: "estimated",  label: "Est?",    render: (r) => (r.estimated ? "yes" : "no") },
+        { key: "provider_assumed", label: "Asm?", render: (r) => (r.provider_assumed ? "yes" : "no") },
       ],
     });
   }
@@ -147,6 +148,7 @@
         { key: "provider",       label: "Provider" },
         { key: "total_calls",    label: "Calls",     render: (r) => fmtInt(r.total_calls) },
         { key: "estimated_calls", label: "Estimated", render: (r) => fmtInt(r.estimated_calls) },
+        { key: "provider_assumed_calls", label: "Assumed", render: (r) => fmtInt(r.provider_assumed_calls) },
         { key: "cost_usd",       label: "Cost",      render: (r) => fmtUsd(r.cost_usd) },
         { key: "tokens_in",      label: "Tok in",    render: (r) => fmtInt(r.tokens_in) },
         { key: "tokens_out",     label: "Tok out",   render: (r) => fmtInt(r.tokens_out) },

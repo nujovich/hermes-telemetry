@@ -139,6 +139,10 @@ _DEFAULT_CACHE_READ_MULTIPLIER = 0.10
 _DEFAULT_CACHE_WRITE_MULTIPLIER = 1.25
 
 _warned_unknown: set[tuple[str, str]] = set()
+# (model, provider) pairs already warned about a provider-assumed price (issue
+# #42): a source-ineligible entry was applied as a best-effort estimate rather
+# than recording a silent $0. Deduped so the warning fires once per pair.
+_warned_provider_assumed: set[tuple[str, str]] = set()
 _custom_pricing: dict | None = None  # parsed YAML data (models + defaults)
 
 
@@ -267,13 +271,30 @@ def _lookup_form(model_lc: str, provider: str = "") -> dict | None:
     custom entry is skipped so the lookup falls through to the next candidate
     (e.g. a NIM call skips the same-id OpenRouter entry and lands on the
     source-neutral `_DEFAULT_PRICING` seed).
+
+    Inverted last-resort (issue #42): if NO source-eligible candidate matches but
+    a source-ineligible one would have, the lookup returns that price tagged
+    ``_provider_assumed: True`` instead of ``None``. For a cost tracker, applying
+    a best-effort rate (with a one-time warning at `estimate_cost`) beats
+    silently recording $0 on a real paid call. Source-eligible matches and the
+    `_DEFAULT_PRICING`/`:free` rules always win first, so this only fires when the
+    sole price available is one the guard would otherwise reject — the common
+    "popular model resold at the OpenRouter rate" case (e.g. Nous Portal serving
+    `moonshotai/kimi-k2.6`). A source-neutral override or `_subscription` entry
+    still pre-empts it.
     """
     custom = _load_custom_pricing()
     custom_models = custom.get("models", {})
     model_sources = custom.get("model_sources", {})
 
-    if model_lc in custom_models and _source_eligible(model_sources.get(model_lc), provider):
-        return custom_models[model_lc]
+    # Best source-ineligible match seen, used only if nothing eligible matches.
+    # An ineligible *exact* match outranks any ineligible prefix match.
+    assumed: dict | None = None
+
+    if model_lc in custom_models:
+        if _source_eligible(model_sources.get(model_lc), provider):
+            return custom_models[model_lc]
+        assumed = custom_models[model_lc]
     if model_lc in _DEFAULT_PRICING:
         return _DEFAULT_PRICING[model_lc]
     # Free-tier suffix: OpenRouter (and similar gateways) advertise free variants
@@ -302,8 +323,14 @@ def _lookup_form(model_lc: str, provider: str = "") -> dict | None:
         *((k, v, None) for k, v in _PREFIX_PRICING),
     ]
     for prefix, prices, source in sorted(candidates, key=lambda x: -len(x[0])):
-        if model_lc.startswith(prefix) and _source_eligible(source, provider):
-            return prices
+        if model_lc.startswith(prefix):
+            if _source_eligible(source, provider):
+                return prices
+            if assumed is None:
+                # Longest ineligible prefix (candidates are sorted longest-first).
+                assumed = prices
+    if assumed is not None:
+        return {**assumed, "_provider_assumed": True}
     return None
 
 
@@ -373,13 +400,17 @@ def _resolve_pricing(model: str, provider: str = "") -> dict | None:
     # reasoning defaults to output price unless overridden
     reasoning = float(base.get("reasoning", output_price))
 
-    return dict(
+    resolved = dict(
         input=input_price,
         output=output_price,
         cache_read=cache_read,
         cache_write=cache_write,
         reasoning=reasoning,
     )
+    # Propagate the provider-assumed marker (issue #42) so estimate_cost can warn.
+    if base.get("_provider_assumed"):
+        resolved["_provider_assumed"] = True
+    return resolved
 
 
 def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
@@ -445,6 +476,26 @@ def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
                 )
         return 0.0
 
+    # Provider-assumed price (issue #42): the only matching entry was source-
+    # ineligible for this provider, so we applied it as a best-effort estimate
+    # rather than recording a silent $0. Warn once per (model, provider) so the
+    # user can pin the rate explicitly — far safer than a silent under-count.
+    if prices.get("_provider_assumed"):
+        warn_key = (model, provider)
+        if warn_key not in _warned_provider_assumed:
+            _warned_provider_assumed.add(warn_key)
+            logger.warning(
+                "hermes-telemetry: no price registered for model %r under provider "
+                "%r — applying an OpenRouter-sourced rate as a best-effort estimate "
+                "(cost may be inaccurate if %r bills differently). To pin the rate "
+                "and silence this, add models[%r] to ~/.hermes/telemetry/pricing.yaml "
+                "(omit _source, or set _subscription: true for a flat-rate/free plan).",
+                model,
+                provider,
+                provider,
+                model,
+            )
+
     cost = (
         input_tokens * prices["input"]
         + output_tokens * prices["output"]
@@ -465,6 +516,22 @@ def is_explicitly_priced(model: str, provider: str = "") -> bool:
     known_free_models and can trigger the free→paid transition alert.
     """
     return _resolve_pricing(model, provider) is not None
+
+
+def is_provider_assumed(model: str, provider: str = "") -> bool:
+    """Return True if pricing *model* under *provider* relies on a provider-assumed
+    rate (issue #42).
+
+    True only when the lookup had no source-eligible price and fell back to a
+    source-ineligible entry (an OpenRouter rate applied to a different provider)
+    as a best-effort estimate. The cost is real and counted as spend, but it is
+    flagged so the request can be surfaced as "assumed" in stats / dashboard and
+    the user prompted to pin the rate. Returns False for unknown models, genuine
+    source-eligible matches, `_DEFAULT_PRICING` seeds, and `:free`/`_subscription`
+    entries.
+    """
+    resolved = _resolve_pricing(model, provider)
+    return bool(resolved and resolved.get("_provider_assumed"))
 
 
 def get_known_free_models() -> list:
