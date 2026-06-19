@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Provider-aware pricing guard no longer records `cost=0` on real paid calls**
+  (issue #42). When the only matching price for a call was an OpenRouter-sourced
+  entry served by a *different* provider (e.g. Nous Portal reselling
+  `moonshotai/kimi-k2.6` at the OpenRouter rate), the guard rejected it and the
+  call silently recorded zero spend — the worst failure mode for a cost tracker.
+  The lookup now applies the rate as a best-effort estimate, tags it
+  `_provider_assumed`, and logs a one-time WARNING per `(model, provider)` pair
+  advising the user to pin the rate. Source-neutral, `_subscription`, and
+  `_DEFAULT_PRICING` seed entries still take precedence, so the flat-sub and
+  NIM same-id collisions remain correctly priced. See
+  `ONBOARDING.md § Provider-aware lookup guard`.
+
+### Added
+
+- **Provider-assumed visibility** (issue #42 follow-up). Calls priced with an
+  assumed rate are now persisted and surfaced, not just logged:
+  - DB schema **v6** adds `llm_calls.provider_assumed` and a
+    `runs.provider_assumed_calls` counter (`db._migrate_v6`), mirroring the
+    existing `estimated` per-call flag.
+  - `pricing.is_provider_assumed(model, provider)` predicate (parallel to
+    `is_explicitly_priced`); `post_api_request` flags each affected row.
+  - `/stats providers` gains an `Asm%` column; the dashboard (standalone and
+    Hermes plugin) shows an `Asm?` column in Requests and an `Assumed` count in
+    Providers (`provider_assumed_calls` / `provider_assumed_pct` in the API).
+  - Assumed cost counts as **real spend** for budgets — it does not degrade hard
+    verdicts (unlike estimated usage), since the resold-at-same-rate case is
+    usually the correct number.
+
 ## [0.6.0] - 2026-06-16
 
 ### Added — Hermes dashboard plugin surface

@@ -32,9 +32,11 @@ def reset_pricing(tmp_path_factory, monkeypatch):
 
     pricing._custom_pricing = None
     pricing._warned_unknown.clear()
+    pricing._warned_provider_assumed.clear()
     yield
     pricing._custom_pricing = None
     pricing._warned_unknown.clear()
+    pricing._warned_provider_assumed.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -616,8 +618,17 @@ def test_google_alt_form_resolves_dated_variant_via_longest_prefix(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_openrouter_entry_blocked_for_nous(tmp_path, monkeypatch, caplog):
-    """An OpenRouter-sourced price is not eligible for a provider=nous call."""
+def test_openrouter_entry_assumed_for_nous_with_warning(tmp_path, monkeypatch, caplog):
+    """When the ONLY match for a provider=nous call is OpenRouter-sourced, the
+    rate is applied as a best-effort estimate (NOT silently $0) and a one-time
+    WARNING fires (issue #42).
+
+    This inverts the original issue-#24 safe-default ("fail to zero"): for a
+    cost tracker, a flagged best-effort number a user will react to beats a
+    silent under-count they will not. The flat-sub / wrong-rate cases stay
+    protected by a source-neutral `_subscription` (or hand-added) entry, which
+    pre-empts this fallback — see test_subscription_model_zero_cost_no_warning.
+    """
     import logging
 
     _write_pricing_yaml(
@@ -637,8 +648,11 @@ def test_openrouter_entry_blocked_for_nous(tmp_path, monkeypatch, caplog):
             "qwen3.7-plus",
             provider="nous",
         )
-    assert cost == 0.0  # NOT 0.40+1.60 — OpenRouter price must not leak to Nous
-    assert any("nous" in r.message for r in caplog.records)
+    # Best-effort: the OpenRouter rate is recorded, not a silent $0.
+    assert abs(cost - (0.40 + 1.60)) < 1e-9
+    # And the user is warned, with both the model and the provider named.
+    msgs = [r.message for r in caplog.records]
+    assert any("qwen3.7-plus" in m and "nous" in m for m in msgs)
 
 
 def test_openrouter_entry_used_for_openrouter(tmp_path, monkeypatch):
@@ -748,6 +762,133 @@ def test_subscription_models_tracked_in_loader(tmp_path, monkeypatch):
     # Price-key dict must NOT carry the _-prefixed metadata
     assert "_subscription" not in custom["models"]["qwen3.7-plus"]
     assert "_source" not in custom["models"]["qwen/qwen3.7-plus"]
+
+
+# ---------------------------------------------------------------------------
+# Provider-assumed fallback (issue #42) — inverted safe-default for the lookup
+# path. A source-ineligible entry is applied (flagged + warned once) instead of
+# recording a silent $0, but only when no eligible candidate exists.
+# ---------------------------------------------------------------------------
+
+
+def test_provider_assumed_warns_once_per_pair(tmp_path, monkeypatch, caplog):
+    """The provider-assumed warning fires once per (model, provider) pair."""
+    import logging
+
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "moonshotai/kimi-k2.6":
+            input: 0.68
+            output: 3.41
+            _source: openrouter
+    """),
+    )
+    pricing._warned_provider_assumed.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
+        for _ in range(3):
+            pricing.estimate_cost(
+                {"input_tokens": 100, "output_tokens": 100},
+                "moonshotai/kimi-k2.6",
+                provider="nous",
+            )
+    warns = [r for r in caplog.records if "moonshotai/kimi-k2.6" in r.message]
+    assert len(warns) == 1
+    # A different provider for the same model warns again (distinct pairing).
+    with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
+        pricing.estimate_cost({"input_tokens": 100}, "moonshotai/kimi-k2.6", provider="fireworks")
+    warns = [r for r in caplog.records if "moonshotai/kimi-k2.6" in r.message]
+    assert len(warns) == 2
+
+
+def test_provider_assumed_via_prefix_match(tmp_path, monkeypatch):
+    """The inverted default also covers a prefix-only ineligible match: a dated
+    variant whose only price is an OpenRouter-sourced dateless key still gets a
+    best-effort cost for a mismatched provider instead of $0."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "moonshotai/kimi-k2.6":
+            input: 0.68
+            output: 3.41
+            _source: openrouter
+    """),
+    )
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "moonshotai/kimi-k2.6-20260601",  # dated variant → prefix match only
+        provider="nous",
+    )
+    assert abs(cost - (0.68 + 3.41)) < 1e-9
+
+
+def test_empty_provider_does_not_warn_assumed(tmp_path, monkeypatch, caplog):
+    """provider="" stays backward-compatible: the OpenRouter entry is directly
+    eligible (not 'assumed'), so no provider-assumed warning fires."""
+    import logging
+
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "moonshotai/kimi-k2.6":
+            input: 0.68
+            output: 3.41
+            _source: openrouter
+    """),
+    )
+    pricing._warned_provider_assumed.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing"):
+        cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "moonshotai/kimi-k2.6")
+    assert abs(cost - 0.68) < 1e-9
+    assert not any("best-effort" in r.message for r in caplog.records)
+
+
+def test_is_provider_assumed_predicate(tmp_path, monkeypatch):
+    """is_provider_assumed is True only for a source-ineligible best-effort match."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "moonshotai/kimi-k2.6":
+            input: 0.68
+            output: 3.41
+            _source: openrouter
+    """),
+    )
+    # Mismatched provider with no eligible price → assumed.
+    assert pricing.is_provider_assumed("moonshotai/kimi-k2.6", "nous") is True
+    # Same entry under openrouter is directly eligible → not assumed.
+    assert pricing.is_provider_assumed("moonshotai/kimi-k2.6", "openrouter") is False
+    # Backward-compat blind lookup is eligible → not assumed.
+    assert pricing.is_provider_assumed("moonshotai/kimi-k2.6", "") is False
+    # Source-neutral default model is never assumed.
+    assert pricing.is_provider_assumed("claude-sonnet-4-6", "nous") is False
+    # Unknown model is not assumed (it is simply unpriced).
+    assert pricing.is_provider_assumed("totally-unknown-xyz", "nous") is False
+
+
+def test_provider_assumed_is_explicitly_priced(tmp_path, monkeypatch):
+    """A provider-assumed price counts as explicitly priced (it produces a real
+    cost), so it is not mistaken for an unknown model."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "moonshotai/kimi-k2.6":
+            input: 0.68
+            output: 3.41
+            _source: openrouter
+    """),
+    )
+    assert pricing.is_explicitly_priced("moonshotai/kimi-k2.6", "nous") is True
 
 
 # ── NVIDIA NIM seeds + same-id collision with OpenRouter ──

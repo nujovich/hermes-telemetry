@@ -172,7 +172,7 @@ def requests(limit: int = 100, window_hours: int = 0) -> dict:
         SELECT lc.id, lc.ts, lc.session_id, lc.model, lc.provider,
                lc.tokens_in, lc.tokens_out, lc.cache_read_tokens,
                lc.cache_write_tokens, lc.reasoning_tokens,
-               lc.cost_usd, lc.latency_ms, lc.estimated,
+               lc.cost_usd, lc.latency_ms, lc.estimated, lc.provider_assumed,
                r.platform, r.cron_job_id, r.status
         FROM llm_calls lc
         LEFT JOIN runs r ON r.session_id = lc.session_id
@@ -194,6 +194,7 @@ def providers(window_hours: int = 24) -> dict:
                COUNT(*) AS total_calls,
                SUM(CASE WHEN estimated=0 THEN 1 ELSE 0 END) AS real_calls,
                SUM(CASE WHEN estimated=1 THEN 1 ELSE 0 END) AS estimated_calls,
+               SUM(CASE WHEN provider_assumed=1 THEN 1 ELSE 0 END) AS provider_assumed_calls,
                ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
                COALESCE(SUM(tokens_in), 0)  AS tokens_in,
                COALESCE(SUM(tokens_out), 0) AS tokens_out,

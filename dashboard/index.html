@@ -1090,11 +1090,11 @@ function buildRunsQuery(windowPreset, limit = 30) {
 
 function renderProviderBreakdownTable(rows) {
   if (!rows || !rows.length) return renderTableCard('providerBreakdownTable', 'Provider Cost + Token Breakdown', '<div class="text-muted">No provider data for this range.</div>');
-  let t = '<table><thead><tr><th>Provider</th><th>Calls</th><th>Real</th><th>Est</th><th>In</th><th>Out</th><th>Cache Read</th><th>Reasoning</th><th>Total</th><th>Cost</th><th>Avg/Call</th></tr></thead><tbody>';
+  let t = '<table><thead><tr><th>Provider</th><th>Calls</th><th>Real</th><th>Est</th><th>Asm</th><th>In</th><th>Out</th><th>Cache Read</th><th>Reasoning</th><th>Total</th><th>Cost</th><th>Avg/Call</th></tr></thead><tbody>';
   for (const row of rows) {
     const provider = row.provider || '—';
     const jsProvider = jsAttr(provider);
-    t += `<tr class="clickable-row" onclick='addDrilldown({provider:${jsProvider}})'><td class="text-muted"><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}">${escHtml(provider)}</span></td><td>${nf(row.total_calls)}</td><td>${nf(row.real_calls)}</td><td>${nf(row.estimated_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtCost(row.avg_cost_per_call)}</td></tr>`;
+    t += `<tr class="clickable-row" onclick='addDrilldown({provider:${jsProvider}})'><td class="text-muted"><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}">${escHtml(provider)}</span></td><td>${nf(row.total_calls)}</td><td>${nf(row.real_calls)}</td><td>${nf(row.estimated_calls)}</td><td>${nf(row.provider_assumed_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtCost(row.avg_cost_per_call)}</td></tr>`;
   }
   t += '</tbody></table><div class="subtle-note">Click a provider row to inspect the exact sessions behind it.</div>';
   return renderTableCard('providerBreakdownTable', 'Provider Cost + Token Breakdown', t);
@@ -1187,16 +1187,16 @@ function renderCacheEfficiency(data) {
 function renderRequestForensics(data) {
   const rows = data?.rows || [];
   const hiddenDeleted = Number(data?.hidden_deleted_requests || 0);
-  let t = '<table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Platform</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Latency</th><th>Est</th><th>Request ID</th></tr></thead><tbody>';
+  let t = '<table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Platform</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Latency</th><th>Est</th><th>Asm</th><th>Request ID</th></tr></thead><tbody>';
   if (!rows.length) {
-    t += '<tr><td colspan="12" class="text-muted">No LLM requests match the current range and filters.</td></tr>';
+    t += '<tr><td colspan="13" class="text-muted">No LLM requests match the current range and filters.</td></tr>';
   } else {
     for (const row of rows) {
       const provider = row.provider || '—';
       const modelRaw = row.model || '—';
       const platform = row.platform || 'cli';
       const status = row.status || 'running';
-      t += `<tr class="clickable-row" onclick='openRequestDetail(${Number(row.id || 0)})'><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}" onclick='event.stopPropagation(); addDrilldown({provider:${jsAttr(provider)}})'>${escHtml(provider)}</span></td><td class="text-muted" title="${escHtml(modelRaw)}"><span class="inline-btn data-chip model-chip" onclick='event.stopPropagation(); addDrilldown({model:${jsAttr(modelRaw)}})'>${escHtml(modelRaw)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${jsAttr(platform)}})'>${platformBadge(platform)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({status:${jsAttr(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td><td>${row.estimated ? statusBadge('running') : statusBadge('ok')}</td><td><code>${nf(row.id || 0)}</code></td></tr>`;
+      t += `<tr class="clickable-row" onclick='openRequestDetail(${Number(row.id || 0)})'><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}" onclick='event.stopPropagation(); addDrilldown({provider:${jsAttr(provider)}})'>${escHtml(provider)}</span></td><td class="text-muted" title="${escHtml(modelRaw)}"><span class="inline-btn data-chip model-chip" onclick='event.stopPropagation(); addDrilldown({model:${jsAttr(modelRaw)}})'>${escHtml(modelRaw)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${jsAttr(platform)}})'>${platformBadge(platform)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({status:${jsAttr(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td><td>${row.estimated ? statusBadge('running') : statusBadge('ok')}</td><td>${row.provider_assumed ? statusBadge('running') : statusBadge('ok')}</td><td><code>${nf(row.id || 0)}</code></td></tr>`;
     }
   }
   t += `</tbody></table><div class="table-actions"><div>${nf(rows.length)} shown / ${nf(data?.total_requests || 0)} matching request(s)</div><div class="text-muted">${hiddenDeleted ? `${nf(hiddenDeleted)} request(s) hidden with deleted Hermes sessions.` : 'Click a request row for request-level forensics.'}</div></div>`;
@@ -1444,6 +1444,7 @@ function renderRequestDetail(data) {
   html += `<div class="insight-card"><div class="label">Model</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(req.model || '—')}" onclick='closeRequestDetail(); addDrilldown({model:${jsAttr(req.model || '—')}})'>${escHtml(req.model || '—')}</span></div></div>`;
   html += `<div class="insight-card"><div class="label">Cost / Latency</div><div class="value">${fmtCost(req.cost_usd)} / ${fmtMs(req.latency_ms)}</div></div>`;
   html += `<div class="insight-card"><div class="label">Estimated</div><div class="value">${req.estimated ? 'Yes' : 'No'}</div></div>`;
+  html += `<div class="insight-card"><div class="label">Provider-assumed rate</div><div class="value">${req.provider_assumed ? 'Yes' : 'No'}</div></div>`;
   html += '</div></div>';
 
   html += '<div class="drawer-section"><h4>Request metrics</h4><table><tbody>';

@@ -455,6 +455,23 @@ this guard made it load-bearing.
 `nemotron` are normalized by Hermes `normalize_provider()` before the hook fires,
 verified against `hermes_cli/providers.py`).
 
+**Inverted safe-default for the lookup path (added v0.6.1, issue #42):** the
+guard's original failure mode was "fail to zero" — if the only candidate was a
+source-ineligible OpenRouter entry, the lookup returned `None` and the call
+recorded `cost=0`. For a cost-tracking plugin this is the *worst* failure: a
+real paid call (e.g. Nous Portal reselling `moonshotai/kimi-k2.6` at the
+OpenRouter rate) silently reads as zero spend. The lookup now **errs on the side
+of recording cost**: when no eligible candidate matches but a source-ineligible
+one would have, `_lookup_form` returns that price tagged `_provider_assumed:
+True`, and `estimate_cost` logs a **one-time WARNING per `(model, provider)`
+pair** advising the user to pin the rate. Eligible matches, `_DEFAULT_PRICING`
+seeds, the `:free` rule, and source-neutral / `_subscription` overrides all win
+*first* — the assumed fallback only fires when the sole available price is one
+the guard would otherwise reject. This means a genuine flat-sub / wrong-rate
+collision must be protected by a source-neutral `_subscription` (or hand-added)
+entry; without one, the call now over-counts-with-warning instead of
+under-counting-silently — the deliberately safer default for a cost tracker.
+
 **Why NIM seeds live in `_DEFAULT_PRICING` (code), not the YAML:** for the
 same-id collision, the OpenRouter entry in `models:` is excluded for a
 `provider="nvidia"` call, and the lookup falls through to the source-neutral
@@ -477,6 +494,25 @@ price dict** by `_load_custom_pricing` (captured into parallel structures
 | `_source` | Which source wrote the entry (`openrouter`, `google-ai`, ...) | Drives the provider-aware guard |
 | `_estimated_price` | OpenRouter model with no fixed price (negative→$0) | Counted by `estimated_price_share`; degrades hard budget verdicts to soft under `warn_only` |
 | `_subscription` | A **declared** $0 (flat-sub / free-tier) rate, hand-added | Distinguishes a genuine $0 from a lookup miss; tracked in `_meta.subscription_models`; **excluded** from `estimated_price_models` |
+
+A fourth key, `_provider_assumed`, is **not** a stored YAML tag — it is a
+runtime-only marker synthesized by `_lookup_form` (issue #42) when a
+source-ineligible entry is applied as a best-effort estimate. It rides on the
+resolved price dict purely so `estimate_cost` can fire its one-time
+provider-assumed warning; `_load_custom_pricing` never reads or writes it.
+
+The marker is also **surfaced** (not just logged): `post_api_request` calls
+`pricing.is_provider_assumed(model, provider)` and persists a per-call boolean
+to the DB — `llm_calls.provider_assumed` plus a `runs.provider_assumed_calls`
+counter (schema **v6**, `db._migrate_v6`). It mirrors the per-call `estimated`
+flag end to end: `/stats providers` shows an `Asm%` column, and the dashboard
+(both the standalone `serve.py` and the Hermes plugin) exposes it as an `Asm?`
+column in Requests and an `Assumed` count in Providers (`provider_assumed_calls`
+/ `provider_assumed_pct` in the API). **Deliberately unlike `_estimated_price`,
+a provider-assumed cost does NOT degrade budget verdicts** — the resold-at-the-
+same-rate case is usually the *correct* number, so it counts as real spend for
+enforcement (the issue's "err on the side of recording cost"); the flag exists
+only to make the assumption visible so the user can pin the rate.
 
 **Adding a subscription/flat-rate model:** enter it under the provider's
 **native (bare) id** with `input: 0.0`, `output: 0.0`, `_subscription: true`.
