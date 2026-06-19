@@ -182,8 +182,9 @@ def _providers_block(
     lines = [
         f"hermes-telemetry — providers ({label})",
         "=" * 72,
-        f"  {'Provider':<28} {'Calls':>6} {'Real':>6} {'Est':>5} {'Est%':>6} {'Cost':>12}",
-        "  " + "-" * 67,
+        f"  {'Provider':<28} {'Calls':>6} {'Real':>6} {'Est':>5} {'Est%':>6} "
+        f"{'Asm%':>6} {'Cost':>12}",
+        "  " + "-" * 75,
     ]
     for r in rows:
         prov = (r.get("provider") or "(unknown)")[:28]
@@ -191,8 +192,11 @@ def _providers_block(
         real = _fmt_int(r.get("real_calls"))
         est = _fmt_int(r.get("estimated_calls"))
         est_pct = f"{r.get('estimated_pct', 0.0) * 100:.0f}%"
+        asm_pct = f"{r.get('provider_assumed_pct', 0.0) * 100:.0f}%"
         cost = _fmt_cost(r.get("cost_usd"))
-        lines.append(f"  {prov:<28} {total:>6} {real:>6} {est:>5} {est_pct:>6} {cost:>12}")
+        lines.append(
+            f"  {prov:<28} {total:>6} {real:>6} {est:>5} {est_pct:>6} {asm_pct:>6} {cost:>12}"
+        )
 
     lines.append("")
     lines.append("  Provider key:")
@@ -210,6 +214,12 @@ def _providers_block(
     lines.append(
         "  If Est% > 0 for your main provider, budget hard-verdicts may be "
         "degraded to soft under on_estimated.mode: warn_only."
+    )
+    lines.append(
+        "  Asm% = share of calls priced with an assumed rate (issue #42): an "
+        "OpenRouter-sourced price applied because no provider-native rate was "
+        "registered. The cost counts as real spend; pin the rate in pricing.yaml "
+        "(models[<id>], omit _source) to make it explicit and clear Asm%."
     )
 
     # Check for estimated-price models

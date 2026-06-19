@@ -261,6 +261,109 @@ def test_schema_v2_columns():
     assert "estimated_llm_calls" in runs_cols
 
 
+def test_schema_v7_provider_assumed_columns():
+    """v7 adds provider_assumed on llm_calls and provider_assumed_calls on runs."""
+    conn = db._get_conn()
+    llm_cols = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)").fetchall()}
+    assert "provider_assumed" in llm_cols
+    runs_cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    assert "provider_assumed_calls" in runs_cols
+
+
+def test_record_llm_call_provider_assumed():
+    """provider_assumed=True stores the flag and increments the runs counter."""
+    db.start_run("sess-asm", model="moonshotai/kimi-k2.6", platform="cli")
+    db.record_llm_call(
+        "sess-asm",
+        "2026-01-01T00:00:00+00:00",
+        "moonshotai/kimi-k2.6",
+        "nous",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.0004,
+        latency_ms=100,
+        provider_assumed=True,
+    )
+    conn = db._get_conn()
+    call = conn.execute(
+        "SELECT provider_assumed FROM llm_calls WHERE session_id='sess-asm'"
+    ).fetchone()
+    assert call["provider_assumed"] == 1
+    run = conn.execute(
+        "SELECT provider_assumed_calls FROM runs WHERE session_id='sess-asm'"
+    ).fetchone()
+    assert run["provider_assumed_calls"] == 1
+
+    # A second non-assumed call must not increment the counter.
+    db.record_llm_call(
+        "sess-asm",
+        "2026-01-01T00:01:00+00:00",
+        "moonshotai/kimi-k2.6",
+        "nous",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.0004,
+        latency_ms=100,
+        provider_assumed=False,
+    )
+    run = conn.execute(
+        "SELECT provider_assumed_calls FROM runs WHERE session_id='sess-asm'"
+    ).fetchone()
+    assert run["provider_assumed_calls"] == 1
+
+
+def test_record_llm_call_default_provider_assumed_zero():
+    """A normal call leaves provider_assumed at 0 (default)."""
+    db.start_run("sess-asm0", model="claude-sonnet-4-6", platform="cli")
+    db.record_llm_call(
+        "sess-asm0",
+        "2026-01-01T00:00:00+00:00",
+        "claude-sonnet-4-6",
+        "anthropic",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.001,
+        latency_ms=100,
+    )
+    conn = db._get_conn()
+    call = conn.execute(
+        "SELECT provider_assumed FROM llm_calls WHERE session_id='sess-asm0'"
+    ).fetchone()
+    assert call["provider_assumed"] == 0
+
+
+def test_stats_by_provider_exposes_provider_assumed():
+    """stats_by_provider reports provider_assumed_calls and provider_assumed_pct."""
+    db.start_run("sess-pp", model="moonshotai/kimi-k2.6", platform="cli")
+    # 1 assumed + 1 real under the same provider → pct = 0.5
+    db.record_llm_call(
+        "sess-pp",
+        db._utcnow(),
+        "moonshotai/kimi-k2.6",
+        "nous",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.0004,
+        latency_ms=100,
+        provider_assumed=True,
+    )
+    db.record_llm_call(
+        "sess-pp",
+        db._utcnow(),
+        "claude-sonnet-4-6",
+        "nous",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.001,
+        latency_ms=100,
+        provider_assumed=False,
+    )
+    rows = {r["provider"]: r for r in db.stats_by_provider(window_hours=24)}
+    assert "nous" in rows
+    assert rows["nous"]["provider_assumed_calls"] == 1
+    assert abs(rows["nous"]["provider_assumed_pct"] - 0.5) < 1e-9
+
+
 def test_record_llm_call_with_cache_tokens():
     db.start_run("sess-cache", model="claude-sonnet-4-6", platform="cli")
     db.record_llm_call(
