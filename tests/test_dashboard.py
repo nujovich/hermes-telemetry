@@ -284,6 +284,12 @@ def test_operator_followup_api_surfaces(serve_module):
     assert by_model["m2"]["cache_hit_share_pct"] == 50.0
     assert "efficiency_score" in by_model["m2"]
 
+    # Second call must read from the SQLite cache (rows_count > 0 in status).
+    status = serve_module.api_model_efficiency_cache_status()
+    assert any(e["window_hours"] == 24 and e["include_deleted"] for e in status["entries"]), status
+    cached = serve_module.api_model_efficiency(window_hours=24, include_deleted=True)
+    assert cached == efficiency
+
     heatmap = serve_module.api_tool_failure_heatmap(window_hours=24, include_deleted=True)
     terminal_rows = [row for row in heatmap if row["tool_name"] == "terminal"]
     assert terminal_rows
@@ -915,3 +921,43 @@ def test_api_cron_includes_scheduler_runs_without_telemetry(serve_module, monkey
     assert by_job["script-only"]["last_status"] == "ok"
     assert by_job["telemetry-job"]["runs"] == 2
     assert by_job["telemetry-job"]["tokens_in"] == 50
+
+
+def test_model_efficiency_cache_hits_and_refresh(tmp_path, serve_module):
+    """Cache-backed model efficiency: first call seeds cache, second hits cache,
+    and POST /api/model-efficiency/refresh rebuilds the cache."""
+    import time
+
+    now = db._utcnow()
+    db.start_run("sess-cache-1", model="gpt-5.4", platform="cli")
+    db.record_llm_call(
+        "sess-cache-1", now, "gpt-5.4", "openai-codex", 1000, 200, 0.01, 120
+    )
+    db.end_run("sess-cache-1", "ok")
+
+    # First call: live compute + seed cache (include_deleted=True because
+    # sess-cache-1 is not present in Hermes' sessions.json).
+    first = serve_module.api_model_efficiency(window_hours=24, include_deleted=True)
+    assert any(row["model"] == "gpt-5.4" for row in first), first
+
+    # Second call: must hit cache (same payload, served from SQLite cache).
+    started = time.monotonic()
+    second = serve_module.api_model_efficiency(window_hours=24, include_deleted=True)
+    cache_elapsed = time.monotonic() - started
+    assert second == first
+    assert cache_elapsed < 0.5, f"cache hit too slow: {cache_elapsed:.3f}s"
+
+    # Status endpoint reports the cache entry.
+    status = serve_module.api_model_efficiency_cache_status()
+    assert any(e["window_hours"] == 24 and e["include_deleted"] is True for e in status["entries"])
+    assert status["refresh_interval_seconds"] == 300
+
+    # Force-refresh endpoint rebuilds the cache for the same window.
+    refreshed = serve_module.api_model_efficiency_refresh(window_hours=24, include_deleted=True)
+    assert refreshed["window_hours"] == 24
+    assert refreshed["elapsed_seconds"] >= 0
+    assert refreshed["refreshed_at"]
+
+    # All-windows refresh also works.
+    refreshed_all = serve_module.api_model_efficiency_refresh(include_deleted=False)
+    assert "refreshed_at" in refreshed_all

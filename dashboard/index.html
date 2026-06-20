@@ -1895,7 +1895,10 @@ async function loadAll(options = {}) {
     const chartHours = Number(windowScope.hours);
     const chartLimitDays = homeTrendLimitFor(windowPreset, chartHours, effectiveHomeGranularity);
     const trendLimit = currentUsageGranularity === 'month' ? 18 : currentUsageGranularity === 'week' ? 24 : 21;
-    const [summary, cron, providers, providerHealth, runsData, budget, tokenBreakdown, modelTokens, modelEfficiency, dailyTokens, dailyTokenChart, dailyModelChart, modelPeriodTrends, modelShareComparison, cacheEfficiency, requestForensics, toolAnalytics, toolFailureHeatmap, errorCenter, cronFailureWaste] = await Promise.all([
+    // Note: /api/model-efficiency is intentionally NOT in this initial batch.
+    // It joins tool_calls ⨝ llm_calls and can take seconds on large windows.
+    // We fetch it lazily on the breakdown page so first-paint is fast.
+    const [summary, cron, providers, providerHealth, runsData, budget, tokenBreakdown, modelTokens, dailyTokens, dailyTokenChart, dailyModelChart, modelPeriodTrends, modelShareComparison, cacheEfficiency, requestForensics, toolAnalytics, toolFailureHeatmap, errorCenter, cronFailureWaste] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
       fetchJSON(`/api/providers?hours=${hours}`),
@@ -1904,7 +1907,6 @@ async function loadAll(options = {}) {
       fetchJSON(withViewerTimezone('/api/budget')),
       fetchJSON(`/api/token-breakdown?hours=${hours}`),
       fetchJSON(`/api/model-tokens?hours=${hours}&limit=100`),
-      fetchJSON(`/api/model-efficiency?hours=${hours}&limit=50`),
       fetchJSON(`/api/daily-tokens?hours=${hours}&page=${currentDailyTokensPage}&per_page=15`),
       fetchJSON(`/api/daily-token-chart?hours=${chartHours}&limit_days=${chartLimitDays}&include_deleted=1&granularity=${effectiveHomeGranularity}`),
       fetchJSON(`/api/daily-model-chart?hours=${chartHours}&limit_days=${chartLimitDays}&top_n=5&include_deleted=1`),
@@ -1991,7 +1993,10 @@ async function loadAll(options = {}) {
       }
       html += renderProviderBreakdownTable(providers);
       html += renderCacheEfficiency(cacheEfficiency);
-      html += renderModelEfficiency(modelEfficiency);
+      // Model efficiency is loaded lazily below — render a placeholder here
+      // and replace it once the (potentially slow) endpoint returns.
+      const modelEfficiencyMount = `<div id="modelEfficiencyMount" class="loading-shell" style="min-height:120px">Loading model efficiency…</div>`;
+      html += renderTableCard('modelEfficiencyTable', 'Model Efficiency Score', modelEfficiencyMount);
       html += renderModelUsageTrendCard(modelPeriodTrends, modelShareComparison);
       html += renderModelShareComparisonCard(modelShareComparison);
       html += renderModelTokensTable(modelTokens);
@@ -2046,6 +2051,26 @@ async function loadAll(options = {}) {
     } else if (currentPage === 'breakdown') {
       drawModelUsageTrendChart('model-usage-trend-chart', modelPeriodTrends);
       renderDailyCombinedSvg('daily-combined-svg', dailyTokenChart, dailyModelChart);
+      // Lazy-load model efficiency so breakdown first-paint is not blocked
+      // by the heavy tool_calls ⨝ llm_calls join. The SQLite-backed cache
+      // usually returns in <100ms.
+      fetchJSON(`/api/model-efficiency?hours=${hours}&limit=50`)
+        .then((rows) => {
+          if (requestId !== latestLoadRequestId) return;
+          const mount = document.getElementById('modelEfficiencyMount');
+          if (!mount) return;
+          const tableCard = mount.closest('.table-card');
+          if (!tableCard) return;
+          const newHtml = renderTableCard('modelEfficiencyTable', 'Model Efficiency Score', renderModelEfficiency(rows));
+          const tmp = document.createElement('div');
+          tmp.innerHTML = newHtml;
+          tableCard.replaceWith(tmp.firstElementChild);
+        })
+        .catch((err) => {
+          if (requestId !== latestLoadRequestId) return;
+          const mount = document.getElementById('modelEfficiencyMount');
+          if (mount) mount.innerHTML = `<div class="text-muted">Model efficiency unavailable: ${err.message}</div>`;
+        });
     }
 
   } catch (err) {
