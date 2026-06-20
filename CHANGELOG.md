@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-20
+
 ### Added — Dashboard widget for model-unavailable alerts
 
 Surfaces the 404s captured by the `api_request_error` hook on the
