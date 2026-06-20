@@ -370,11 +370,71 @@ table before applying.
 | v6 | New table: `free_paid_transitions` (historical free→paid flips for the widget rendered inside `TelemetryPage`) |
 | v7 | `llm_calls.provider_assumed` flag + `runs.provider_assumed_calls` counter (provider-assumed pricing visibility, issue #42) |
 | v8 | New table: `model_unavailable_alerts` (404s captured via `api_request_error` — model removed/deprecated by provider) |
+| v9 | Repair pass — re-adds any column from v2/v3/v4/v7 that was silently skipped by the old blanket `except OperationalError: pass` pattern when an `ALTER TABLE` hit a transient `SQLITE_LOCKED` (cross-process cron contention). Uses `_add_column_if_missing`; idempotent. |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
 `schema_version` rows equals `_SCHEMA_VERSION`, so adding a migration without
 bumping the constant (or vice versa) fails CI.
+
+### Adding a column or table — mandatory checklist
+
+Any PR that adds, removes, renames, or retypes a column or table **MUST**
+follow this checklist. Skipping a step has already wedged user DBs in
+production once (the v7 `provider_assumed` incident); the rules below exist
+specifically to prevent the recurrence.
+
+1. **Write a new `_migrate_vN`.** Never edit `_ensure_schema` to alter the
+   shape of an existing table — that only runs on fresh DBs, so every
+   upgrading user keeps the old shape. New shape ⇒ new migration function.
+2. **Bump `_SCHEMA_VERSION` to N** in `db.py` (kept in lockstep —
+   `test_schema_idempotent` enforces this).
+3. **Use `_add_column_if_missing`** for `ALTER TABLE ADD COLUMN`. Do **not**
+   write a raw `ALTER` with a `try/except OperationalError: pass` — that is
+   exactly the pattern that caused the v7 incident. The helper is idempotent
+   (re-running it on an already-migrated DB is a no-op) and lets transient
+   errors propagate so the migration is not marked applied prematurely.
+4. **Guard `CREATE TABLE` with `IF NOT EXISTS`.** Same idempotency reason.
+5. **Reads must tolerate the column being absent** if the code path can run
+   *before* `_ensure_schema()` (rare, but `_get_conn` is the only entry —
+   audit any new entry point that bypasses it).
+6. **Writes that reference the new column must come AFTER the migration is
+   registered.** If you add the column in v9 but the matching `INSERT`/`UPDATE`
+   was deployed in the same release, you are fine — `_ensure_schema` runs at
+   connect, before any write. But if you reference the column from a `SELECT`
+   query in `stats.py` or a dashboard endpoint and the migration silently
+   skipped, the query returns nothing or errors — write a test that exercises
+   the upgrade path from the *previous* schema version (see
+   `test_migrate_v9_repairs_missing_column_from_wedged_v7` as the template).
+7. **Add a row to the migration table above** with `What was added` filled in
+   and a link to the issue / PR.
+8. **Add a per-version assertion test**: `test_schema_vN_columns` or
+   `test_schema_vN_recorded` (see existing tests as the pattern).
+9. **Never drop or rename a column in a single migration.** SQLite before
+   3.35 has no `DROP COLUMN`, and even modern SQLite forbids it inside a
+   transaction with foreign keys. If a column truly must go, do it across
+   two releases: deprecate (stop writing) in vN, then remove (table-rebuild
+   migration) in vN+1 only after verifying no installed version still
+   writes it.
+10. **Never reuse a `_SCHEMA_VERSION` number.** Forward-only. If a migration
+    was buggy in production, write `_migrate_v(N+1)` to repair it (the v9
+    repair pass is the canonical example) — never edit `_migrate_vN`
+    in-place to fix the bug, because users who already ran the buggy version
+    have `schema_version=N` and will skip the corrected code.
+
+### Migration ALTER contract (post-v9)
+
+Never wrap an `ALTER TABLE ADD COLUMN` in a blanket
+`except sqlite3.OperationalError: pass` followed by an unconditional
+`INSERT INTO schema_version`. `OperationalError` also covers
+`SQLITE_LOCKED` (which `busy_timeout` does **not** retry across processes — the
+`_schema_lock` only protects threads of the same process; cron jobs run in
+separate processes and *will* contend on first connect after an upgrade) and
+I/O errors. Swallowing those and then marking the version applied permanently
+wedges the DB without raising. Use `_add_column_if_missing` instead — it checks
+`pragma_table_info` first and lets any real `OperationalError` propagate, so
+the surrounding migration is NOT marked applied and the next connect retries.
+This was the root cause of the v7 `provider_assumed` silent-skip incident.
 
 ### `_ensure_run_row` — lazy insert (added v0.3.1)
 

@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -75,6 +75,26 @@ def _get_conn() -> sqlite3.Connection:
         with _schema_lock:
             _ensure_schema(conn)
     return _local.conn
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    cur = conn.execute(f"SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?", (column,))
+    return cur.fetchone() is not None
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, typedef: str) -> None:
+    """Idempotently add ``column`` to ``table``.
+
+    Distinguishes "already exists" (benign — skip) from any other
+    ``OperationalError`` like ``SQLITE_LOCKED`` or I/O failure (transient —
+    must re-raise so the surrounding migration is NOT marked applied and the
+    next connect retries). Catching ``OperationalError`` blindly and then
+    marking the version as applied is what produced the v7 silent-skip bug
+    (issue: provider_assumed column missing on DBs that show schema_version=7).
+    """
+    if _column_exists(conn, table, column):
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -145,6 +165,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v6(conn)
     _migrate_v7(conn)
     _migrate_v8(conn)
+    _migrate_v9(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -155,27 +176,19 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
     if cur.fetchone() is not None:
         return
 
-    new_cols_llm = [
+    for col, typedef in (
         ("cache_read_tokens", "INTEGER DEFAULT 0"),
         ("cache_write_tokens", "INTEGER DEFAULT 0"),
         ("reasoning_tokens", "INTEGER DEFAULT 0"),
         ("estimated", "INTEGER DEFAULT 0"),
-    ]
-    for col, typedef in new_cols_llm:
-        try:
-            conn.execute(f"ALTER TABLE llm_calls ADD COLUMN {col} {typedef}")
-        except sqlite3.OperationalError:
-            pass  # already exists
+    ):
+        _add_column_if_missing(conn, "llm_calls", col, typedef)
 
-    new_cols_runs = [
+    for col, typedef in (
         ("parent_session_id", "TEXT"),
         ("estimated_llm_calls", "INTEGER DEFAULT 0"),
-    ]
-    for col, typedef in new_cols_runs:
-        try:
-            conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {typedef}")
-        except sqlite3.OperationalError:
-            pass  # already exists
+    ):
+        _add_column_if_missing(conn, "runs", col, typedef)
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (2, ?)",
@@ -190,10 +203,7 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
     if cur.fetchone() is not None:
         return
 
-    try:
-        conn.execute("ALTER TABLE runs ADD COLUMN sender_id TEXT")
-    except sqlite3.OperationalError:
-        pass  # already exists
+    _add_column_if_missing(conn, "runs", "sender_id", "TEXT")
 
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS budget_alerts (
@@ -225,10 +235,7 @@ def _migrate_v4(conn: sqlite3.Connection) -> None:
         return
 
     for col in ("cache_read_tokens", "cache_write_tokens"):
-        try:
-            conn.execute(f"ALTER TABLE runs ADD COLUMN {col} INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass  # already exists
+        _add_column_if_missing(conn, "runs", col, "INTEGER DEFAULT 0")
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (4, ?)",
@@ -299,15 +306,8 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
     if cur.fetchone() is not None:
         return
 
-    try:
-        conn.execute("ALTER TABLE llm_calls ADD COLUMN provider_assumed INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass  # already exists
-
-    try:
-        conn.execute("ALTER TABLE runs ADD COLUMN provider_assumed_calls INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass  # already exists
+    _add_column_if_missing(conn, "llm_calls", "provider_assumed", "INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "runs", "provider_assumed_calls", "INTEGER DEFAULT 0")
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (7, ?)",
@@ -348,6 +348,46 @@ def _migrate_v8(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (8, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v9(conn: sqlite3.Connection) -> None:
+    """Reconcile columns from earlier ALTER-based migrations that may have been
+    silently skipped on DBs migrated under the old ``except OperationalError:
+    pass`` pattern.
+
+    Background: ``_migrate_v2``/``_v3``/``_v4``/``_v7`` used a blanket
+    ``except OperationalError`` around each ALTER and then unconditionally
+    wrote the version marker. A transient ``SQLITE_LOCKED`` (cross-process
+    contention from concurrent cron jobs on the same DB) would be swallowed,
+    the column never added, and the version recorded as applied — wedging the
+    DB until manually repaired.
+
+    This migration re-adds any missing column using ``_add_column_if_missing``
+    (idempotent). It is safe regardless of the prior state.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 9")
+    if cur.fetchone() is not None:
+        return
+
+    for table, col, typedef in (
+        ("llm_calls", "cache_read_tokens", "INTEGER DEFAULT 0"),
+        ("llm_calls", "cache_write_tokens", "INTEGER DEFAULT 0"),
+        ("llm_calls", "reasoning_tokens", "INTEGER DEFAULT 0"),
+        ("llm_calls", "estimated", "INTEGER DEFAULT 0"),
+        ("llm_calls", "provider_assumed", "INTEGER DEFAULT 0"),
+        ("runs", "parent_session_id", "TEXT"),
+        ("runs", "estimated_llm_calls", "INTEGER DEFAULT 0"),
+        ("runs", "sender_id", "TEXT"),
+        ("runs", "cache_read_tokens", "INTEGER DEFAULT 0"),
+        ("runs", "cache_write_tokens", "INTEGER DEFAULT 0"),
+        ("runs", "provider_assumed_calls", "INTEGER DEFAULT 0"),
+    ):
+        _add_column_if_missing(conn, table, col, typedef)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (9, ?)",
         (_utcnow(),),
     )
 

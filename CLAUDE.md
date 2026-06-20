@@ -65,6 +65,36 @@ updating the doc.
 
 ---
 
+## Critical rule: schema changes require a migration
+
+Any change to the SQLite shape (new column, new table, new index, renamed
+or retyped column) **MUST** go through a new `_migrate_vN` function in
+`db.py`. Editing `_ensure_schema` directly only affects fresh DBs — every
+upgrading user keeps the old shape and the plugin breaks silently.
+
+Before touching `db.py`, read **ONBOARDING.md § Adding a column or table —
+mandatory checklist** in full. Non-negotiables:
+
+- New shape ⇒ new `_migrate_vN`, never an in-place edit of an existing one.
+- `_SCHEMA_VERSION` bumps in lockstep (CI enforces via `test_schema_idempotent`).
+- Use `_add_column_if_missing` for `ALTER TABLE ADD COLUMN`. Never write a
+  raw `ALTER` wrapped in `try/except sqlite3.OperationalError: pass` — that
+  is the exact pattern that wedged user DBs in the v7 incident (the
+  exception also covers `SQLITE_LOCKED` from cross-process cron contention,
+  so the column never lands but the version gets marked applied).
+- Add a per-version test (`test_schema_vN_columns` or
+  `test_migrate_vN_*`) AND a test that simulates the upgrade path from
+  the previous version with the column missing (template:
+  `test_migrate_v9_repairs_missing_column_from_wedged_v7`).
+- Forward-only: never reuse a version number. A buggy migration is fixed
+  by a follow-up `_migrate_v(N+1)` repair pass, never by editing
+  `_migrate_vN` in place.
+
+Updating the migration table in ONBOARDING.md § Schema evolution is part
+of the same PR, not a follow-up.
+
+---
+
 ## Test and lint commands
 
 ```bash
