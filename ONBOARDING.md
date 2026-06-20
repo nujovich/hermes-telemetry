@@ -75,11 +75,12 @@ hermes-telemetry/
 │                          summary, cron, providers, models, raw.
 ├── setup.py             ← /setup command + auto-setup on first load. Generates
 │                          pricing.yaml and budget.yaml with defaults.
-├── plugin.yaml          ← Plugin metadata: name, version, hooks. **MUST list every
-│                          hook in `provides_hooks` — Hermes' loader filters by
-│                          this list. `register_hook()` for a hook missing from
-│                          the manifest is a silent no-op (no error, no warning).
-│                          See `§ Hook Registration Gotcha` below.**
+├── plugin.yaml          ← Plugin metadata: name, version, declared hooks.
+│                          `provides_hooks` is declarative only (the loader does
+│                          NOT filter against it). Keep it accurate so it matches
+│                          the code, but enabling/disabling a hook is done in
+│                          `__init__.py`. See `§ Plugin Discovery Gotcha` for the
+│                          `name`-collision trap that bit us with PR #44.
 ├── dashboard/
 │   ├── index.html       ← Standalone SPA. Chart.js, no build step, no auth.
 │   └── serve.py         ← stdlib HTTP server, port 8765, --host flag.
@@ -1181,25 +1182,47 @@ Hooks not used (and why):
 - `pre_gateway_dispatch` / `pre_approval_request` / `post_approval_response` —
   documented as "observers only"; cannot block or modify
 
-### Hook Registration Gotcha — `plugin.yaml` `provides_hooks` is enforced
+### Plugin Discovery Gotcha — duplicate `name` in `~/.hermes/plugins/` silently shadows
 
-Hermes' plugin loader filters hook registrations by the `provides_hooks` list in
-`plugin.yaml`. Calling `ctx.register_hook("foo", fn)` for a hook name **not**
-declared there is a silent no-op: no error, no warning, the callback is dropped.
-Verified live (Hermes v0.17.0) by introspecting `get_plugin_manager()._hooks` —
-the registered set is exactly the manifest's `provides_hooks`.
+Hermes' loader (`hermes_cli/plugins.py::discover_plugins`) recursively scans every
+subdirectory of `~/.hermes/plugins/` for a `plugin.yaml`, parses each one, and
+indexes them by their declared `name`. **Two directories whose manifests share the
+same `name` collide on that key — the later one parsed wins, the earlier one is
+dropped without any warning or error.** Filesystem order decides who "wins"
+(alphabetical in practice), so a backup directory left next to the active plugin
+will usually shadow it.
 
-This bit us with `api_request_error` (issue #43, PR #44): the handler was added
-to `__init__.py` but the manifest wasn't updated, so the 404 capture never ran
-in production despite green tests. **Whenever you add a new hook handler, add
-its name to `plugin.yaml:provides_hooks` in the same change.** Confirm with:
+This bit us with `api_request_error` (issue #43, PR #44). The server had:
+
+```
+~/.hermes/plugins/
+├── hermes-telemetry/                    ← current (v0.7.0, has the fix)
+└── hermes-telemetry.bak.1781730291/     ← old backup, both declare name: hermes-telemetry
+```
+
+The `.bak` was loaded instead of the active dir. Its older `__init__.py` did not
+call `register_hook("api_request_error", ...)`, so `has_hook("api_request_error")`
+returned False and the dispatcher in `run_agent.py::_invoke_api_request_error_hook`
+silently short-circuited on every 404. Editing `plugin.yaml` or `__init__.py` in
+the active dir had zero effect — Hermes was reading the other dir entirely.
+
+**Rules of thumb:**
+- Never keep a backup of a plugin **inside** `~/.hermes/plugins/`. Move it out
+  (`mv ~/.hermes/plugins/foo.bak ~/foo.bak`) or rename its `name:` in the manifest
+  so it gets a distinct key.
+- The `provides_hooks` list in `plugin.yaml` is **declarative only** — the loader
+  does not filter registrations against it. Keep it accurate anyway so the
+  manifest matches the code, but do not rely on adding/removing entries there to
+  enable/disable a hook.
+- To verify which path Hermes is actually loading, run with debug logging and
+  look for the `Loading plugin '<name>' ... path=<dir>` line:
 
 ```bash
 cd ~/.hermes/hermes-agent && python3 -c "
-from hermes_cli import plugins as p
-p.discover_plugins()
+import logging; logging.basicConfig(level=logging.DEBUG)
+from hermes_cli import plugins as p; p.discover_plugins()
 print('api_request_error registered:', p.has_hook('api_request_error'))
-"
+" 2>&1 | grep -E "Loading plugin 'hermes-telemetry'|api_request_error registered"
 ```
 
 ### `api_request_error` — model-unavailable detection (issue #43)
