@@ -536,7 +536,7 @@ def api_cron(window_hours=168):
     )
 
 
-def api_providers(window_hours=24):
+def _compute_providers_rows(window_hours=24):
     since_clause_ts = _since_clause(window_hours, "ts")
     return _rows(f"""
         SELECT provider,
@@ -561,6 +561,10 @@ def api_providers(window_hours=24):
         GROUP BY provider
         ORDER BY cost_usd DESC, total_tokens DESC, total_calls DESC
     """)
+
+
+def api_providers(window_hours=24):
+    return ProvidersCache.instance().get_rows(window_hours=window_hours)
 
 
 def api_provider_health(window_hours=24):
@@ -1293,6 +1297,208 @@ def _model_efficiency_cache_key(window_hours, include_deleted, limit):
     return (int(_coerce_window_hours(window_hours)), int(bool(include_deleted)), int(limit))
 
 
+def _endpoint_payload_cache_key(*parts):
+    return json.dumps(parts, separators=(",", ":"), default=str)
+
+
+_ENDPOINT_PAYLOAD_CACHE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS endpoint_payload_cache (
+    cache_name TEXT NOT NULL,
+    cache_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    rows_count INTEGER NOT NULL,
+    built_at TEXT NOT NULL,
+    PRIMARY KEY (cache_name, cache_key)
+)
+"""
+
+
+def _ensure_endpoint_payload_cache_table(conn: sqlite3.Connection) -> None:
+    conn.execute(_ENDPOINT_PAYLOAD_CACHE_SCHEMA)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_endpoint_payload_cache_name ON endpoint_payload_cache(cache_name, built_at)"
+    )
+
+
+class _BackgroundPayloadCache:
+    _instance = None
+    _lock = threading.Lock()
+    CACHE_NAME = "base"
+    DEFAULT_REFRESH_SECONDS = 300
+    DEFAULT_KEYS = ()
+
+    def __init__(self, db_path: Path):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(
+            str(self.db_path), isolation_level=None, check_same_thread=False
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        _ensure_endpoint_payload_cache_table(self._conn)
+        self._cond = threading.Condition(threading.Lock())
+        self._stop = threading.Event()
+        self._refreshing = False
+        self._thread = threading.Thread(
+            target=self._run, name=f"{self.CACHE_NAME}-cache", daemon=True
+        )
+
+    @classmethod
+    def instance(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls(DB_PATH)
+                cls._instance.start()
+            return cls._instance
+
+    @classmethod
+    def reset_for_tests(cls):
+        with cls._lock:
+            if cls._instance is not None:
+                cls._instance.stop()
+            cls._instance = None
+
+    def start(self):
+        if not self._thread.is_alive():
+            self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        with self._cond:
+            self._cond.notify_all()
+
+    def _run(self):
+        try:
+            self._refresh_all()
+        except Exception:
+            logger.exception("initial %s cache refresh failed", self.CACHE_NAME)
+        while not self._stop.is_set():
+            with self._cond:
+                self._cond.wait(timeout=self.DEFAULT_REFRESH_SECONDS)
+            if self._stop.is_set():
+                break
+            try:
+                self._refresh_all()
+            except Exception:
+                logger.exception("scheduled %s cache refresh failed", self.CACHE_NAME)
+
+    def _cache_row(self, key):
+        row = self._conn.execute(
+            "SELECT payload_json, rows_count, built_at FROM endpoint_payload_cache WHERE cache_name = ? AND cache_key = ?",
+            (self.CACHE_NAME, key),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "payload": json.loads(row["payload_json"]),
+            "rows_count": row["rows_count"],
+            "built_at": row["built_at"],
+        }
+
+    def _write_cache(self, key, payload):
+        with self._cond:
+            self._conn.execute(
+                """
+                INSERT INTO endpoint_payload_cache (cache_name, cache_key, payload_json, rows_count, built_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(cache_name, cache_key) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    rows_count = excluded.rows_count,
+                    built_at = excluded.built_at
+                """,
+                (
+                    self.CACHE_NAME,
+                    key,
+                    json.dumps(payload, default=str),
+                    len(payload) if isinstance(payload, list) else len(payload or []),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def get_rows(self, **kwargs):
+        key = self.cache_key(**kwargs)
+        cached = self._cache_row(key)
+        if cached is not None:
+            return cached["payload"]
+        rows = self.compute_rows(**kwargs)
+        try:
+            self._write_cache(key, rows)
+        except Exception:
+            logger.exception("failed to seed %s cache", self.CACHE_NAME)
+        return rows
+
+    def refresh(self, **kwargs):
+        rows = self.compute_rows(**kwargs)
+        self._write_cache(self.cache_key(**kwargs), rows)
+        return rows
+
+    def _refresh_all(self):
+        if self._refreshing:
+            return {"skipped": "already refreshing"}
+        self._refreshing = True
+        try:
+            for kwargs in self.default_refresh_kwargs():
+                try:
+                    self.refresh(**kwargs)
+                except Exception:
+                    logger.exception("%s refresh failed for %s", self.CACHE_NAME, kwargs)
+        finally:
+            self._refreshing = False
+
+    def cache_key(self, **kwargs):
+        raise NotImplementedError
+
+    def compute_rows(self, **kwargs):
+        raise NotImplementedError
+
+    def default_refresh_kwargs(self):
+        return [dict(item) for item in self.DEFAULT_KEYS]
+
+
+class ProvidersCache(_BackgroundPayloadCache):
+    CACHE_NAME = "providers"
+    DEFAULT_KEYS = (
+        {"window_hours": 24},
+        {"window_hours": 168},
+        {"window_hours": 720},
+        {"window_hours": 0},
+    )
+
+    def cache_key(self, **kwargs):
+        return _endpoint_payload_cache_key(int(_coerce_window_hours(kwargs.get("window_hours", 24))))
+
+    def compute_rows(self, **kwargs):
+        return _compute_providers_rows(kwargs.get("window_hours", 24))
+
+
+class DailyTokenChartCache(_BackgroundPayloadCache):
+    CACHE_NAME = "daily-token-chart"
+    DEFAULT_KEYS = (
+        {"window_hours": 24, "limit_days": 26, "include_deleted": True, "granularity": "hour", "tz_name": None},
+        {"window_hours": 168, "limit_days": 14, "include_deleted": True, "granularity": "day", "tz_name": None},
+        {"window_hours": 720, "limit_days": 32, "include_deleted": True, "granularity": "day", "tz_name": None},
+        {"window_hours": 0, "limit_days": 3650, "include_deleted": True, "granularity": "day", "tz_name": None},
+    )
+
+    def cache_key(self, **kwargs):
+        return _endpoint_payload_cache_key(
+            int(_coerce_window_hours(kwargs.get("window_hours", 24))),
+            max(1, min(3650, int(kwargs.get("limit_days", 90)))),
+            int(bool(kwargs.get("include_deleted", False))),
+            _normalize_granularity(kwargs.get("granularity", "day")),
+            _normalize_dashboard_tz_name(kwargs.get("tz_name")),
+        )
+
+    def compute_rows(self, **kwargs):
+        return _compute_daily_token_chart_rows(
+            window_hours=kwargs.get("window_hours", 24),
+            limit_days=kwargs.get("limit_days", 90),
+            include_deleted=kwargs.get("include_deleted", False),
+            granularity=kwargs.get("granularity", "day"),
+            tz_name=kwargs.get("tz_name"),
+        )
+
+
 _MODEL_EFFICIENCY_CACHE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS model_efficiency_cache (
     cache_key TEXT PRIMARY KEY,
@@ -1623,7 +1829,7 @@ def api_daily_tokens(window_hours=24, page=1, per_page=15, tz_name: str | None =
     }
 
 
-def api_daily_token_chart(
+def _compute_daily_token_chart_rows(
     window_hours=24,
     limit_days=90,
     include_deleted=False,
@@ -1847,6 +2053,22 @@ def api_daily_token_chart(
             else 0.0
         )
     return rows
+
+
+def api_daily_token_chart(
+    window_hours=24,
+    limit_days=90,
+    include_deleted=False,
+    granularity="day",
+    tz_name: str | None = None,
+):
+    return DailyTokenChartCache.instance().get_rows(
+        window_hours=window_hours,
+        limit_days=limit_days,
+        include_deleted=include_deleted,
+        granularity=granularity,
+        tz_name=tz_name,
+    )
 
 
 def api_daily_model_chart(
@@ -3518,8 +3740,10 @@ def main(argv=None):
 
     _warn_if_exposed(host)
 
-    # Start the model-efficiency cache in the background so first-paint
-    # never blocks on the heavy tool_calls ⨝ llm_calls join.
+    # Start background caches before binding the server so first-paint
+    # never blocks on heavy historical aggregations.
+    ProvidersCache.instance()
+    DailyTokenChartCache.instance()
     ModelEfficiencyCache.instance()
 
     server = ThreadingHTTPServer((host, port), Handler)
