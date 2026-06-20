@@ -207,6 +207,236 @@ def _write_pricing(models: dict[str, dict]) -> Path:
     return p
 
 
+# ---------------------------------------------------------------------------
+# Manual entry helpers (used by /setup pricing add|remove|show|list and the
+# standalone CLI). All operations preserve manual entries already in the file
+# and only round-trip the YAML when PyYAML is available; the stdlib fallback
+# serializer only handles writes, not re-parsing, so we require PyYAML for any
+# mutation that must read existing data.
+# ---------------------------------------------------------------------------
+_PRICE_KEYS = ("input", "output", "cache_read", "cache_write", "reasoning")
+
+
+def _load_pricing_full() -> dict:
+    """Load the full pricing.yaml structure (models + defaults + _meta).
+
+    Returns an empty scaffold if the file is missing. Raises RuntimeError if
+    PyYAML is unavailable (the stdlib fallback can only serialize).
+    """
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover — PyYAML is a dependency
+        raise RuntimeError(
+            "PyYAML is required to edit pricing.yaml programmatically. "
+            "Install it or edit the file by hand."
+        ) from exc
+
+    p = _pricing_path()
+    if not p.exists():
+        return {
+            "models": {},
+            "defaults": {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25},
+        }
+    with open(p) as f:
+        data = yaml.safe_load(f) or {}
+    if "models" not in data:
+        # Legacy flat format: promote into the structured layout.
+        data = {"models": data, "defaults": {}}
+    data.setdefault("models", {})
+    data.setdefault("defaults", {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25})
+    return data
+
+
+def _dump_full_pricing(data: dict) -> Path:
+    """Write a full pricing structure back to disk and hot-reload the cache."""
+    _tele_dir().mkdir(parents=True, exist_ok=True)
+    header = (
+        "# ~/.hermes/telemetry/pricing.yaml\n"
+        "# Managed by hermes-telemetry setup.\n"
+        "# Prices in USD per 1 million tokens.\n"
+        "#\n"
+        "# Manual entries (added via /setup pricing add or the CLI) are\n"
+        "# preserved across auto-refresh runs. They are marked _source: manual.\n"
+        "#\n"
+    )
+    p = _pricing_path()
+    p.write_text(header + _dump_yaml(data))
+    _reload_pricing_cache()
+    return p
+
+
+def _parse_price(raw: str | float, field: str) -> float:
+    """Parse a numeric price argument from CLI/command input."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a number (got {raw!r})") from exc
+    if v < 0:
+        raise ValueError(f"{field} must be ≥ 0 (got {v})")
+    return v
+
+
+def pricing_add(
+    model: str,
+    input_price: float,
+    output_price: float,
+    cache_read: float | None = None,
+    cache_write: float | None = None,
+    reasoning: float | None = None,
+) -> str:
+    """Add or update a manual pricing entry. Returns a human-readable summary.
+
+    Manual means: not tagged ``_auto: True`` and tagged ``_source: manual``,
+    so ``pricing_refresh.refresh_pricing()`` leaves it alone.
+    """
+    if not model:
+        raise ValueError("model name is required")
+    data = _load_pricing_full()
+    entry: dict = {"input": float(input_price), "output": float(output_price)}
+    if cache_read is not None:
+        entry["cache_read"] = float(cache_read)
+    if cache_write is not None:
+        entry["cache_write"] = float(cache_write)
+    if reasoning is not None:
+        entry["reasoning"] = float(reasoning)
+    entry["_source"] = "manual"
+
+    existing = data["models"].get(model, {})
+    action = "updated" if existing else "added"
+    data["models"][model] = entry
+
+    # Keep _meta consistent — manual entries must not be in auto_models.
+    meta = data.get("_meta") or {}
+    auto_models = set(meta.get("auto_models") or [])
+    auto_models.discard(model)
+    if "_meta" in data:
+        meta["auto_models"] = sorted(auto_models)
+        data["_meta"] = meta
+
+    path = _dump_full_pricing(data)
+    parts = [f"  input={entry['input']:.4f}", f"output={entry['output']:.4f}"]
+    if "cache_read" in entry:
+        parts.append(f"cache_read={entry['cache_read']:.4f}")
+    if "cache_write" in entry:
+        parts.append(f"cache_write={entry['cache_write']:.4f}")
+    if "reasoning" in entry:
+        parts.append(f"reasoning={entry['reasoning']:.4f}")
+    return (
+        f"Pricing {action}: {model}\n"
+        f"  {' '.join(parts)}\n"
+        f"  Written to {path}. Hot-reloaded — no gateway restart needed."
+    )
+
+
+def pricing_remove(model: str) -> str:
+    """Remove a model entry from pricing.yaml. Returns a summary."""
+    if not model:
+        raise ValueError("model name is required")
+    if not _pricing_path().exists():
+        return "No pricing.yaml exists yet. Nothing to remove."
+    data = _load_pricing_full()
+    if model not in data["models"]:
+        return f"Model {model!r} not found in pricing.yaml. Use /setup pricing list to see all."
+    del data["models"][model]
+    meta = data.get("_meta") or {}
+    if "auto_models" in meta:
+        meta["auto_models"] = sorted(set(meta["auto_models"]) - {model})
+        data["_meta"] = meta
+    path = _dump_full_pricing(data)
+    return f"Removed {model!r} from {path}."
+
+
+def _format_entry(model: str, entry: dict) -> str:
+    parts = [f"{model}:"]
+    for k in _PRICE_KEYS:
+        if k in entry:
+            parts.append(f"  {k}: {float(entry[k]):.4f}")
+    src = entry.get("_source") or ("auto" if entry.get("_auto") else "default")
+    parts.append(f"  source: {src}")
+    if entry.get("_subscription"):
+        parts.append("  subscription: true")
+    return "\n".join(parts)
+
+
+def pricing_show(model: str) -> str:
+    """Return a formatted view of a single model's pricing."""
+    if not model:
+        raise ValueError("model name is required")
+    data = _load_pricing_full()
+    entry = data["models"].get(model)
+    if not entry:
+        return (
+            f"Model {model!r} not found in pricing.yaml.\n"
+            f"Built-in defaults may still apply — run /stats models to see active prices."
+        )
+    return _format_entry(model, entry)
+
+
+def pricing_list(filter_source: str | None = None) -> str:
+    """List all models in pricing.yaml, optionally filtered by source.
+
+    filter_source: 'manual', 'auto', or None for all.
+    """
+    if not _pricing_path().exists():
+        return "No pricing.yaml exists. Run /setup pricing auto to create one."
+    data = _load_pricing_full()
+    models = data["models"]
+    if not models:
+        return "pricing.yaml has no models configured."
+
+    def _source_of(entry: dict) -> str:
+        if entry.get("_source"):
+            return str(entry["_source"])
+        return "auto" if entry.get("_auto") else "manual"
+
+    rows = []
+    for name in sorted(models):
+        entry = models[name]
+        src = _source_of(entry)
+        if filter_source and src != filter_source:
+            continue
+        inp = float(entry.get("input", 0))
+        out = float(entry.get("output", 0))
+        rows.append(f"  {name:50s}  in={inp:8.4f}  out={out:8.4f}  ({src})")
+    if not rows:
+        return f"No models match filter source={filter_source!r}."
+    header = f"pricing.yaml — {len(rows)} model(s)"
+    if filter_source:
+        header += f" (source={filter_source})"
+    return header + "\n" + "\n".join(rows)
+
+
+def pricing_path() -> str:
+    """Return the path to pricing.yaml (creating directories if missing)."""
+    return str(_pricing_path())
+
+
+def _seed_with_merge(seed: dict[str, dict]) -> tuple[Path, int, int]:
+    """Write the seed into pricing.yaml WITHOUT overwriting manual entries.
+
+    Returns (path, total_models, preserved_manual).
+    """
+    if _pricing_path().exists():
+        data = _load_pricing_full()
+        existing = data["models"]
+        preserved = 0
+        for name, entry in seed.items():
+            if name in existing and existing[name].get("_source") == "manual":
+                preserved += 1
+                continue
+            existing[name] = {**entry, "_auto": True, "_source": "seed"}
+        path = _dump_full_pricing(data)
+        return path, len(existing), preserved
+    # Fresh file: tag entries as seed-origin so /setup pricing list can filter.
+    tagged = {name: {**entry, "_auto": True, "_source": "seed"} for name, entry in seed.items()}
+    data = {
+        "models": tagged,
+        "defaults": {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25},
+    }
+    path = _dump_full_pricing(data)
+    return path, len(seed), 0
+
+
 def _reload_pricing_cache() -> None:
     """Drop the in-process pricing cache so prices just written to disk take
     effect immediately, without a gateway restart.
@@ -424,32 +654,95 @@ def handle_command(raw_args: str) -> str:
 
     if sub == "pricing":
         if len(parts) < 2:
-            return "Usage: /setup pricing <auto|minimal|skip>"
+            return (
+                "Usage:\n"
+                "  /setup pricing auto                    — built-in seed + OpenRouter\n"
+                "  /setup pricing minimal                 — built-in seed only\n"
+                "  /setup pricing skip                    — don't configure pricing\n"
+                "  /setup pricing add <model> <in> <out> [cache_read] [cache_write]\n"
+                "                                          — add/update a manual entry\n"
+                "  /setup pricing remove <model>          — delete a manual entry\n"
+                "  /setup pricing show <model>            — show one model's entry\n"
+                "  /setup pricing list [manual|auto|seed] — list configured models\n"
+                "  /setup pricing path                    — print pricing.yaml path"
+            )
+        # Use the original args (not lowercased) for model ids — model names are
+        # case-sensitive (e.g. "meta-llama/Llama-3.3-70B"). parts[1:] from the
+        # lowercased buffer is fine for fixed verbs but not for model ids, so
+        # we re-split the raw input.
+        raw_parts = (raw_args or "").strip().split()
         choice = parts[1]
         if choice == "auto":
-            models = dict(_DEFAULT_SEED)
+            seed = dict(_DEFAULT_SEED)
             or_models = _fetch_openrouter_models()
             for mid, prices in or_models.items():
-                if mid not in models:
-                    models[mid] = prices
-            path = _write_pricing(models)
-            _reload_pricing_cache()
+                if mid not in seed:
+                    seed[mid] = prices
+            path, total, preserved = _seed_with_merge(seed)
+            note = ""
+            if preserved:
+                note = f"\n  Preserved {preserved} manual entry/entries (untouched)."
             return (
-                f"Pricing configured: {len(models)} models written to {path}\n"
-                f"  ({len(_DEFAULT_SEED)} built-in + {len(or_models)} from OpenRouter)\n"
+                f"Pricing configured: {total} models in {path}\n"
+                f"  ({len(_DEFAULT_SEED)} built-in + {len(or_models)} from OpenRouter){note}\n"
                 f"  New prices are live now — no gateway restart needed."
             )
         elif choice == "minimal":
-            path = _write_pricing(dict(_DEFAULT_SEED))
-            _reload_pricing_cache()
+            path, total, preserved = _seed_with_merge(dict(_DEFAULT_SEED))
+            note = f"\n  Preserved {preserved} manual entry/entries." if preserved else ""
             return (
-                f"Pricing configured: {len(_DEFAULT_SEED)} built-in models written to {path}\n"
+                f"Pricing configured: {total} models in {path}{note}\n"
                 f"  New prices are live now — no gateway restart needed."
             )
         elif choice == "skip":
             return "Pricing setup skipped. Models not in the pricing table will record $0.00 cost."
+        elif choice == "add":
+            # /setup pricing add <model> <input> <output> [cache_read] [cache_write] [reasoning]
+            if len(raw_parts) < 5:
+                return (
+                    "Usage: /setup pricing add <model> <input> <output> "
+                    "[cache_read] [cache_write] [reasoning]\n"
+                    "  All prices in USD per 1M tokens."
+                )
+            try:
+                model = raw_parts[2]
+                inp = _parse_price(raw_parts[3], "input")
+                out = _parse_price(raw_parts[4], "output")
+                cr = _parse_price(raw_parts[5], "cache_read") if len(raw_parts) > 5 else None
+                cw = _parse_price(raw_parts[6], "cache_write") if len(raw_parts) > 6 else None
+                rs = _parse_price(raw_parts[7], "reasoning") if len(raw_parts) > 7 else None
+                return pricing_add(model, inp, out, cr, cw, rs)
+            except (ValueError, RuntimeError) as exc:
+                return f"Error: {exc}"
+        elif choice == "remove":
+            if len(raw_parts) < 3:
+                return "Usage: /setup pricing remove <model>"
+            try:
+                return pricing_remove(raw_parts[2])
+            except (ValueError, RuntimeError) as exc:
+                return f"Error: {exc}"
+        elif choice == "show":
+            if len(raw_parts) < 3:
+                return "Usage: /setup pricing show <model>"
+            try:
+                return pricing_show(raw_parts[2])
+            except (ValueError, RuntimeError) as exc:
+                return f"Error: {exc}"
+        elif choice == "list":
+            filt = parts[2] if len(parts) > 2 else None
+            if filt and filt not in ("manual", "auto", "seed"):
+                return f"Unknown filter {filt!r}. Use: manual | auto | seed"
+            try:
+                return pricing_list(filt)
+            except RuntimeError as exc:
+                return f"Error: {exc}"
+        elif choice == "path":
+            return pricing_path()
         else:
-            return f"Unknown option {choice!r}. Use: auto | minimal | skip"
+            return (
+                f"Unknown option {choice!r}. "
+                "Use: auto | minimal | skip | add | remove | show | list | path"
+            )
 
     if sub == "budget":
         if len(parts) < 2:

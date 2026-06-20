@@ -254,6 +254,247 @@ class TestYamlDump:
 # ---------------------------------------------------------------------------
 # Tests: owl-alpha in defaults
 # ---------------------------------------------------------------------------
+class TestManualPricingEntries:
+    """Manual pricing add/remove/show/list and auto/minimal merge behavior."""
+
+    def test_add_creates_file_and_entry(self, tmp_telemetry):
+        msg = setup.pricing_add("my-internal-llm", 1.20, 3.40)
+        pricing_file = tmp_telemetry / "telemetry" / "pricing.yaml"
+        assert pricing_file.exists()
+        assert "my-internal-llm" in pricing_file.read_text()
+        assert "manual" in pricing_file.read_text()
+        assert "added" in msg.lower()
+
+    def test_add_with_cache_prices(self, tmp_telemetry):
+        setup.pricing_add("m", 1.0, 2.0, cache_read=0.1, cache_write=1.25, reasoning=2.0)
+        content = (tmp_telemetry / "telemetry" / "pricing.yaml").read_text()
+        for k in ("cache_read", "cache_write", "reasoning"):
+            assert k in content
+
+    def test_add_then_update(self, tmp_telemetry):
+        setup.pricing_add("m", 1.0, 2.0)
+        msg = setup.pricing_add("m", 5.0, 10.0)
+        assert "updated" in msg.lower()
+        # Verify the new prices stuck.
+        import yaml
+
+        data = yaml.safe_load((tmp_telemetry / "telemetry" / "pricing.yaml").read_text())
+        assert data["models"]["m"]["input"] == 5.0
+        assert data["models"]["m"]["output"] == 10.0
+
+    def test_remove(self, tmp_telemetry):
+        setup.pricing_add("m", 1.0, 2.0)
+        msg = setup.pricing_remove("m")
+        assert "Removed" in msg
+        import yaml
+
+        data = yaml.safe_load((tmp_telemetry / "telemetry" / "pricing.yaml").read_text())
+        assert "m" not in data["models"]
+
+    def test_remove_missing_model(self, tmp_telemetry):
+        setup.pricing_add("a", 1.0, 2.0)
+        msg = setup.pricing_remove("not-there")
+        assert "not found" in msg
+
+    def test_remove_with_no_file(self, tmp_telemetry):
+        msg = setup.pricing_remove("any")
+        assert "No pricing.yaml" in msg
+
+    def test_show_existing(self, tmp_telemetry):
+        setup.pricing_add("m", 1.0, 2.0)
+        out = setup.pricing_show("m")
+        assert "m:" in out
+        assert "input" in out
+        assert "manual" in out
+
+    def test_show_missing(self, tmp_telemetry):
+        setup.pricing_add("a", 1.0, 2.0)
+        out = setup.pricing_show("nope")
+        assert "not found" in out
+
+    def test_list_all(self, tmp_telemetry):
+        setup.pricing_add("a", 1.0, 2.0)
+        setup.pricing_add("b", 3.0, 4.0)
+        out = setup.pricing_list()
+        assert "a" in out and "b" in out
+        assert "2 model" in out
+
+    def test_list_filter_manual(self, tmp_telemetry):
+        with patch.object(setup, "_fetch_openrouter_models", return_value={}):
+            setup.handle_command("pricing minimal")
+        setup.pricing_add("my-llm", 1.0, 2.0)
+        manual_only = setup.pricing_list("manual")
+        assert "my-llm" in manual_only
+        assert "claude-opus-4-8" not in manual_only
+
+    def test_path(self, tmp_telemetry):
+        assert setup.pricing_path().endswith("pricing.yaml")
+
+    def test_auto_preserves_manual_entries(self, tmp_telemetry):
+        """Re-running auto must NOT clobber a manually-added model."""
+        setup.pricing_add("my-internal-llm", 9.99, 19.99)
+        with patch.object(setup, "_fetch_openrouter_models", return_value={}):
+            setup.handle_command("pricing auto")
+        import yaml
+
+        data = yaml.safe_load((tmp_telemetry / "telemetry" / "pricing.yaml").read_text())
+        assert data["models"]["my-internal-llm"]["input"] == 9.99
+        assert data["models"]["my-internal-llm"]["output"] == 19.99
+        assert data["models"]["my-internal-llm"].get("_source") == "manual"
+        # Built-in seed should still be present.
+        assert "claude-opus-4-8" in data["models"]
+
+    def test_minimal_preserves_manual_entries(self, tmp_telemetry):
+        setup.pricing_add("my-llm", 9.99, 19.99)
+        setup.handle_command("pricing minimal")
+        import yaml
+
+        data = yaml.safe_load((tmp_telemetry / "telemetry" / "pricing.yaml").read_text())
+        assert data["models"]["my-llm"]["input"] == 9.99
+
+
+class TestPricingSubcommands:
+    """/setup pricing add|remove|show|list|path slash subcommands."""
+
+    def test_pricing_add_via_command(self, tmp_telemetry):
+        out = setup.handle_command("pricing add my-model 1.0 2.0")
+        assert "added" in out.lower()
+        pricing_file = tmp_telemetry / "telemetry" / "pricing.yaml"
+        assert "my-model" in pricing_file.read_text()
+
+    def test_pricing_add_with_cache(self, tmp_telemetry):
+        setup.handle_command("pricing add my-model 1.0 2.0 0.1 1.25")
+        content = (tmp_telemetry / "telemetry" / "pricing.yaml").read_text()
+        assert "cache_read" in content
+        assert "cache_write" in content
+
+    def test_pricing_add_missing_args(self, tmp_telemetry):
+        out = setup.handle_command("pricing add only-name")
+        assert "Usage" in out
+
+    def test_pricing_add_invalid_price(self, tmp_telemetry):
+        out = setup.handle_command("pricing add m foo 2.0")
+        assert "Error" in out
+
+    def test_pricing_add_negative_price(self, tmp_telemetry):
+        out = setup.handle_command("pricing add m -1.0 2.0")
+        assert "Error" in out
+
+    def test_pricing_remove_via_command(self, tmp_telemetry):
+        setup.handle_command("pricing add my-model 1.0 2.0")
+        out = setup.handle_command("pricing remove my-model")
+        assert "Removed" in out
+
+    def test_pricing_show_via_command(self, tmp_telemetry):
+        setup.handle_command("pricing add my-model 1.0 2.0")
+        out = setup.handle_command("pricing show my-model")
+        assert "my-model" in out
+
+    def test_pricing_list_via_command(self, tmp_telemetry):
+        setup.handle_command("pricing add a 1 2")
+        setup.handle_command("pricing add b 3 4")
+        out = setup.handle_command("pricing list")
+        assert "a" in out and "b" in out
+
+    def test_pricing_path_via_command(self, tmp_telemetry):
+        out = setup.handle_command("pricing path")
+        assert out.endswith("pricing.yaml")
+
+    def test_pricing_no_subcommand_shows_usage(self, tmp_telemetry):
+        out = setup.handle_command("pricing")
+        assert "Usage" in out
+        assert "add" in out and "remove" in out
+
+
+class TestCLIPricing:
+    """Standalone CLI: hermes-telemetry pricing <subcommand>."""
+
+    def test_cli_pricing_add(self, tmp_telemetry, capsys):
+        from hermes_telemetry import telemetry_cli
+
+        telemetry_cli.main(["pricing", "add", "my-llm", "1.5", "3.5"])
+        out = capsys.readouterr().out
+        assert "added" in out.lower()
+        assert (tmp_telemetry / "telemetry" / "pricing.yaml").exists()
+
+    def test_cli_pricing_add_with_flags(self, tmp_telemetry, capsys):
+        from hermes_telemetry import telemetry_cli
+
+        telemetry_cli.main(
+            [
+                "pricing",
+                "add",
+                "m",
+                "1.0",
+                "2.0",
+                "--cache-read",
+                "0.1",
+                "--cache-write",
+                "1.25",
+            ]
+        )
+        content = (tmp_telemetry / "telemetry" / "pricing.yaml").read_text()
+        assert "cache_read" in content
+        assert "cache_write" in content
+
+    def test_cli_pricing_remove(self, tmp_telemetry, capsys):
+        from hermes_telemetry import telemetry_cli
+
+        telemetry_cli.main(["pricing", "add", "m", "1", "2"])
+        capsys.readouterr()
+        telemetry_cli.main(["pricing", "remove", "m"])
+        out = capsys.readouterr().out
+        assert "Removed" in out
+
+    def test_cli_pricing_show(self, tmp_telemetry, capsys):
+        from hermes_telemetry import telemetry_cli
+
+        telemetry_cli.main(["pricing", "add", "m", "1", "2"])
+        capsys.readouterr()
+        telemetry_cli.main(["pricing", "show", "m"])
+        out = capsys.readouterr().out
+        assert "m:" in out
+
+    def test_cli_pricing_list(self, tmp_telemetry, capsys):
+        from hermes_telemetry import telemetry_cli
+
+        telemetry_cli.main(["pricing", "add", "a", "1", "2"])
+        telemetry_cli.main(["pricing", "add", "b", "3", "4"])
+        capsys.readouterr()
+        telemetry_cli.main(["pricing", "list"])
+        out = capsys.readouterr().out
+        assert "a" in out and "b" in out
+
+    def test_cli_pricing_list_filter_manual(self, tmp_telemetry, capsys):
+        from hermes_telemetry import telemetry_cli
+
+        with patch.object(setup, "_fetch_openrouter_models", return_value={}):
+            telemetry_cli.main(["pricing", "minimal"])
+        telemetry_cli.main(["pricing", "add", "manual-m", "1", "2"])
+        capsys.readouterr()
+        telemetry_cli.main(["pricing", "list", "--source", "manual"])
+        out = capsys.readouterr().out
+        assert "manual-m" in out
+        assert "claude-opus-4-8" not in out
+
+    def test_cli_pricing_path(self, tmp_telemetry, capsys):
+        from hermes_telemetry import telemetry_cli
+
+        telemetry_cli.main(["pricing", "path"])
+        out = capsys.readouterr().out.strip()
+        assert out.endswith("pricing.yaml")
+
+    def test_cli_pricing_minimal_preserves_manual(self, tmp_telemetry, capsys):
+        from hermes_telemetry import telemetry_cli
+
+        telemetry_cli.main(["pricing", "add", "manual-m", "9.99", "19.99"])
+        telemetry_cli.main(["pricing", "minimal"])
+        import yaml
+
+        data = yaml.safe_load((tmp_telemetry / "telemetry" / "pricing.yaml").read_text())
+        assert data["models"]["manual-m"]["input"] == 9.99
+
+
 class TestOwlAlphaInDefaults:
     def test_owl_alpha_in_default_seed(self):
         """owl-alpha should be in the built-in pricing seed."""

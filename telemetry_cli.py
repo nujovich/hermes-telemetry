@@ -148,6 +148,38 @@ def _build_parser_into(sub) -> None:
     bs.add_argument("window", choices=["daily", "monthly"])
     bs.add_argument("usd", type=float)
 
+    pp = sub.add_parser(
+        "pricing",
+        help="Manage model pricing (USD per 1M tokens) in pricing.yaml",
+    )
+    psub = pp.add_subparsers(dest="pricing_command", metavar="PRICING_COMMAND")
+
+    pa = psub.add_parser("add", help="Add or update a manual pricing entry")
+    pa.add_argument("model", help="Model id (e.g. my-internal-llm)")
+    pa.add_argument("input", type=float, help="Input price USD per 1M tokens")
+    pa.add_argument("output", type=float, help="Output price USD per 1M tokens")
+    pa.add_argument("--cache-read", type=float, default=None)
+    pa.add_argument("--cache-write", type=float, default=None)
+    pa.add_argument("--reasoning", type=float, default=None)
+
+    pr = psub.add_parser("remove", help="Remove a pricing entry")
+    pr.add_argument("model")
+
+    ps = psub.add_parser("show", help="Show a single model's pricing entry")
+    ps.add_argument("model")
+
+    pl = psub.add_parser("list", help="List configured models")
+    pl.add_argument(
+        "--source",
+        choices=["manual", "auto", "seed"],
+        default=None,
+        help="Filter by source",
+    )
+
+    psub.add_parser("path", help="Print the path to pricing.yaml")
+    psub.add_parser("auto", help="Seed built-in defaults + OpenRouter (preserves manual entries)")
+    psub.add_parser("minimal", help="Seed built-in defaults only (preserves manual entries)")
+
 
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
@@ -160,6 +192,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser | None =
         _handle_stats(args)
     elif args.command == "budget":
         _handle_budget(args)
+    elif args.command == "pricing":
+        _handle_pricing(args)
     else:
         if parser:
             parser.print_help()
@@ -271,6 +305,42 @@ def _budget_json(subcommand: str) -> None:
         result["senders"][sid] = _dc.asdict(v) if v is not None else None
 
     print(json.dumps(result, default=str))
+
+
+def _handle_pricing(args: argparse.Namespace) -> None:
+    from . import setup as _setup
+
+    cmd = getattr(args, "pricing_command", None)
+    try:
+        if cmd == "add":
+            print(
+                _setup.pricing_add(
+                    args.model,
+                    args.input,
+                    args.output,
+                    cache_read=args.cache_read,
+                    cache_write=args.cache_write,
+                    reasoning=args.reasoning,
+                )
+            )
+        elif cmd == "remove":
+            print(_setup.pricing_remove(args.model))
+        elif cmd == "show":
+            print(_setup.pricing_show(args.model))
+        elif cmd == "list":
+            print(_setup.pricing_list(args.source))
+        elif cmd == "path":
+            print(_setup.pricing_path())
+        elif cmd == "auto":
+            print(_setup.handle_command("pricing auto"))
+        elif cmd == "minimal":
+            print(_setup.handle_command("pricing minimal"))
+        else:
+            print("Usage: hermes-telemetry pricing <add|remove|show|list|path|auto|minimal> ...")
+            sys.exit(2)
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
