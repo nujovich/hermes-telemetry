@@ -229,6 +229,7 @@
     const [active, setActive] = useState("summary");
     const Panel = (TABS.find((t) => t.id === active) || TABS[0]).render;
     return h("div", { className: "flex flex-col gap-4" },
+      h(ModelUnavailableWidget, null),
       h(TierTransitionsWidget, null),
       h(Card, null,
         h(CardHeader, null,
@@ -398,14 +399,53 @@
     );
   }
 
+  function ModelUnavailableWidget() {
+    // Surfaces models that 404'd in the last 72h (api_request_error hook,
+    // issue #43). Sibling to TierTransitionsWidget — same happy-path
+    // contract: render nothing when the table is empty for the window so
+    // the slot stays invisible in normal operation.
+    const [rows, setRows] = useState([]);
+    useEffect(() => {
+      api("/model-unavailable?window_hours=72")
+        .then((d) => setRows((d && d.rows) || []))
+        .catch(() => setRows([]));
+    }, []);
+    if (!rows.length) return null;
+    const now = Date.now();
+    const within24h = rows.some((r) => {
+      const t = Date.parse(r.last_seen_at);
+      return Number.isFinite(t) && (now - t) < 24 * 3600 * 1000;
+    });
+    return h(Card, { className: "border-dashed" },
+      h(CardHeader, { className: "pb-2" },
+        h(CardTitle, { className: "text-sm flex items-center gap-2" },
+          h(Badge, { variant: within24h ? "destructive" : "outline" }, "Model unavailable"),
+          h("span", null, `${rows.length} model${rows.length === 1 ? "" : "s"} 404'd (72h)`),
+        ),
+      ),
+      h(CardContent, { className: "py-2 space-y-1 text-xs font-courier" },
+        rows.slice(0, 5).map((r, i) => {
+          const provider = r.provider ? ` on ${r.provider}` : "";
+          const occ = r.occurrences > 1 ? ` · seen ${r.occurrences}×` : "";
+          return h("div", { key: i, className: "flex items-center gap-2" },
+            h("strong", null, r.model),
+            h("span", { className: "text-muted-foreground" },
+              `${provider} · HTTP ${r.error_code}${occ}`),
+          );
+        }),
+      ),
+    );
+  }
+
   const P = window.__HERMES_PLUGINS__;
   P.register(PLUGIN, TelemetryPage);
   P.registerSlot(PLUGIN, "sessions:top", SessionsTopWidget);
   P.registerSlot(PLUGIN, "cron:top", CronTopWidget);
   P.registerSlot(PLUGIN, "header-right", HeaderRightWidget);
   P.registerSlot(PLUGIN, "analytics:bottom", AnalyticsBottomChart);
-  // TierTransitionsWidget is rendered inside TelemetryPage, NOT via
-  // registerSlot — the Hermes shell only renders slots from its catalogue
-  // (sessions:top, cron:top, header-right, analytics:bottom) and silently
-  // drops anything else. See ONBOARDING.md § Slot widgets.
+  // TierTransitionsWidget and ModelUnavailableWidget are rendered inside
+  // TelemetryPage, NOT via registerSlot — the Hermes shell only renders
+  // slots from its catalogue (sessions:top, cron:top, header-right,
+  // analytics:bottom) and silently drops anything else.
+  // See ONBOARDING.md § Slot widgets.
 })();

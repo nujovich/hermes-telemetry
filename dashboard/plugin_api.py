@@ -380,3 +380,32 @@ def tier_transitions(window_hours: int = 72) -> dict:
     except sqlite3.OperationalError:
         rows = []
     return {"window_hours": wh, "rows": rows}
+
+
+@router.get("/model-unavailable")
+def model_unavailable(window_hours: int = 72) -> dict:
+    """Recent model-unavailable (HTTP 404) alerts, newest last_seen_at first.
+
+    Powers the model-unavailable widget rendered inside ``TelemetryPage``,
+    sibling to ``/tier-transitions``. ``window_hours <= 0`` returns the full
+    history. Table created by db.py schema v8; missing-table is treated as
+    "nothing failed yet" so the dashboard stays functional on pre-v8 installs.
+    """
+    wh = _coerce_window_hours(window_hours)
+    sql_base = (
+        "SELECT model, provider, error_code, error_message,"
+        " first_seen_at, last_seen_at, occurrences"
+        " FROM model_unavailable_alerts"
+    )
+    if wh > 0:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=wh)).isoformat()
+        sql = sql_base + " WHERE last_seen_at >= ? ORDER BY last_seen_at DESC"
+        params: tuple = (cutoff,)
+    else:
+        sql = sql_base + " ORDER BY last_seen_at DESC"
+        params = ()
+    try:
+        rows = _rows(sql, params)
+    except sqlite3.OperationalError:
+        rows = []
+    return {"window_hours": wh, "rows": rows}

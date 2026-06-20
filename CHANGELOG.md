@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Dashboard widget for model-unavailable alerts
+
+Surfaces the 404s captured by the `api_request_error` hook on the
+telemetry dashboard, sibling to the existing free→paid widget:
+
+- New endpoint `GET /model-unavailable?window_hours=72` in
+  `dashboard/plugin_api.py`, returning rows from `model_unavailable_alerts`
+  newest `last_seen_at` first. Missing-table is treated as empty so the
+  dashboard stays functional on pre-v8 installs.
+- New `ModelUnavailableWidget` in `dashboard/dist/index.js`, rendered
+  inside `TelemetryPage` next to `TierTransitionsWidget`. Same happy-path
+  contract — renders nothing when the table is empty in the window so the
+  card only appears when there is something to act on. Destructive badge
+  if the latest alert is within 24h, outline otherwise.
+- 3 new tests in `tests/test_dashboard_plugin_api.py`: empty case,
+  recorded alert roundtrip, window filtering.
+
+Rendered inside `TelemetryPage` rather than via `registerSlot` for the
+same reason as the free→paid widget: the Hermes shell slot catalogue
+(`sessions:top`, `cron:top`, `header-right`, `analytics:bottom`) doesn't
+include an alerts slot, and unknown slot names are silently dropped.
+
 ### Docs — `api_request_error` shadowed in production by a stale backup dir
 
 Real 404s in production (cron `nvidia-free-paid-probe` hitting
