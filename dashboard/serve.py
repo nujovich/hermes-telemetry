@@ -30,7 +30,7 @@ import sqlite3
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -2867,7 +2867,7 @@ def main(argv=None):
 
     _warn_if_exposed(host)
 
-    server = HTTPServer((host, port), Handler)
+    server = ThreadingHTTPServer((host, port), Handler)
     display_host = "localhost" if host in ("127.0.0.1", "localhost") else host
     print(f"hermes-telemetry dashboard at http://{display_host}:{port}")
     print("Press Ctrl+C to stop.")
