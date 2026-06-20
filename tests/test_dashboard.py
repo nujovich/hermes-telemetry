@@ -923,6 +923,48 @@ def test_api_cron_includes_scheduler_runs_without_telemetry(serve_module, monkey
     assert by_job["telemetry-job"]["tokens_in"] == 50
 
 
+def test_daily_token_chart_cache_hits_on_repeat(serve_module, monkeypatch):
+    serve_module.DailyTokenChartCache.reset_for_tests()
+    calls = {"n": 0}
+    payload = [{"day": "2026-06-10", "total_tokens": 123, "api_calls": 1}]
+
+    def fake_compute(**kwargs):
+        calls["n"] += 1
+        return payload
+
+    monkeypatch.setattr(serve_module.DailyTokenChartCache, "start", lambda self: None)
+    monkeypatch.setattr(serve_module, "_compute_daily_token_chart_rows", fake_compute)
+    first = serve_module.api_daily_token_chart(
+        window_hours=24, limit_days=26, include_deleted=True, granularity="hour", tz_name=None
+    )
+    second = serve_module.api_daily_token_chart(
+        window_hours=24, limit_days=26, include_deleted=True, granularity="hour", tz_name=None
+    )
+    assert first == payload
+    assert second == payload
+    assert calls["n"] == 1
+    serve_module.DailyTokenChartCache.reset_for_tests()
+
+
+def test_providers_cache_hits_on_repeat(serve_module, monkeypatch):
+    serve_module.ProvidersCache.reset_for_tests()
+    calls = {"n": 0}
+    payload = [{"provider": "openai-codex", "total_calls": 7, "cost_usd": 0.01, "total_tokens": 1000}]
+
+    def fake_compute(window_hours=24):
+        calls["n"] += 1
+        return payload
+
+    monkeypatch.setattr(serve_module.ProvidersCache, "start", lambda self: None)
+    monkeypatch.setattr(serve_module, "_compute_providers_rows", fake_compute)
+    first = serve_module.api_providers(window_hours=24)
+    second = serve_module.api_providers(window_hours=24)
+    assert first == payload
+    assert second == payload
+    assert calls["n"] == 1
+    serve_module.ProvidersCache.reset_for_tests()
+
+
 def test_model_efficiency_cache_hits_and_refresh(tmp_path, serve_module):
     """Cache-backed model efficiency: first call seeds cache, second hits cache,
     and POST /api/model-efficiency/refresh rebuilds the cache."""
