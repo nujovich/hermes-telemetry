@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `api_request_error` hook was dropped by Hermes' plugin loader
+
+PR #44 added the `api_request_error` handler in `__init__.py` but did not
+declare the hook in `plugin.yaml:provides_hooks`. Hermes' plugin loader
+(verified live against v0.17.0 via `get_plugin_manager()._hooks`) filters
+hook registrations by the manifest — a `register_hook()` call for a hook
+absent from `provides_hooks` is a silent no-op. As a result, real 404s in
+production (e.g. cron jobs hitting `nvidia/nemotron-3-ultra:free` after
+the free promo ended) never reached our handler, no row was written to
+`model_unavailable_alerts`, and no warning was injected. Added
+`api_request_error` to `plugin.yaml` and documented the gotcha in
+`ONBOARDING.md § Hook Registration Gotcha`.
+
 ### Added — Model-unavailable alert via `api_request_error` (issue #43)
 
 Surfaces 404s (model removed/deprecated by the provider) the same way the

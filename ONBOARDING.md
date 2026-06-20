@@ -75,7 +75,11 @@ hermes-telemetry/
 │                          summary, cron, providers, models, raw.
 ├── setup.py             ← /setup command + auto-setup on first load. Generates
 │                          pricing.yaml and budget.yaml with defaults.
-├── plugin.yaml          ← Plugin metadata: name, version, hooks.
+├── plugin.yaml          ← Plugin metadata: name, version, hooks. **MUST list every
+│                          hook in `provides_hooks` — Hermes' loader filters by
+│                          this list. `register_hook()` for a hook missing from
+│                          the manifest is a silent no-op (no error, no warning).
+│                          See `§ Hook Registration Gotcha` below.**
 ├── dashboard/
 │   ├── index.html       ← Standalone SPA. Chart.js, no build step, no auth.
 │   └── serve.py         ← stdlib HTTP server, port 8765, --host flag.
@@ -1176,6 +1180,27 @@ Hooks not used (and why):
 - `subagent_start` — only `subagent_stop` is consumed (no token data on start)
 - `pre_gateway_dispatch` / `pre_approval_request` / `post_approval_response` —
   documented as "observers only"; cannot block or modify
+
+### Hook Registration Gotcha — `plugin.yaml` `provides_hooks` is enforced
+
+Hermes' plugin loader filters hook registrations by the `provides_hooks` list in
+`plugin.yaml`. Calling `ctx.register_hook("foo", fn)` for a hook name **not**
+declared there is a silent no-op: no error, no warning, the callback is dropped.
+Verified live (Hermes v0.17.0) by introspecting `get_plugin_manager()._hooks` —
+the registered set is exactly the manifest's `provides_hooks`.
+
+This bit us with `api_request_error` (issue #43, PR #44): the handler was added
+to `__init__.py` but the manifest wasn't updated, so the 404 capture never ran
+in production despite green tests. **Whenever you add a new hook handler, add
+its name to `plugin.yaml:provides_hooks` in the same change.** Confirm with:
+
+```bash
+cd ~/.hermes/hermes-agent && python3 -c "
+from hermes_cli import plugins as p
+p.discover_plugins()
+print('api_request_error registered:', p.has_hook('api_request_error'))
+"
+```
 
 ### `api_request_error` — model-unavailable detection (issue #43)
 
