@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Dashboard widget for model-unavailable alerts
+
+Surfaces the 404s captured by the `api_request_error` hook on the
+telemetry dashboard, sibling to the existing free→paid widget:
+
+- New endpoint `GET /model-unavailable?window_hours=72` in
+  `dashboard/plugin_api.py`, returning rows from `model_unavailable_alerts`
+  newest `last_seen_at` first. Missing-table is treated as empty so the
+  dashboard stays functional on pre-v8 installs.
+- New `ModelUnavailableWidget` in `dashboard/dist/index.js`, rendered
+  inside `TelemetryPage` next to `TierTransitionsWidget`. Same happy-path
+  contract — renders nothing when the table is empty in the window so the
+  card only appears when there is something to act on. Destructive badge
+  if the latest alert is within 24h, outline otherwise.
+- 3 new tests in `tests/test_dashboard_plugin_api.py`: empty case,
+  recorded alert roundtrip, window filtering.
+
+Rendered inside `TelemetryPage` rather than via `registerSlot` for the
+same reason as the free→paid widget: the Hermes shell slot catalogue
+(`sessions:top`, `cron:top`, `header-right`, `analytics:bottom`) doesn't
+include an alerts slot, and unknown slot names are silently dropped.
+
+### Docs — `api_request_error` shadowed in production by a stale backup dir
+
+Real 404s in production (cron `nvidia-free-paid-probe` hitting
+`nvidia/nemotron-3-ultra:free` after the free promo ended on 2026-06-18)
+never reached the handler shipped in PR #44: no row was written to
+`model_unavailable_alerts` and no warning was injected. Root cause was
+**not** in this repo. A backup directory `hermes-telemetry.bak.1781730291`
+left alongside the active plugin in `~/.hermes/plugins/` declared the same
+`name: hermes-telemetry` in its `plugin.yaml`. Hermes' loader indexes
+plugins by `name`; on collision the later-parsed manifest wins silently,
+and filesystem order meant the `.bak` (pre-PR #44, no `register_hook`
+for `api_request_error`) was loaded instead of the active dir. Resolution
+on the server was a one-line `mv` of the backup out of `~/.hermes/plugins/`.
+
+Documented the trap in `ONBOARDING.md § Plugin Discovery Gotcha` so the
+next backup-next-to-plugin scenario gets caught at the doc, not after a
+week of silent 404s. Also declared `api_request_error` in
+`plugin.yaml:provides_hooks` — that field is purely declarative (the
+loader does not filter against it), but it should match the registered
+hooks for accuracy.
+
 ### Added — Model-unavailable alert via `api_request_error` (issue #43)
 
 Surfaces 404s (model removed/deprecated by the provider) the same way the

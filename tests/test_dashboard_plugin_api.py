@@ -245,6 +245,44 @@ def test_tier_transitions_window_filters_old_rows(plugin_api):
     assert [r["model"] for r in out["rows"]] == ["recent"]
 
 
+def test_model_unavailable_empty(plugin_api):
+    out = plugin_api.model_unavailable(window_hours=72)
+    assert out == {"window_hours": 72, "rows": []}
+
+
+def test_model_unavailable_returns_recorded_alert(plugin_api):
+    import db as runtime_db
+
+    runtime_db.record_model_unavailable(
+        "nvidia/nemotron-3-ultra:free", "nous", 404, "Model not found"
+    )
+    out = plugin_api.model_unavailable(window_hours=72)
+    assert out["window_hours"] == 72
+    assert len(out["rows"]) == 1
+    row = out["rows"][0]
+    assert row["model"] == "nvidia/nemotron-3-ultra:free"
+    assert row["provider"] == "nous"
+    assert row["error_code"] == 404
+    assert row["occurrences"] == 1
+
+
+def test_model_unavailable_window_filters_old_rows(plugin_api):
+    import db as runtime_db
+
+    runtime_db.record_model_unavailable("recent", "p", 404, "msg")
+    runtime_db._get_conn().execute(
+        "INSERT INTO model_unavailable_alerts"
+        "(model, provider, error_code, error_message,"
+        " first_seen_at, last_seen_at, occurrences)"
+        " VALUES (?, ?, 404, 'msg',"
+        " datetime('now', '-100 hours'),"
+        " datetime('now', '-100 hours'), 1)",
+        ("old", "p"),
+    )
+    out = plugin_api.model_unavailable(window_hours=72)
+    assert [r["model"] for r in out["rows"]] == ["recent"]
+
+
 def test_db_connection_is_read_only(plugin_api):
     """plugin_api opens the DB with PRAGMA query_only — writes must fail."""
     import sqlite3
