@@ -730,8 +730,6 @@ def handle_command(raw_args: str) -> str:
                 return f"Error: {exc}"
         elif choice == "list":
             filt = parts[2] if len(parts) > 2 else None
-            if filt and filt not in ("manual", "auto", "seed"):
-                return f"Unknown filter {filt!r}. Use: manual | auto | seed"
             try:
                 return pricing_list(filt)
             except RuntimeError as exc:

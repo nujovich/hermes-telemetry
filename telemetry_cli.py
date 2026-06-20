@@ -171,9 +171,8 @@ def _build_parser_into(sub) -> None:
     pl = psub.add_parser("list", help="List configured models")
     pl.add_argument(
         "--source",
-        choices=["manual", "auto", "seed"],
         default=None,
-        help="Filter by source",
+        help="Filter by source tag (e.g. manual, seed, openrouter, google-ai)",
     )
 
     psub.add_parser("path", help="Print the path to pricing.yaml")
