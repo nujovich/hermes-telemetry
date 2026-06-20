@@ -48,6 +48,120 @@ def test_schema_creates_tables():
     assert "schema_version" in tables
 
 
+def test_migrate_v9_repairs_missing_column_from_wedged_v7(monkeypatch):
+    """Regression: if an earlier process wedged the DB by marking
+    schema_version=7 without actually adding ``llm_calls.provider_assumed``
+    (the v7 ALTER was swallowed by a transient SQLITE_LOCKED under the old
+    blanket-except code), the next connect must self-heal via v9 — not crash
+    every ``record_llm_call`` with ``no such column: provider_assumed``."""
+    conn = db._get_conn()
+
+    # Simulate the wedged state: drop the column added by v7, while leaving
+    # schema_version=7 (and 8, 9) in place. SQLite has no DROP COLUMN before
+    # 3.35; instead we rebuild the table without the column to mimic the
+    # production state observed in the field.
+    conn.execute("ALTER TABLE llm_calls RENAME TO _llm_calls_old")
+    conn.execute("""
+        CREATE TABLE llm_calls (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id          TEXT NOT NULL,
+            ts                  TEXT NOT NULL,
+            model               TEXT,
+            provider            TEXT DEFAULT '',
+            tokens_in           INTEGER DEFAULT 0,
+            tokens_out          INTEGER DEFAULT 0,
+            cost_usd            REAL DEFAULT 0,
+            latency_ms          INTEGER DEFAULT 0,
+            cache_read_tokens   INTEGER DEFAULT 0,
+            cache_write_tokens  INTEGER DEFAULT 0,
+            reasoning_tokens    INTEGER DEFAULT 0,
+            estimated           INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("DROP TABLE _llm_calls_old")
+    # Force v9 to re-run by deleting its marker (mimics a DB that predates v9)
+    conn.execute("DELETE FROM schema_version WHERE version = 9")
+
+    cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('llm_calls')")}
+    assert "provider_assumed" not in cols  # wedged state confirmed
+
+    # Re-run migrations: v9 must self-heal
+    db._ensure_schema(conn)
+
+    cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('llm_calls')")}
+    assert "provider_assumed" in cols, "v9 must re-add provider_assumed when v7 silently skipped it"
+
+    # And record_llm_call must now succeed end-to-end
+    db.record_llm_call(
+        session_id="repair-test",
+        ts="2026-06-20T20:00:00+00:00",
+        model="deepseek-chat",
+        provider="deepseek",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.001,
+        latency_ms=500,
+        provider_assumed=False,
+    )
+    row = conn.execute(
+        "SELECT tokens_in, tokens_out, provider_assumed FROM llm_calls WHERE session_id = 'repair-test'"
+    ).fetchone()
+    assert row["tokens_in"] == 100
+    assert row["tokens_out"] == 50
+    assert row["provider_assumed"] == 0
+
+
+def test_alter_failure_does_not_mark_migration_applied(monkeypatch):
+    """Regression: if ALTER TABLE raises a non-"duplicate column" error
+    (e.g. SQLITE_LOCKED from cross-process contention), the surrounding
+    migration must NOT write its schema_version row — otherwise the next
+    connect skips the migration permanently and the column never lands."""
+    import sqlite3 as _sqlite3
+
+    conn = db._get_conn()
+    # Pretend we're a pre-v7 DB that just finished v6.
+    conn.execute("DELETE FROM schema_version WHERE version >= 7")
+    # Drop columns added by v7 to mimic a fresh-from-v6 DB.
+    conn.execute("ALTER TABLE llm_calls RENAME TO _old")
+    conn.execute("""
+        CREATE TABLE llm_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            model TEXT,
+            provider TEXT DEFAULT '',
+            tokens_in INTEGER DEFAULT 0,
+            tokens_out INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0,
+            latency_ms INTEGER DEFAULT 0,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_write_tokens INTEGER DEFAULT 0,
+            reasoning_tokens INTEGER DEFAULT 0,
+            estimated INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("DROP TABLE _old")
+
+    # Force the ALTER inside _add_column_if_missing to raise SQLITE_LOCKED.
+    original = db._add_column_if_missing
+    call_count = {"n": 0}
+
+    def flaky(conn_, table, column, typedef):
+        call_count["n"] += 1
+        if call_count["n"] == 1 and column == "provider_assumed":
+            raise _sqlite3.OperationalError("database is locked")
+        return original(conn_, table, column, typedef)
+
+    monkeypatch.setattr(db, "_add_column_if_missing", flaky)
+
+    with pytest.raises(_sqlite3.OperationalError, match="locked"):
+        db._migrate_v7(conn)
+
+    # Crucial: v7 must NOT be marked applied, so the next connect retries.
+    v7 = conn.execute("SELECT version FROM schema_version WHERE version = 7").fetchone()
+    assert v7 is None, "migration must not be marked applied if ALTER failed transiently"
+
+
 def test_schema_idempotent():
     """Calling _ensure_schema twice must not raise or duplicate version rows.
 

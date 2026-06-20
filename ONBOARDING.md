@@ -370,11 +370,24 @@ table before applying.
 | v6 | New table: `free_paid_transitions` (historical free→paid flips for the widget rendered inside `TelemetryPage`) |
 | v7 | `llm_calls.provider_assumed` flag + `runs.provider_assumed_calls` counter (provider-assumed pricing visibility, issue #42) |
 | v8 | New table: `model_unavailable_alerts` (404s captured via `api_request_error` — model removed/deprecated by provider) |
+| v9 | Repair pass — re-adds any column from v2/v3/v4/v7 that was silently skipped by the old blanket `except OperationalError: pass` pattern when an `ALTER TABLE` hit a transient `SQLITE_LOCKED` (cross-process cron contention). Uses `_add_column_if_missing`; idempotent. |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
 `schema_version` rows equals `_SCHEMA_VERSION`, so adding a migration without
 bumping the constant (or vice versa) fails CI.
+
+**Migration ALTER contract (post-v9):** never wrap an `ALTER TABLE ADD COLUMN`
+in a blanket `except sqlite3.OperationalError: pass` followed by an
+unconditional `INSERT INTO schema_version`. `OperationalError` also covers
+`SQLITE_LOCKED` (which `busy_timeout` does **not** retry across processes — the
+`_schema_lock` only protects threads of the same process; cron jobs run in
+separate processes and *will* contend on first connect after an upgrade) and
+I/O errors. Swallowing those and then marking the version applied permanently
+wedges the DB without raising. Use `_add_column_if_missing` instead — it checks
+`pragma_table_info` first and lets any real `OperationalError` propagate, so
+the surrounding migration is NOT marked applied and the next connect retries.
+This was the root cause of the v7 `provider_assumed` silent-skip incident.
 
 ### `_ensure_run_row` — lazy insert (added v0.3.1)
 
