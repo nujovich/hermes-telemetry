@@ -567,7 +567,7 @@ def api_providers(window_hours=24):
     return ProvidersCache.instance().get_rows(window_hours=window_hours)
 
 
-def api_provider_health(window_hours=24):
+def _compute_provider_health(window_hours=24):
     requested_window = _coerce_window_hours(window_hours)
     effective_window = requested_window if requested_window > 0 else 24
     now = datetime.now(timezone.utc)
@@ -682,6 +682,10 @@ def api_provider_health(window_hours=24):
         )
     )
     return {"window_hours": effective_window, "rows": rows}
+
+
+def api_provider_health(window_hours=24):
+    return ProviderHealthCache.instance().get_rows(window_hours=window_hours)
 
 
 def _build_run_filters(
@@ -1471,6 +1475,22 @@ class ProvidersCache(_BackgroundPayloadCache):
         return _compute_providers_rows(kwargs.get("window_hours", 24))
 
 
+class ProviderHealthCache(_BackgroundPayloadCache):
+    CACHE_NAME = "provider-health"
+    DEFAULT_KEYS = (
+        {"window_hours": 24},
+        {"window_hours": 168},
+        {"window_hours": 720},
+        {"window_hours": 0},
+    )
+
+    def cache_key(self, **kwargs):
+        return _endpoint_payload_cache_key(int(_coerce_window_hours(kwargs.get("window_hours", 24))))
+
+    def compute_rows(self, **kwargs):
+        return _compute_provider_health(kwargs.get("window_hours", 24))
+
+
 class DailyTokenChartCache(_BackgroundPayloadCache):
     CACHE_NAME = "daily-token-chart"
     DEFAULT_KEYS = (
@@ -1495,6 +1515,34 @@ class DailyTokenChartCache(_BackgroundPayloadCache):
             limit_days=kwargs.get("limit_days", 90),
             include_deleted=kwargs.get("include_deleted", False),
             granularity=kwargs.get("granularity", "day"),
+            tz_name=kwargs.get("tz_name"),
+        )
+
+
+class DailyModelChartCache(_BackgroundPayloadCache):
+    CACHE_NAME = "daily-model-chart"
+    DEFAULT_KEYS = (
+        {"window_hours": 24, "limit_days": 26, "top_n": 5, "include_deleted": True, "tz_name": None},
+        {"window_hours": 168, "limit_days": 14, "top_n": 5, "include_deleted": True, "tz_name": None},
+        {"window_hours": 720, "limit_days": 32, "top_n": 5, "include_deleted": True, "tz_name": None},
+        {"window_hours": 0, "limit_days": 3650, "top_n": 5, "include_deleted": True, "tz_name": None},
+    )
+
+    def cache_key(self, **kwargs):
+        return _endpoint_payload_cache_key(
+            int(_coerce_window_hours(kwargs.get("window_hours", 24))),
+            max(1, min(3650, int(kwargs.get("limit_days", 90)))),
+            max(1, min(8, int(kwargs.get("top_n", 5)))),
+            int(bool(kwargs.get("include_deleted", False))),
+            _normalize_dashboard_tz_name(kwargs.get("tz_name")),
+        )
+
+    def compute_rows(self, **kwargs):
+        return _compute_daily_model_chart(
+            window_hours=kwargs.get("window_hours", 24),
+            limit_days=kwargs.get("limit_days", 90),
+            top_n=kwargs.get("top_n", 5),
+            include_deleted=kwargs.get("include_deleted", False),
             tz_name=kwargs.get("tz_name"),
         )
 
@@ -2071,7 +2119,7 @@ def api_daily_token_chart(
     )
 
 
-def api_daily_model_chart(
+def _compute_daily_model_chart(
     window_hours=24, limit_days=90, top_n=5, include_deleted=False, tz_name: str | None = None
 ):
     since_clause_ts = _since_clause(window_hours, "ts")
@@ -2144,6 +2192,18 @@ def api_daily_model_chart(
         "models": model_names,
         "rows": [day_map[d] for d in day_order],
     }
+
+
+def api_daily_model_chart(
+    window_hours=24, limit_days=90, top_n=5, include_deleted=False, tz_name: str | None = None
+):
+    return DailyModelChartCache.instance().get_rows(
+        window_hours=window_hours,
+        limit_days=limit_days,
+        top_n=top_n,
+        include_deleted=include_deleted,
+        tz_name=tz_name,
+    )
 
 
 def api_model_period_trends(
@@ -3743,7 +3803,9 @@ def main(argv=None):
     # Start background caches before binding the server so first-paint
     # never blocks on heavy historical aggregations.
     ProvidersCache.instance()
+    ProviderHealthCache.instance()
     DailyTokenChartCache.instance()
+    DailyModelChartCache.instance()
     ModelEfficiencyCache.instance()
 
     server = ThreadingHTTPServer((host, port), Handler)
