@@ -965,6 +965,48 @@ def test_providers_cache_hits_on_repeat(serve_module, monkeypatch):
     serve_module.ProvidersCache.reset_for_tests()
 
 
+def test_provider_health_cache_hits_on_repeat(serve_module, monkeypatch):
+    serve_module.ProviderHealthCache.reset_for_tests()
+    calls = {"n": 0}
+    payload = {"window_hours": 24, "rows": [{"provider": "openai-codex", "health": "ok"}]}
+
+    def fake_compute(window_hours=24):
+        calls["n"] += 1
+        return payload
+
+    monkeypatch.setattr(serve_module.ProviderHealthCache, "start", lambda self: None)
+    monkeypatch.setattr(serve_module, "_compute_provider_health", fake_compute)
+    first = serve_module.api_provider_health(window_hours=24)
+    second = serve_module.api_provider_health(window_hours=24)
+    assert first == payload
+    assert second == payload
+    assert calls["n"] == 1
+    serve_module.ProviderHealthCache.reset_for_tests()
+
+
+def test_daily_model_chart_cache_hits_on_repeat(serve_module, monkeypatch):
+    serve_module.DailyModelChartCache.reset_for_tests()
+    calls = {"n": 0}
+    payload = {"models": ["gpt-5.4"], "rows": [{"day": "2026-06-10", "models": {"gpt-5.4": 123}, "other": 0}]}
+
+    def fake_compute(**kwargs):
+        calls["n"] += 1
+        return payload
+
+    monkeypatch.setattr(serve_module.DailyModelChartCache, "start", lambda self: None)
+    monkeypatch.setattr(serve_module, "_compute_daily_model_chart", fake_compute)
+    first = serve_module.api_daily_model_chart(
+        window_hours=24, limit_days=26, top_n=5, include_deleted=True, tz_name=None
+    )
+    second = serve_module.api_daily_model_chart(
+        window_hours=24, limit_days=26, top_n=5, include_deleted=True, tz_name=None
+    )
+    assert first == payload
+    assert second == payload
+    assert calls["n"] == 1
+    serve_module.DailyModelChartCache.reset_for_tests()
+
+
 def test_model_efficiency_cache_hits_and_refresh(tmp_path, serve_module):
     """Cache-backed model efficiency: first call seeds cache, second hits cache,
     and POST /api/model-efficiency/refresh rebuilds the cache."""
