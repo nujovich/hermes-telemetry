@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -166,6 +166,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v7(conn)
     _migrate_v8(conn)
     _migrate_v9(conn)
+    _migrate_v10(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -388,6 +389,72 @@ def _migrate_v9(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (9, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v10(conn: sqlite3.Connection) -> None:
+    """Add v10 schema: tiered storage rollup tables for daily, weekly, and
+    monthly aggregation of token usage, cost, API calls, and tool calls.
+
+    These tables are populated by upsert_rollups() at session end and by
+    periodic compaction. They power bucketed analytics queries (/stats with
+    --granularity) without expensive full-table scans over llm_calls.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 10")
+    if cur.fetchone() is not None:
+        return
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS daily_rollups (
+            period_start TEXT NOT NULL,
+            model        TEXT NOT NULL DEFAULT '',
+            provider     TEXT NOT NULL DEFAULT '',
+            tokens_in    INTEGER DEFAULT 0,
+            tokens_out   INTEGER DEFAULT 0,
+            cost_usd     REAL DEFAULT 0.0,
+            api_calls    INTEGER DEFAULT 0,
+            tool_calls   INTEGER DEFAULT 0,
+            session_count INTEGER DEFAULT 0,
+            PRIMARY KEY (period_start, model, provider)
+        );
+
+        CREATE TABLE IF NOT EXISTS weekly_rollups (
+            period_start TEXT NOT NULL,
+            model        TEXT NOT NULL DEFAULT '',
+            provider     TEXT NOT NULL DEFAULT '',
+            tokens_in    INTEGER DEFAULT 0,
+            tokens_out   INTEGER DEFAULT 0,
+            cost_usd     REAL DEFAULT 0.0,
+            api_calls    INTEGER DEFAULT 0,
+            tool_calls   INTEGER DEFAULT 0,
+            session_count INTEGER DEFAULT 0,
+            PRIMARY KEY (period_start, model, provider)
+        );
+
+        CREATE TABLE IF NOT EXISTS monthly_rollups (
+            period_start TEXT NOT NULL,
+            model        TEXT NOT NULL DEFAULT '',
+            provider     TEXT NOT NULL DEFAULT '',
+            tokens_in    INTEGER DEFAULT 0,
+            tokens_out   INTEGER DEFAULT 0,
+            cost_usd     REAL DEFAULT 0.0,
+            api_calls    INTEGER DEFAULT 0,
+            tool_calls   INTEGER DEFAULT 0,
+            session_count INTEGER DEFAULT 0,
+            PRIMARY KEY (period_start, model, provider)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_daily_period
+            ON daily_rollups(period_start);
+        CREATE INDEX IF NOT EXISTS idx_weekly_period
+            ON weekly_rollups(period_start);
+        CREATE INDEX IF NOT EXISTS idx_monthly_period
+            ON monthly_rollups(period_start);
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (10, ?)",
         (_utcnow(),),
     )
 
