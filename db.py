@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -142,6 +142,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v3(conn)
     _migrate_v4(conn)
     _migrate_v5(conn)
+    _migrate_v6(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -250,6 +251,45 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (5, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v6(conn: sqlite3.Connection) -> None:
+    """Add v6 schema: dashboard cache tables for standalone endpoint payloads."""
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 6")
+    if cur.fetchone() is not None:
+        return
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS endpoint_payload_cache (
+            cache_name  TEXT NOT NULL,
+            cache_key   TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            rows_count  INTEGER NOT NULL,
+            built_at    TEXT NOT NULL,
+            PRIMARY KEY (cache_name, cache_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_endpoint_payload_cache_name
+            ON endpoint_payload_cache(cache_name, built_at);
+
+        CREATE TABLE IF NOT EXISTS model_efficiency_cache (
+            cache_key       TEXT PRIMARY KEY,
+            window_hours    INTEGER NOT NULL,
+            include_deleted INTEGER NOT NULL,
+            limit_n         INTEGER NOT NULL,
+            payload_json    TEXT NOT NULL,
+            rows_count      INTEGER NOT NULL,
+            built_at        TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_me_cache_window
+            ON model_efficiency_cache(window_hours, include_deleted);
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (6, ?)",
         (_utcnow(),),
     )
 

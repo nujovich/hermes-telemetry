@@ -1007,6 +1007,88 @@ def test_daily_model_chart_cache_hits_on_repeat(serve_module, monkeypatch):
     serve_module.DailyModelChartCache.reset_for_tests()
 
 
+def test_dashboard_cache_refresh_concurrent_with_plugin_writes(serve_module, monkeypatch):
+    import datetime
+    import threading
+    import time
+
+    import hermes_telemetry.db as db_mod
+
+    for cls_name in (
+        "ProvidersCache",
+        "ProviderHealthCache",
+        "DailyTokenChartCache",
+        "DailyModelChartCache",
+        "ModelEfficiencyCache",
+    ):
+        cls = getattr(serve_module, cls_name)
+        cls.reset_for_tests()
+        monkeypatch.setattr(cls, "start", lambda self: None)
+
+    errors = []
+    n_threads = 4
+    writes_per_thread = 8
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    def writer(thread_idx: int):
+        db_mod._local.conn = None
+        try:
+            for j in range(writes_per_thread):
+                sid = f"cache-race-{thread_idx}-{j}"
+                db_mod.start_run(sid, model="gpt-5.4", platform="cron", cron_job_id=f"job-{thread_idx}")
+                db_mod.record_llm_call(sid, now, "gpt-5.4", "openai", 100, 25, 0.001, 120)
+                db_mod.record_tool_call(sid, now, "read_file", True, 10)
+                db_mod.end_run(sid, "ok")
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            db_mod.close_thread_conn()
+
+    def refresher():
+        try:
+            for _ in range(8):
+                serve_module.ProvidersCache.instance().refresh(window_hours=24)
+                serve_module.ProviderHealthCache.instance().refresh(window_hours=24)
+                serve_module.DailyTokenChartCache.instance().refresh(
+                    window_hours=24,
+                    limit_days=26,
+                    include_deleted=True,
+                    granularity="hour",
+                    tz_name=None,
+                )
+                serve_module.DailyModelChartCache.instance().refresh(
+                    window_hours=24,
+                    limit_days=26,
+                    top_n=5,
+                    include_deleted=True,
+                    tz_name=None,
+                )
+                serve_module.ModelEfficiencyCache.instance().refresh(
+                    window_hours=24, include_deleted=True
+                )
+                time.sleep(0.01)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(n_threads)]
+    refresh_thread = threading.Thread(target=refresher)
+    refresh_thread.start()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    refresh_thread.join()
+
+    assert errors == [], f"concurrent cache/plugin errors: {errors}"
+    db_mod._local.conn = None
+    conn = db_mod._get_conn()
+    expected = n_threads * writes_per_thread
+    assert conn.execute("SELECT COUNT(*) FROM runs WHERE session_id LIKE 'cache-race-%'").fetchone()[0] == expected
+    assert conn.execute("SELECT COUNT(*) FROM llm_calls WHERE session_id LIKE 'cache-race-%'").fetchone()[0] == expected
+    assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id LIKE 'cache-race-%'").fetchone()[0] == expected
+    db_mod.close_thread_conn()
+
+
 def test_model_efficiency_cache_hits_and_refresh(tmp_path, serve_module):
     """Cache-backed model efficiency: first call seeds cache, second hits cache,
     and POST /api/model-efficiency/refresh rebuilds the cache."""

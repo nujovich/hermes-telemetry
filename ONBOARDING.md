@@ -362,11 +362,19 @@ table before applying.
 | v3 | `runs.sender_id`. New table: `budget_alerts` (anti-spam ledger) |
 | v4 | `runs`: `cache_read_tokens`, `cache_write_tokens` (per-session/cron cache breakdown) |
 | v5 | New table: `known_free_models` (free→paid transition tracking) |
+| v6 | New tables: `endpoint_payload_cache`, `model_efficiency_cache` (standalone dashboard cache layer) |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
 `schema_version` rows equals `_SCHEMA_VERSION`, so adding a migration without
 bumping the constant (or vice versa) fails CI.
+
+**Dashboard cache tables (v6):** the standalone dashboard cache writes into the
+same WAL-backed `telemetry.db` file as the runtime hooks, but only into its own
+cache tables (`endpoint_payload_cache`, `model_efficiency_cache`). This still
+shares SQLite's file-level write lock, so the cache connections use the same
+30s `busy_timeout` posture as the main DB layer and CI pins the invariant with
+an explicit concurrent cache-refresh + plugin-write test.
 
 ### `_ensure_run_row` — lazy insert (added v0.3.1)
 

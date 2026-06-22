@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 
 import pytest
@@ -659,6 +660,127 @@ def test_schema_v5_recorded():
 
     versions = {row[0] for row in _get_conn().execute("SELECT version FROM schema_version")}
     assert 5 in versions
+
+
+def test_schema_v6_tables_and_indexes():
+    conn = db._get_conn()
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "endpoint_payload_cache" in tables
+    assert "model_efficiency_cache" in tables
+    endpoint_cols = {r["name"] for r in conn.execute("PRAGMA table_info(endpoint_payload_cache)")}
+    assert endpoint_cols >= {"cache_name", "cache_key", "payload_json", "rows_count", "built_at"}
+    me_cols = {r["name"] for r in conn.execute("PRAGMA table_info(model_efficiency_cache)")}
+    assert me_cols >= {
+        "cache_key",
+        "window_hours",
+        "include_deleted",
+        "limit_n",
+        "payload_json",
+        "rows_count",
+        "built_at",
+    }
+    indexes = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_endpoint_payload_cache_name" in indexes
+    assert "idx_me_cache_window" in indexes
+
+
+def test_schema_v6_recorded():
+    versions = {row[0] for row in db._get_conn().execute("SELECT version FROM schema_version")}
+    assert 6 in versions
+
+
+def test_upgrade_path_v5_to_v6(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_telemetry.db as db_mod
+
+    tele_dir = tmp_path / "telemetry"
+    tele_dir.mkdir(parents=True, exist_ok=True)
+    db_path = tele_dir / "telemetry.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE schema_version (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+        CREATE TABLE runs (
+            session_id TEXT PRIMARY KEY,
+            platform TEXT,
+            cron_job_id TEXT,
+            model TEXT,
+            provider TEXT,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            status TEXT DEFAULT 'running',
+            tokens_in INTEGER DEFAULT 0,
+            tokens_out INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0.0,
+            duration_ms INTEGER,
+            api_calls INTEGER DEFAULT 0,
+            tool_calls INTEGER DEFAULT 0,
+            parent_session_id TEXT,
+            estimated_llm_calls INTEGER DEFAULT 0,
+            sender_id TEXT,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_write_tokens INTEGER DEFAULT 0
+        );
+        CREATE TABLE llm_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            model TEXT,
+            provider TEXT,
+            tokens_in INTEGER DEFAULT 0,
+            tokens_out INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0.0,
+            latency_ms INTEGER,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_write_tokens INTEGER DEFAULT 0,
+            reasoning_tokens INTEGER DEFAULT 0,
+            estimated INTEGER DEFAULT 0
+        );
+        CREATE TABLE tool_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            ok INTEGER NOT NULL DEFAULT 1,
+            latency_ms INTEGER
+        );
+        CREATE TABLE budget_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL,
+            scope_id TEXT NOT NULL DEFAULT '',
+            window TEXT NOT NULL,
+            period_key TEXT NOT NULL,
+            level TEXT NOT NULL,
+            fired_at TEXT NOT NULL,
+            spent_usd REAL,
+            limit_usd REAL,
+            UNIQUE(scope, scope_id, window, period_key, level)
+        );
+        CREATE TABLE known_free_models (
+            model TEXT NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            first_seen_at TEXT NOT NULL,
+            PRIMARY KEY (model, provider)
+        );
+        """
+    )
+    conn.executemany(
+        "INSERT INTO schema_version(version, applied_at) VALUES (?, '2026-01-01T00:00:00+00:00')",
+        [(1,), (2,), (3,), (4,), (5,)],
+    )
+    conn.commit()
+    conn.close()
+
+    db_mod._local.conn = None
+    upgraded = db_mod._get_conn()
+    versions = {row[0] for row in upgraded.execute("SELECT version FROM schema_version")}
+    assert versions >= {1, 2, 3, 4, 5, 6}
+    tables = {r[0] for r in upgraded.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "endpoint_payload_cache" in tables
+    assert "model_efficiency_cache" in tables
 
 
 # ---------------------------------------------------------------------------

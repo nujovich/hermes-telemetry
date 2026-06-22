@@ -30,6 +30,7 @@ import sqlite3
 import sys
 import threading
 import time
+import types
 from datetime import datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -53,6 +54,14 @@ DB_PATH = HERMES_HOME / "telemetry" / "telemetry.db"
 STATE_DB_PATH = HERMES_HOME / "state.db"
 CRON_JOBS_PATH = HERMES_HOME / "cron" / "jobs.json"
 CRON_OUTPUT_DIR = HERMES_HOME / "cron" / "output"
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if "hermes_telemetry" not in sys.modules:
+    _pkg = types.ModuleType("hermes_telemetry")
+    _pkg.__path__ = [str(_REPO_ROOT)]
+    _pkg.__package__ = "hermes_telemetry"
+    _pkg.__file__ = str(_REPO_ROOT / "__init__.py")
+    sys.modules["hermes_telemetry"] = _pkg
 
 _local = threading.local()
 
@@ -1288,23 +1297,16 @@ def _endpoint_payload_cache_key(*parts):
     return json.dumps(parts, separators=(",", ":"), default=str)
 
 
-_ENDPOINT_PAYLOAD_CACHE_SCHEMA = """
-CREATE TABLE IF NOT EXISTS endpoint_payload_cache (
-    cache_name TEXT NOT NULL,
-    cache_key TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    rows_count INTEGER NOT NULL,
-    built_at TEXT NOT NULL,
-    PRIMARY KEY (cache_name, cache_key)
-)
-"""
+def _telemetry_db_module():
+    import hermes_telemetry.db as telemetry_db
+
+    return telemetry_db
 
 
-def _ensure_endpoint_payload_cache_table(conn: sqlite3.Connection) -> None:
-    conn.execute(_ENDPOINT_PAYLOAD_CACHE_SCHEMA)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_endpoint_payload_cache_name ON endpoint_payload_cache(cache_name, built_at)"
-    )
+def _ensure_dashboard_cache_schema() -> None:
+    _telemetry_db_module()._get_conn()
+    _telemetry_db_module().close_thread_conn()
+    return None
 
 
 class _BackgroundPayloadCache:
@@ -1317,12 +1319,12 @@ class _BackgroundPayloadCache:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_dashboard_cache_schema()
         self._conn = sqlite3.connect(
             str(self.db_path), isolation_level=None, check_same_thread=False
         )
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        _ensure_endpoint_payload_cache_table(self._conn)
+        self._conn.execute("PRAGMA busy_timeout=30000")
         self._cond = threading.Condition(threading.Lock())
         self._stop = threading.Event()
         self._refreshing = False
@@ -1528,26 +1530,6 @@ class DailyModelChartCache(_BackgroundPayloadCache):
             include_deleted=kwargs.get("include_deleted", False),
             tz_name=kwargs.get("tz_name"),
         )
-
-
-_MODEL_EFFICIENCY_CACHE_SCHEMA = """
-CREATE TABLE IF NOT EXISTS model_efficiency_cache (
-    cache_key TEXT PRIMARY KEY,
-    window_hours INTEGER NOT NULL,
-    include_deleted INTEGER NOT NULL,
-    limit_n INTEGER NOT NULL,
-    payload_json TEXT NOT NULL,
-    rows_count INTEGER NOT NULL,
-    built_at TEXT NOT NULL
-)
-"""
-
-
-def _ensure_model_efficiency_cache_table(conn: sqlite3.Connection) -> None:
-    conn.execute(_MODEL_EFFICIENCY_CACHE_SCHEMA)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_me_cache_window ON model_efficiency_cache(window_hours, include_deleted)"
-    )
 
 
 def api_model_efficiency(window_hours=0, limit=50, include_deleted=False):
@@ -3228,6 +3210,8 @@ class ModelEfficiencyCache:
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_dashboard_cache_schema()
         # check_same_thread=False: this connection is touched from both the
         # background refresh thread and request handlers. We serialize writes
         # through `_cond` and rely on SQLite's WAL + busy_timeout for reads.
@@ -3235,8 +3219,7 @@ class ModelEfficiencyCache:
             str(self.db_path), isolation_level=None, check_same_thread=False
         )
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        _ensure_model_efficiency_cache_table(self._conn)
+        self._conn.execute("PRAGMA busy_timeout=30000")
         self._cond = threading.Condition(threading.Lock())
         self._stop = threading.Event()
         self._refreshing = False
