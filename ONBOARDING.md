@@ -418,6 +418,7 @@ table before applying.
 | v13 | Repair pass — re-creates `subagent_edges` (+ `idx_subagent_edges_parent`) via `CREATE TABLE IF NOT EXISTS`. Heals DBs upgraded from a build that numbered a *different* migration as v11: the per-profile branch shipped `runs.profile` as v11 before #56 settled `subagent_edges` on v11, so those DBs have `version=11` applied but no table, and v11's early-return skips creation forever. No-op on clean v11 DBs. |
 | v14 | New table: `pricing_snapshots` (append-per-change history of the tariffs Hermes core resolves per `(provider, model)`, with provenance: `source` / `source_url` / `pricing_version` / `fetched_at`). Captured from `agent.usage_pricing.get_pricing_entry` via `core_pricing.py` in the `post_api_request` hook; storage-only (no surface yet). + `idx_pricing_snapshots_model`. |
 | v15 | `pricing_snapshots.resolved_model` — Canonical model name captured when a dated id was normalized to resolve against the core `/models` catalog; NULL when the raw name resolved directly. |
+| v16 | New tables: `endpoint_payload_cache` and `model_efficiency_cache` for standalone-dashboard caches; cache writers share the plugin DB's WAL + 30s busy-timeout posture. |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
