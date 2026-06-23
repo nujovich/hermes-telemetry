@@ -30,7 +30,7 @@ import sqlite3
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -1277,10 +1277,7 @@ def api_error_center(
 def api_model_efficiency(window_hours=0, limit=50, include_deleted=False):
     limit = max(1, min(int(limit), 500))
     since_clause = _since_clause(window_hours, "lc.ts")
-    tool_since_clause = _since_clause(window_hours, "tc.ts")
-    sub_lc_since_clause = _since_clause(window_hours, "lc2.ts")
     visible_sql, visible_params = _visible_sessions_clause("r.session_id", include_deleted)
-    sub_visible_sql = visible_sql.replace("r.session_id", "r2.session_id")
     rows = _rows(
         f"""
         SELECT COALESCE(lc.model, '—') AS model,
@@ -1297,17 +1294,7 @@ def api_model_efficiency(window_hours=0, limit=50, include_deleted=False):
                SUM(CASE WHEN lc.estimated = 1 THEN 1 ELSE 0 END) AS estimated_calls,
                SUM(CASE WHEN COALESCE(r.status, 'running') NOT IN ('ok', 'running') THEN 1 ELSE 0 END) AS failed_run_calls,
                COUNT(DISTINCT CASE WHEN COALESCE(r.status, 'running') NOT IN ('ok', 'running') THEN lc.session_id END) AS failed_sessions,
-               COALESCE((
-                   SELECT COUNT(DISTINCT tc.id)
-                   FROM tool_calls tc
-                   LEFT JOIN runs r2 ON r2.session_id = tc.session_id
-                   LEFT JOIN llm_calls lc2 ON lc2.session_id = tc.session_id
-                   WHERE {tool_since_clause}
-                     AND {sub_visible_sql}
-                     AND {sub_lc_since_clause}
-                     AND COALESCE(lc2.model, '—') = COALESCE(lc.model, '—')
-                     AND COALESCE(lc2.provider, '—') = COALESCE(lc.provider, '—')
-               ), 0) AS tool_calls
+               0 AS tool_calls
         FROM llm_calls lc
         LEFT JOIN runs r ON r.session_id = lc.session_id
         WHERE {since_clause} AND {visible_sql}
@@ -1315,8 +1302,23 @@ def api_model_efficiency(window_hours=0, limit=50, include_deleted=False):
         ORDER BY (COALESCE(SUM(lc.tokens_in), 0) + COALESCE(SUM(lc.tokens_out), 0) + COALESCE(SUM(lc.cache_read_tokens), 0) + COALESCE(SUM(lc.cache_write_tokens), 0) + COALESCE(SUM(lc.reasoning_tokens), 0)) DESC
         LIMIT ?
         """,
-        (*visible_params, *visible_params, limit),
+        (*visible_params, limit),
     )
+    if rows:
+        session_models = _rows(
+            """
+            SELECT DISTINCT tc.session_id, lc.model, lc.provider
+            FROM tool_calls tc
+            JOIN llm_calls lc ON lc.session_id = tc.session_id
+            """
+        )
+        tool_count: dict[tuple, int] = {}
+        for sm in session_models:
+            key = (sm["model"] or "—", sm["provider"] or "—")
+            tool_count[key] = tool_count.get(key, 0) + 1
+        for row in rows:
+            key = (row["model"], row["provider"])
+            row["tool_calls"] = tool_count.get(key, 0)
     for row in rows:
         api_calls = int(row.get("api_calls") or 0)
         tokens_in = int(row.get("tokens_in") or 0)
@@ -2870,7 +2872,7 @@ def main(argv=None):
 
     _warn_if_exposed(host)
 
-    server = HTTPServer((host, port), Handler)
+    server = ThreadingHTTPServer((host, port), Handler)
     display_host = "localhost" if host in ("127.0.0.1", "localhost") else host
     print(f"hermes-telemetry dashboard at http://{display_host}:{port}")
     print("Press Ctrl+C to stop.")
