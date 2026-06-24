@@ -48,6 +48,99 @@ def test_schema_creates_tables():
     assert "schema_version" in tables
 
 
+def test_migrate_v10_creates_rollup_tables():
+    """Verify that v10 migration creates daily, weekly, and monthly rollup
+    tables with correct columns and indexes."""
+    conn = db._get_conn()
+
+    # The migration is idempotent — calling _ensure_schema again is harmless
+    db._ensure_schema(conn)
+
+    tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert "daily_rollups" in tables
+    assert "weekly_rollups" in tables
+    assert "monthly_rollups" in tables
+
+    # Verify schema version 10 marker exists
+    row = conn.execute(
+        "SELECT version FROM schema_version WHERE version = 10"
+    ).fetchone()
+    assert row is not None, "v10 migration must record schema_version = 10"
+
+    # Verify expected columns on daily_rollups (same schema for all three)
+    expected_cols = {
+        "period_start",
+        "model",
+        "provider",
+        "tokens_in",
+        "tokens_out",
+        "cost_usd",
+        "api_calls",
+        "tool_calls",
+        "session_count",
+    }
+    for table_name in ("daily_rollups", "weekly_rollups", "monthly_rollups"):
+        cols = {
+            r[0]
+            for r in conn.execute(
+                f"SELECT name FROM pragma_table_info('{table_name}')"
+            ).fetchall()
+        }
+        assert expected_cols.issubset(
+            cols
+        ), f"{table_name} missing columns: {expected_cols - cols}"
+
+    # Verify indexes exist
+    indexes = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+    }
+    assert "idx_daily_period" in indexes
+    assert "idx_weekly_period" in indexes
+    assert "idx_monthly_period" in indexes
+
+
+def test_migrate_v10_is_idempotent():
+    """Running _ensure_schema twice must not error and must keep the same
+    table state."""
+    conn = db._get_conn()
+
+    # First run — tables created
+    db._ensure_schema(conn)
+    tables_before = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+
+    # Second run — must be a no-op
+    db._ensure_schema(conn)
+    tables_after = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+
+    assert tables_before == tables_after, (
+        "second _ensure_schema must not alter table set"
+    )
+
+    # Schema version must still be 10 exactly once
+    rows = conn.execute(
+        "SELECT version FROM schema_version WHERE version = 10"
+    ).fetchall()
+    assert len(rows) == 1, "schema_version 10 must appear exactly once"
+
+
 def test_migrate_v9_repairs_missing_column_from_wedged_v7(monkeypatch):
     """Regression: if an earlier process wedged the DB by marking
     schema_version=7 without actually adding ``llm_calls.provider_assumed``
