@@ -1206,7 +1206,8 @@ The DB grows over time. For high-frequency cron jobs, consider periodic cleanup 
 
 **Mixture-of-Agents (MoA) reference models:**
 
-- Selecting a MoA preset runs N reference models plus an aggregator per iteration. Only the **aggregator** fires a hook — the plugin re-attributes it to the aggregator's real provider/model and tags the call with the preset name (`moa_calls` / `moa_preset`, shown in `/stats` and the dashboard). **Reference-model tokens are never captured** (they run through Hermes' auxiliary call path, which fires no hooks), so a MoA session's recorded cost is a **lower bound**.
+- Selecting a MoA preset **as your model** (`/model <preset> --provider moa`) runs N reference models plus an aggregator per iteration. Only the **aggregator** fires a hook — the plugin re-attributes it to the aggregator's real provider/model and tags the call with the preset name (`moa_calls` / `moa_preset`, shown in `/stats` and the dashboard). **Reference-model tokens are never captured** (they run through Hermes' auxiliary call path, which fires no hooks), so a MoA session's recorded cost is a **lower bound**.
+- The **one-shot `/moa <prompt>` command is entirely invisible to telemetry, by Hermes' design**: it runs *both* the references and the aggregator through the auxiliary call path (no hooks) and injects their synthesis into the real main-model call. Only that final main call is recorded — MoA cost (aggregator included) is not captured and `moa_calls` / `moa_preset` are not set. Select the preset as your model instead if you want MoA usage tracked.
 
 **Pricing refresh only for OpenRouter models:**
 

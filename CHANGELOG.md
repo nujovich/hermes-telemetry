@@ -33,6 +33,11 @@ so their tokens are invisible.
   bound).
 - Reference-model cost is deliberately **not** estimated (no token counts
   available) — documented as a Known Limitation.
+- Re-attribution applies only to the **preset-as-model** path
+  (`/model <preset> --provider moa`). The one-shot `/moa <prompt>` command
+  runs both the references and the aggregator through the auxiliary
+  (no-hook) path, so it is entirely invisible to telemetry by Hermes'
+  design — documented as a Known Limitation.
 - Tests: new `test_moa.py`, `test_moa_integration.py`, and v10 schema /
   `record_llm_call` cases in `test_db.py`.
 

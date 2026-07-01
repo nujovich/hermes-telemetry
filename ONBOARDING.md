@@ -1252,6 +1252,22 @@ Enable with `git config core.hooksPath .githooks`.
   **lower bound**. `/stats` and the dashboard flag MoA calls (`moa_calls` /
   `moa_preset`) so the gap is visible. See `§ Mixture of Agents (MoA)`.
 
+### MoA one-shot (`/moa <prompt>`) is entirely invisible — by Hermes' design
+
+- The `/moa` slash command (the one-shot path, `decode_moa_turn` →
+  `conversation_loop.py:827`) runs **both** the reference models **and** the
+  aggregator through the auxiliary `call_llm` path, then injects their synthesis
+  as context into the **real** main model call. Only that final main-model call
+  fires `post_api_request`. So on this path telemetry records **zero** MoA
+  cost — not even the aggregator — and the `moa_calls` / `moa_preset` markers are
+  never set. This is not a plugin gap we can close: no hook fires for either MoA
+  call type here (verified against `agent/moa_loop.py::aggregate_moa_context`
+  and `agent/auxiliary_client.py`, which has no hook dispatch).
+- The re-attribution in v10 (`moa.py`) therefore applies **only** to the
+  preset-as-model path (`/model <preset> --provider moa`), where the aggregator
+  *is* the returned main response and does fire the hook. Selecting a preset as
+  your model is the only way MoA usage reaches telemetry at all.
+
 ### Pricing
 
 - Auto-refresh covers OpenRouter models (via API) and Google AI Studio (static
