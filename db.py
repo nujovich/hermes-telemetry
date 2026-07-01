@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -166,6 +166,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v7(conn)
     _migrate_v8(conn)
     _migrate_v9(conn)
+    _migrate_v10(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -392,6 +393,34 @@ def _migrate_v9(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v10(conn: sqlite3.Connection) -> None:
+    """Add v10 schema: MoA (Mixture-of-Agents) attribution.
+
+    Hermes' MoA is a virtual provider — ``post_api_request`` reports
+    ``provider="moa"`` and ``model="<preset>"`` while the usage belongs to the
+    preset's aggregator (the acting model). The plugin re-attributes the call to
+    the aggregator's real provider/model (see ``moa.py``) and tags the row with
+    the preset name so surfaces can flag that reference-model tokens are NOT
+    captured (they run through Hermes' auxiliary call_llm path, which fires no
+    hooks) and the recorded cost is therefore a lower bound.
+
+    - ``llm_calls.moa_preset``: preset name for a MoA aggregator call; NULL for
+      every non-MoA call.
+    - ``runs.moa_calls``: per-session counter of MoA aggregator calls.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 10")
+    if cur.fetchone() is not None:
+        return
+
+    _add_column_if_missing(conn, "llm_calls", "moa_preset", "TEXT")
+    _add_column_if_missing(conn, "runs", "moa_calls", "INTEGER DEFAULT 0")
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (10, ?)",
+        (_utcnow(),),
+    )
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -475,6 +504,7 @@ def record_llm_call(
     reasoning_tokens: int = 0,
     estimated: bool = False,
     provider_assumed: bool = False,
+    moa_preset: str | None = None,
 ) -> None:
     conn = _get_conn()
     conn.execute(
@@ -482,8 +512,8 @@ def record_llm_call(
         INSERT INTO llm_calls
             (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms,
              cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated,
-             provider_assumed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             provider_assumed, moa_preset)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -499,6 +529,7 @@ def record_llm_call(
             reasoning_tokens,
             1 if estimated else 0,
             1 if provider_assumed else 0,
+            moa_preset,
         ),
     )
     _ensure_run_row(session_id, ts)
@@ -535,6 +566,11 @@ def record_llm_call(
         conn.execute(
             "UPDATE runs SET provider_assumed_calls = provider_assumed_calls + 1 "
             "WHERE session_id = ?",
+            (session_id,),
+        )
+    if moa_preset:
+        conn.execute(
+            "UPDATE runs SET moa_calls = moa_calls + 1 WHERE session_id = ?",
             (session_id,),
         )
 
@@ -673,7 +709,8 @@ def stats_summary(
             ROUND(SUM(cost_usd), 6)                           AS cost_usd,
             AVG(duration_ms)                                  AS avg_duration_ms,
             SUM(tool_calls)                                   AS tool_calls,
-            SUM(estimated_llm_calls)                          AS estimated_llm_calls
+            SUM(estimated_llm_calls)                          AS estimated_llm_calls,
+            SUM(moa_calls)                                    AS moa_calls
         FROM runs
         WHERE {where_sql}
         """,

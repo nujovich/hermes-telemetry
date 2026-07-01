@@ -73,6 +73,10 @@ hermes-telemetry/
 │                          /budget command.
 ├── stats.py             ← /stats command implementation. All subcommands:
 │                          summary, cron, providers, models, raw.
+├── moa.py               ← Mixture-of-Agents awareness. Resolves the `provider=
+│                          "moa"` virtual-provider preset to its aggregator's
+│                          real provider/model so the call is priced/attributed
+│                          correctly. See `§ Mixture of Agents (MoA)`.
 ├── setup.py             ← /setup command + auto-setup on first load. Generates
 │                          pricing.yaml and budget.yaml with defaults.
 ├── plugin.yaml          ← Plugin metadata: name, version, declared hooks.
@@ -371,6 +375,7 @@ table before applying.
 | v7 | `llm_calls.provider_assumed` flag + `runs.provider_assumed_calls` counter (provider-assumed pricing visibility, issue #42) |
 | v8 | New table: `model_unavailable_alerts` (404s captured via `api_request_error` — model removed/deprecated by provider) |
 | v9 | Repair pass — re-adds any column from v2/v3/v4/v7 that was silently skipped by the old blanket `except OperationalError: pass` pattern when an `ALTER TABLE` hit a transient `SQLITE_LOCKED` (cross-process cron contention). Uses `_add_column_if_missing`; idempotent. |
+| v10 | MoA (Mixture-of-Agents) attribution: `llm_calls.moa_preset` (preset name for a MoA aggregator call; NULL otherwise) + `runs.moa_calls` (per-session counter). See `§ Mixture of Agents (MoA)`. |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -888,6 +893,75 @@ delegated spend. Use `global` scope to cap total cost including subagents.
 
 ---
 
+## Mixture of Agents (MoA)
+
+MoA is a Hermes **virtual provider** (added upstream after v0.7). A named MoA
+*preset* bundles:
+
+- **`reference_models`** — a list of `{provider, model}` slots (proposers). They
+  run first, without tools, on a trimmed advisory view of the conversation.
+- **`aggregator`** — a single `{provider, model}` slot. It is the **acting
+  model**: it writes the assistant response and emits tool calls, using the
+  reference outputs as private context.
+
+Config lives in `config.yaml` under `moa:` (`hermes_cli/moa_config.py`,
+`resolve_moa_preset`). Verified against `NousResearch/hermes-agent@main`.
+
+### How MoA surfaces to telemetry (the two-path problem)
+
+There are **two** execution paths, and they behave differently:
+
+| Path | Trigger | What runs | What fires `post_api_request` |
+|------|---------|-----------|-------------------------------|
+| **Preset-as-model** | `/model <preset> --provider moa` | `MoAClient` facade: references + aggregator via auxiliary `call_llm`; the aggregator response is returned as the main model response | **Once**, with `provider="moa"`, `model="<preset>"`, `response_model`=aggregator id, `usage`=**aggregator only** |
+| **`/moa <prompt>` one-shot** | `decode_moa_turn` in `conversation_loop.py:827` | references + aggregator via auxiliary `call_llm`, output injected as context; then the **real main model** runs normally | fires for the **real main model**, not MoA |
+
+**The hard constraint (verified):** reference-model and one-shot-aggregator
+calls go through `agent/auxiliary_client.py::call_llm`, which contains **no hook
+dispatch** (no `invoke_hook`). So:
+
+- **Reference-model tokens are never captured** — same class of blind spot as
+  subagent per-cron attribution. Unrecoverable from hooks.
+- In the preset-as-model path, the **aggregator** *is* captured (it becomes the
+  main response), but the hook reports `provider="moa"` and `model="<preset>"` —
+  neither is a real, priceable identifier.
+
+### What the plugin does (`moa.py`, schema v10)
+
+`post_api_request` detects `provider == "moa"` and resolves the preset
+(`model` kwarg = preset name) via `moa.resolve_preset()` →
+`hermes_cli.moa_config.resolve_moa_preset` (reads Hermes' live config;
+`load_config()` honors `HERMES_HOME`, so it respects test isolation). Then:
+
+1. **Re-attribute provider.** The call is recorded under the aggregator's
+   **real** provider (e.g. `openrouter`), not `moa`. Without this the
+   provider-aware pricing guard rejects the aggregator's true rate and falls
+   back to a noisy `provider_assumed` estimate.
+2. **Re-attribute model.** `effective_model = response_model or <aggregator
+   model> or model` — never the bare preset name.
+3. **Tag the row.** `llm_calls.moa_preset = "<preset>"` and `runs.moa_calls++`
+   (schema v10) so `/stats` and the dashboard can flag that the recorded cost is
+   a **lower bound** (references untracked).
+
+If the preset can't be resolved (no `hermes_cli`, unknown preset), the call
+falls back to the raw hook values (`provider="moa"`) but is **still recorded**
+and still tagged with the preset — never dropped, never crashes (the resolver
+swallows every error).
+
+### What is NOT done (and why)
+
+- **Reference cost is not estimated.** No token counts are available for
+  reference calls, and the display callbacks (`moa.reference`/`moa.aggregating`)
+  route through `tool_progress_callback`, not a plugin hook. A rough opt-in
+  estimate (aggregator input tokens × each reference's price) is a possible
+  future phase, explicitly flagged `estimated=1`; deliberately deferred to keep
+  the "real vs estimated" contract honest.
+- **Budgets:** the aggregator cost counts as real spend (correct). Because it is
+  now attributed to the aggregator's real provider, it is no longer
+  `provider_assumed`, so it enforces normally instead of degrading.
+
+---
+
 ## Cron Job Identification
 
 There is **no `cron_job_id` kwarg** in any hook.
@@ -1070,6 +1144,22 @@ with `pytest --basetemp=DIR`.
   `test_pricing.py` gained the ultra paid-seed + `:free`-suffix → $0 (bare and
   OpenRouter-long-form), `super:free` regression, and explicit-override cases.
 
+### v0.8.0 — Mixture-of-Agents (MoA) attribution
+
+- **`moa.py`** (new module): resolves the `provider="moa"` virtual-provider
+  preset to its aggregator's real `provider`/`model` via
+  `hermes_cli.moa_config.resolve_moa_preset`. Defensive — swallows every error
+  and falls back to the raw hook values.
+- **`post_api_request`** now detects MoA calls and records them under the
+  aggregator's real provider/model (fixing the `provider_assumed` misfire) and
+  tags the row with the preset name.
+- **Schema v10** (`_migrate_v10`): `llm_calls.moa_preset` + `runs.moa_calls`.
+- **Reference-model tokens remain uncaptured** (auxiliary `call_llm` fires no
+  hooks) — documented as a Known Limitation; MoA cost is a lower bound and is
+  flagged as such in `/stats` and both dashboards.
+- Verified against `agent/moa_loop.py`, `agent/auxiliary_client.py`,
+  `agent/agent_init.py`, `agent/conversation_loop.py`, `hermes_cli/moa_config.py`.
+
 ---
 
 ## Metrics: Real vs Estimated
@@ -1094,6 +1184,8 @@ with `pytest --basetemp=DIR`.
 | Tokens when `usage=None` | ⚠️ Estimated, flagged | `approx_input_tokens + chars/4`, row marked `estimated=1` |
 | Subagent cost (global) | ✅ Real | Child runs fire own hooks → independent `runs` rows |
 | Subagent cost (per-cron-job) | ❌ Not available | No parent→child link in any hook |
+| MoA aggregator cost | ✅ Real (re-attributed) | Aggregator usage from `post_api_request`, priced under the aggregator's real provider/model resolved from the preset (`moa.py`) |
+| MoA reference-model cost | ❌ Not available | References run via auxiliary `call_llm`, which fires no hooks — tokens unrecoverable (recorded MoA cost is a lower bound) |
 
 **Cost is always an estimate** — computed from a local pricing table, not from
 a provider billing API. Users can override prices via `~/.hermes/telemetry/pricing.yaml`.
@@ -1151,6 +1243,14 @@ Enable with `git config core.hooksPath .githooks`.
 - `runs.parent_session_id` is in the schema but never populated. If Hermes adds
   a `parent_session_id` kwarg to `on_session_start` in the future, the column
   is ready.
+
+### MoA reference-model tokens
+
+- A MoA turn runs N reference models plus the aggregator per iteration, but only
+  the **aggregator** fires a hook. Reference-model tokens are never captured
+  (auxiliary `call_llm` fires no hooks), so a MoA session's recorded cost is a
+  **lower bound**. `/stats` and the dashboard flag MoA calls (`moa_calls` /
+  `moa_preset`) so the gap is visible. See `§ Mixture of Agents (MoA)`.
 
 ### Pricing
 

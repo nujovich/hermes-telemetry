@@ -126,6 +126,13 @@ def _summary_block(
             "(individual sessions, no parent-child attribution)"
         )
 
+    moa_calls = int(s.get("moa_calls") or 0)
+    if moa_calls:
+        lines.append(
+            f"  MoA calls     : {_fmt_int(moa_calls)} "
+            "(aggregator only — reference-model tokens untracked, cost is a lower bound)"
+        )
+
     top = s.get("top_tools") or []
     if top:
         lines.append("")

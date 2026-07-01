@@ -108,6 +108,37 @@ def test_requests_and_providers_expose_provider_assumed(plugin_api):
     assert nous["provider_assumed_calls"] == 1
 
 
+def test_summary_and_requests_expose_moa(plugin_api):
+    """The /summary and /requests endpoints surface MoA attribution
+    (moa_calls in the summary, moa_preset per request)."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[{"session_id": "sm", "model": "anthropic/claude-opus-4.8", "platform": "cli"}],
+        rows_llm=[
+            {
+                "session_id": "sm",
+                "ts": now,
+                "model": "anthropic/claude-opus-4.8",
+                "provider": "openrouter",
+                "tokens_in": 100,
+                "tokens_out": 50,
+                "cost_usd": 0.01,
+                "latency_ms": 200,
+                "moa_preset": "default",
+            },
+        ],
+    )
+
+    summary = plugin_api.summary(window_hours=24)
+    assert int(summary["runs"].get("moa_calls") or 0) == 1
+
+    reqs = plugin_api.requests(limit=10, window_hours=24)
+    presets = {r["model"]: r.get("moa_preset") for r in reqs["rows"]}
+    assert presets["anthropic/claude-opus-4.8"] == "default"
+
+
 def test_health(plugin_api):
     out = plugin_api.health()
     assert out["ok"] is True

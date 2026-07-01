@@ -100,6 +100,7 @@ def summary(window_hours: int = 24) -> dict:
                COALESCE(SUM(tokens_in), 0) AS tokens_in,
                COALESCE(SUM(tokens_out), 0) AS tokens_out,
                ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
+               COALESCE(SUM(moa_calls), 0) AS moa_calls,
                AVG(duration_ms) AS avg_duration_ms
         FROM runs WHERE {sc}
     """)
@@ -173,6 +174,7 @@ def requests(limit: int = 100, window_hours: int = 0) -> dict:
                lc.tokens_in, lc.tokens_out, lc.cache_read_tokens,
                lc.cache_write_tokens, lc.reasoning_tokens,
                lc.cost_usd, lc.latency_ms, lc.estimated, lc.provider_assumed,
+               lc.moa_preset,
                r.platform, r.cron_job_id, r.status
         FROM llm_calls lc
         LEFT JOIN runs r ON r.session_id = lc.session_id

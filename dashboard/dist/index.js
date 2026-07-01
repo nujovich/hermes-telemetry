@@ -75,6 +75,13 @@
       h(StatCard, { label: "Tokens in",  value: fmtInt(r.tokens_in) }),
       h(StatCard, { label: "Tokens out", value: fmtInt(r.tokens_out) }),
       h(StatCard, { label: "Avg latency", value: fmtMs(l.avg_latency_ms) }),
+      // Only shown when MoA presets were used. References are untracked, so the
+      // aggregator cost is a lower bound — the hint says so.
+      (r.moa_calls ? h(StatCard, {
+        label: "MoA calls",
+        value: fmtInt(r.moa_calls),
+        hint: "aggregator only — refs untracked",
+      }) : null),
     );
   }
 
@@ -133,6 +140,10 @@
         { key: "latency_ms", label: "Latency", render: (r) => fmtMs(r.latency_ms) },
         { key: "estimated",  label: "Est?",    render: (r) => (r.estimated ? "yes" : "no") },
         { key: "provider_assumed", label: "Asm?", render: (r) => (r.provider_assumed ? "yes" : "no") },
+        // MoA aggregator calls carry the preset name; reference-model tokens are
+        // untracked (they run through Hermes' auxiliary path, which fires no
+        // hooks), so a MoA row's cost is a lower bound.
+        { key: "moa_preset", label: "MoA", render: (r) => (r.moa_preset ? "▲ " + r.moa_preset : "—") },
       ],
     });
   }

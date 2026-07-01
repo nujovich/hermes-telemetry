@@ -9,7 +9,7 @@ Errors are caught silently — telemetry never takes down a session.
 
 from __future__ import annotations
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 import json
 import logging
@@ -153,7 +153,7 @@ def register(ctx) -> None:  # noqa: ANN001
     _setup_log_file()
     tele_log = logging.getLogger("hermes_telemetry")
 
-    from . import budget, db, pricing, setup, stats
+    from . import budget, db, moa, pricing, setup, stats
 
     # ------------------------------------------------------------------
     # Start budget file watcher (hot-reload on budget.yaml changes)
@@ -240,6 +240,28 @@ def register(ctx) -> None:  # noqa: ANN001
     ) -> None:
         try:
             effective_model = response_model or model or ""
+
+            # MoA (Mixture-of-Agents) virtual provider. Hermes reports
+            # provider="moa" and model="<preset name>", but usage/response_model
+            # belong to the preset's *aggregator* (the acting model). Resolve
+            # the preset so the call is priced and attributed under the
+            # aggregator's REAL provider/model instead of the meaningless "moa"
+            # label — otherwise the provider-aware pricing guard rejects the
+            # aggregator's true rate as a provider_assumed fallback. Reference
+            # models run through the auxiliary call_llm path (no hooks fire), so
+            # their tokens stay untracked; moa_preset flags the row so surfaces
+            # can show the recorded cost is a lower bound. See moa.py.
+            moa_preset: str | None = None
+            if moa.is_moa(provider):
+                moa_preset = (model or "").strip() or None
+                _preset = moa.resolve_preset(moa_preset or "")
+                _agg_provider, _agg_model = moa.aggregator_from_preset(_preset)
+                if _agg_provider:
+                    provider = _agg_provider
+                # response_model is the aggregator's real id; fall back to the
+                # configured aggregator model (never the preset name) when the
+                # response omits it.
+                effective_model = response_model or _agg_model or effective_model
 
             # Always clean up the approx store for this call
             with _approx_lock:
@@ -343,6 +365,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 reasoning_tokens=reasoning_tok,
                 estimated=estimated,
                 provider_assumed=provider_assumed,
+                moa_preset=moa_preset,
             )
         except Exception as exc:
             tele_log.error("post_api_request hook failed: %s", exc)

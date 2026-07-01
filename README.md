@@ -169,8 +169,10 @@ A standalone HTML dashboard for users who prefer a visual interface over slash c
 |Cron job ID                              |Parsed from `session_id`       |✅ Real                  |
 |Subagent invocation count                |`subagent_stop` hook           |✅ Real (proxy)          |
 |Free→paid model transition alert         |`known_free_models` table + `post_api_request` cost check|✅ Real                  |
+|MoA aggregator call (re-attributed)      |Preset resolved to aggregator's real provider/model (`moa.py`)|✅ Real                  |
 |**Cost (USD)**                           |Local pricing table × tokens   |⚠️ **Estimated**         |
 |Tokens when provider returns `usage=None`|Fallback approximation         |⚠️ **Estimated, flagged**|
+|MoA reference-model tokens               |No hook fires (auxiliary call path)|❌ **Not captured** (MoA cost is a lower bound)|
 
 Cost is always an **estimate** computed from a locally-maintained pricing table. No external pricing API is called. When the provider returns no usage data, tokens are estimated from a pre-request approximation + response length and the row is flagged as `estimated=1`, so `/stats` and `/budget` show a `~` prefix and an “estimated data” percentage.
 
@@ -1201,6 +1203,10 @@ The DB grows over time. For high-frequency cron jobs, consider periodic cleanup 
 **Subagent attribution:**
 
 - Child agents (`delegate_task`) run as their own sessions. Their tokens are captured independently and included in **global** totals. But there is no parent→child link in any hook — so `per_cron_job` budgets **exclude** subagent cost. Use the `global` budget for a cap that captures delegated work.
+
+**Mixture-of-Agents (MoA) reference models:**
+
+- Selecting a MoA preset runs N reference models plus an aggregator per iteration. Only the **aggregator** fires a hook — the plugin re-attributes it to the aggregator's real provider/model and tags the call with the preset name (`moa_calls` / `moa_preset`, shown in `/stats` and the dashboard). **Reference-model tokens are never captured** (they run through Hermes' auxiliary call path, which fires no hooks), so a MoA session's recorded cost is a **lower bound**.
 
 **Pricing refresh only for OpenRouter models:**
 
