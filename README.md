@@ -23,14 +23,18 @@ means it can keep spending even when you're not watching.
 **hermes-telemetry lives inside the runtime** and enforces hard budget limits before 
 the next LLM call is made.
 
-> This plugin addresses [NousResearch/hermes-agent#6642](https://github.com/NousResearch/hermes-agent/issues/6642) — 
-> the open feature request for a first-class telemetry and budget subsystem for Hermes Agent.
+> This plugin targets a gap raised repeatedly in the Hermes tracker: **budget
+> enforcement for unattended runs** — capping spend *before* the next call, not
+> just reporting it after (see [#23419](https://github.com/NousResearch/hermes-agent/issues/23419)
+> and [#26382](https://github.com/NousResearch/hermes-agent/issues/26382)). It
+> complements — it does not replace — the first-class telemetry work in
+> [#51714](https://github.com/NousResearch/hermes-agent/pull/51714).
 
 
 ```
 Your Hermes session
   ↓ every API call
-hermes-telemetry (native plugin)
+hermes-telemetry (runtime-integrated plugin)
   → tracks tokens + cost in real time
   → enforces budget limits mid-session
   → logs to SQLite with WAL mode
