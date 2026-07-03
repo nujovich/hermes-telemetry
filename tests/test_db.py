@@ -1529,3 +1529,39 @@ def test_migrate_v12_repairs_missing_column_from_v11():
 
     cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('runs')")}
     assert "profile" in cols, "v12 must re-add runs.profile when it was missing"
+
+
+def test_start_run_stores_profile():
+    db.start_run("s_prof", "m", "cli", profile="coder")
+    assert db.get_run("s_prof")["profile"] == "coder"
+
+
+def test_start_run_profile_defaults_none():
+    db.start_run("s_noprof", "m", "cli")
+    assert db.get_run("s_noprof")["profile"] is None
+
+
+def test_set_profile_first_non_null_wins():
+    db.start_run("s_bf", "m", "cli")  # no profile
+    db.set_profile("s_bf", "coder")
+    assert db.get_run("s_bf")["profile"] == "coder"
+    db.set_profile("s_bf", "ops")  # must NOT overwrite
+    assert db.get_run("s_bf")["profile"] == "coder"
+
+
+def test_set_profile_ignores_empty():
+    db.start_run("s_empty", "m", "cli")
+    db.set_profile("s_empty", "")
+    db.set_profile("s_empty", None)
+    assert db.get_run("s_empty")["profile"] is None
+
+
+def test_spend_by_scope_profile_filters():
+    db.start_run("s_coder", "m", "cli", profile="coder")
+    db.start_run("s_ops", "m", "cli", profile="ops")
+    conn = db._get_conn()
+    conn.execute("UPDATE runs SET cost_usd = 1.50 WHERE session_id = 's_coder'")
+    conn.execute("UPDATE runs SET cost_usd = 0.25 WHERE session_id = 's_ops'")
+
+    result = db.spend_by_scope("profile", "coder", "2000-01-01T00:00:00+00:00")
+    assert result["spent_usd"] == 1.50

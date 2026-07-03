@@ -520,15 +520,16 @@ def start_run(
     platform: str,
     cron_job_id: str | None = None,
     parent_session_id: str | None = None,
+    profile: str | None = None,
 ) -> None:
     conn = _get_conn()
     conn.execute(
         """
         INSERT OR IGNORE INTO runs
-            (session_id, model, platform, cron_job_id, parent_session_id, started_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'running')
+            (session_id, model, platform, cron_job_id, parent_session_id, profile, started_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'running')
         """,
-        (session_id, model, platform, cron_job_id, parent_session_id, _utcnow()),
+        (session_id, model, platform, cron_job_id, parent_session_id, profile, _utcnow()),
     )
 
 
@@ -645,6 +646,20 @@ def set_sender(session_id: str, sender_id: str) -> None:
     conn.execute(
         "UPDATE runs SET sender_id = COALESCE(sender_id, ?) WHERE session_id = ?",
         (sender_id, session_id),
+    )
+
+
+def set_profile(session_id: str, profile: str | None) -> None:
+    """Attach a profile to a run (first non-null wins). profile is exposed only
+    via ctx.profile_name inside hook callbacks, not as a hook kwarg — captured
+    at session start and backfilled here for sessions where on_session_start
+    did not fire."""
+    if not profile:
+        return
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE runs SET profile = COALESCE(profile, ?) WHERE session_id = ?",
+        (profile, session_id),
     )
 
 
@@ -954,9 +969,9 @@ def recent_runs(
 def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:
     """Aggregate spend for a budget scope since an ISO-8601 UTC timestamp.
 
-    scope ∈ {"global", "cron_job", "sender"}. For "global", scope_id is
-    ignored. Returns spent_usd plus an estimated_pct so callers can tell when
-    a verdict rests on estimated (usage=None) rows.
+    scope ∈ {"global", "cron_job", "sender", "profile"}. For "global", scope_id
+    is ignored. Returns spent_usd plus an estimated_pct so callers can tell
+    when a verdict rests on estimated (usage=None) rows.
     """
     conn = _get_conn()
     if scope == "cron_job":
@@ -989,6 +1004,9 @@ def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:
         params: list[Any] = [since_iso]
         if scope == "sender":
             where.append("sender_id = ?")
+            params.append(scope_id)
+        elif scope == "profile":
+            where.append("profile = ?")
             params.append(scope_id)
         # "global": no extra filter
         row = conn.execute(
@@ -1231,6 +1249,9 @@ def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
         params: list[Any] = [since_iso]
         if scope == "sender":
             where.append("r.sender_id = ?")
+            params.append(scope_id)
+        elif scope == "profile":
+            where.append("r.profile = ?")
             params.append(scope_id)
 
         row = conn.execute(
