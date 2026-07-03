@@ -1144,7 +1144,7 @@ with `pytest --basetemp=DIR`.
   `test_pricing.py` gained the ultra paid-seed + `:free`-suffix → $0 (bare and
   OpenRouter-long-form), `super:free` regression, and explicit-override cases.
 
-### v0.8.0 — Mixture-of-Agents (MoA) attribution
+### Unreleased — Mixture-of-Agents (MoA) attribution
 
 - **`moa.py`** (new module): resolves the `provider="moa"` virtual-provider
   preset to its aggregator's real `provider`/`model` via
