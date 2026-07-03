@@ -492,13 +492,53 @@ def register(ctx) -> None:  # noqa: ANN001
     ctx.register_hook("post_tool_call", post_tool_call)
 
     # ------------------------------------------------------------------
+    # subagent_start
+    # Fired synchronously in Hermes' _build_child_agent BEFORE async
+    # dispatch, so the parent→child edge is persisted before the child's
+    # first post_api_request. Cost is attributed to the cron root at query
+    # time (db.spend_by_scope), so this handler only records the raw edge.
+    # kwargs: parent_session_id, parent_turn_id, parent_subagent_id,
+    #         child_session_id, child_subagent_id, child_role, child_goal
+    # ------------------------------------------------------------------
+    def subagent_start(
+        parent_session_id: str = "",
+        parent_turn_id: str = "",
+        parent_subagent_id: str = "",
+        child_session_id: str = "",
+        child_subagent_id: str = "",
+        child_role: str = "",
+        **_kw,
+    ) -> None:
+        try:
+            if not child_session_id or not parent_session_id:
+                return
+            db.record_subagent_start(
+                child_session_id=child_session_id,
+                parent_session_id=parent_session_id,
+                parent_turn_id=parent_turn_id or None,
+                parent_subagent_id=parent_subagent_id or None,
+                child_subagent_id=child_subagent_id or None,
+                child_role=child_role or None,
+                started_at=_utcnow(),
+            )
+        except Exception as exc:
+            tele_log.error("subagent_start hook failed: %s", exc)
+
+    ctx.register_hook("subagent_start", subagent_start)
+
+    # ------------------------------------------------------------------
     # subagent_stop
-    # Fired when a delegated subagent finishes. No token data available.
-    # We log a proxy tool_call row so subagent invocations are visible.
-    # kwargs: parent_session_id, child_role, child_status, duration_ms
+    # Fired when a delegated subagent finishes. No token data here, but it
+    # DOES carry child_session_id (verified against delegate_tool.py — the
+    # in-repo doc claim that it does not is stale). We (1) log the proxy
+    # tool_call row so subagent invocations stay visible in /stats, and
+    # (2) finalize the delegation edge (stopped_at + child_status).
+    # kwargs: parent_session_id, parent_turn_id, child_session_id,
+    #         child_role, child_summary, child_status, duration_ms
     # ------------------------------------------------------------------
     def subagent_stop(
         parent_session_id: str = "",
+        child_session_id: str = "",
         child_role: str = "",
         child_status: str = "",
         duration_ms: int = 0,
@@ -513,6 +553,14 @@ def register(ctx) -> None:  # noqa: ANN001
                 ok=ok,
                 latency_ms=duration_ms,
             )
+            if child_session_id:
+                db.record_subagent_stop(
+                    child_session_id=child_session_id,
+                    parent_session_id=parent_session_id,
+                    child_status=child_status or None,
+                    child_role=child_role or None,
+                    stopped_at=_utcnow(),
+                )
         except Exception as exc:
             tele_log.error("subagent_stop hook failed: %s", exc)
 

@@ -677,6 +677,38 @@ def test_spend_by_scope_estimated_pct():
     assert abs(s["estimated_pct"] - 0.5) < 1e-9
 
 
+def test_estimated_price_share_cron_job_includes_subagent_subtree():
+    """estimated_price_share("cron_job", ...) must resolve the same delegation
+    subtree as spend_by_scope. A delegated child (cron_job_id NULL) that uses
+    an estimated-price model has to count toward the parent cron job's share —
+    otherwise budget.py never degrades a HARD verdict driven by that child's
+    spend to SOFT, and the job hard-pauses on pricing the system itself deems
+    unreliable."""
+    import yaml
+
+    pricing_file = db._get_db_path().parent / "pricing.yaml"
+    pricing_file.write_text(
+        yaml.safe_dump(
+            {
+                "models": {},
+                "_meta": {"estimated_price_models": ["some/estimated-model"]},
+            }
+        )
+    )
+
+    db.start_run("cron_job1_20260601_020000", model="m", platform="cron", cron_job_id="job1")
+    db.start_run("child-est-1", model="m", platform="cli")
+    db.record_subagent_start(
+        child_session_id="child-est-1", parent_session_id="cron_job1_20260601_020000"
+    )
+    db.record_llm_call(
+        "child-est-1", db._utcnow(), "some/estimated-model", "openrouter", 100, 50, 0.02, 100
+    )
+
+    past = "2000-01-01T00:00:00+00:00"
+    assert db.estimated_price_share("cron_job", "job1", past) > 0.0
+
+
 def test_try_budget_alert_is_idempotent():
     first = db.try_budget_alert("global", "", "daily", "2026-05-31", "soft", 4.0, 5.0)
     second = db.try_budget_alert("global", "", "daily", "2026-05-31", "soft", 4.0, 5.0)
@@ -1296,3 +1328,147 @@ def test_migrate_v10_adds_columns_from_wedged_v9(monkeypatch):
     assert row["moa_preset"] == "default"
     run = conn.execute("SELECT moa_calls FROM runs WHERE session_id='moa-repair'").fetchone()
     assert run["moa_calls"] == 1
+
+
+# ---------------------------------------------------------------------------
+# v11 — subagent_edges (delegation tree for per_cron_job attribution, #49)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_v11_subagent_edges_columns():
+    """v11 creates the subagent_edges table with the delegation-tree columns."""
+    conn = db._get_conn()
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "subagent_edges" in tables
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(subagent_edges)")}
+    assert cols == {
+        "child_session_id",
+        "parent_session_id",
+        "parent_turn_id",
+        "parent_subagent_id",
+        "child_subagent_id",
+        "child_role",
+        "started_at",
+        "stopped_at",
+        "child_status",
+    }
+
+
+def test_schema_v11_recorded():
+    versions = {r[0] for r in db._get_conn().execute("SELECT version FROM schema_version")}
+    assert 11 in versions
+
+
+def test_record_subagent_start_inserts_edge():
+    db.record_subagent_start(
+        child_session_id="c1",
+        parent_session_id="p1",
+        parent_turn_id="t1",
+        parent_subagent_id="sa-0-aaa",
+        child_subagent_id="sa-1-bbb",
+        child_role="researcher",
+        started_at="2026-07-03T00:00:00+00:00",
+    )
+    conn = db._get_conn()
+    row = conn.execute("SELECT * FROM subagent_edges WHERE child_session_id='c1'").fetchone()
+    assert row["parent_session_id"] == "p1"
+    assert row["child_subagent_id"] == "sa-1-bbb"
+    assert row["child_role"] == "researcher"
+    assert row["stopped_at"] is None
+    assert row["child_status"] is None
+
+
+def test_record_subagent_start_idempotent():
+    """First edge wins (INSERT OR IGNORE) — a duplicate start does not clobber."""
+    db.record_subagent_start(child_session_id="c1", parent_session_id="p1")
+    db.record_subagent_start(child_session_id="c1", parent_session_id="p_other")
+    conn = db._get_conn()
+    rows = conn.execute(
+        "SELECT parent_session_id FROM subagent_edges WHERE child_session_id='c1'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["parent_session_id"] == "p1"
+
+
+def test_record_subagent_stop_finalizes_edge():
+    db.record_subagent_start(
+        child_session_id="c1", parent_session_id="p1", started_at="2026-07-03T00:00:00+00:00"
+    )
+    db.record_subagent_stop(
+        child_session_id="c1",
+        parent_session_id="p1",
+        child_status="completed",
+        stopped_at="2026-07-03T00:05:00+00:00",
+    )
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT stopped_at, child_status FROM subagent_edges WHERE child_session_id='c1'"
+    ).fetchone()
+    assert row["stopped_at"] == "2026-07-03T00:05:00+00:00"
+    assert row["child_status"] == "completed"
+
+
+def test_record_subagent_stop_backfills_when_start_missed():
+    """If subagent_start was never seen, stop backfills the edge so the child
+    still resolves to its parent. child_subagent_id is NULL (absent on stop)."""
+    db.record_subagent_stop(
+        child_session_id="c-orphan",
+        parent_session_id="p1",
+        child_status="completed",
+        stopped_at="2026-07-03T00:05:00+00:00",
+    )
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT parent_session_id, child_status, child_subagent_id "
+        "FROM subagent_edges WHERE child_session_id='c-orphan'"
+    ).fetchone()
+    assert row is not None
+    assert row["parent_session_id"] == "p1"
+    assert row["child_status"] == "completed"
+    assert row["child_subagent_id"] is None
+
+
+def test_migrate_v11_creates_table_from_wedged_v10():
+    """Upgrade path: a DB stuck in the pre-v11 shape (no subagent_edges, v11
+    marker absent) self-heals on the next connect and the edge write works."""
+    conn = db._get_conn()
+    conn.execute("DROP TABLE IF EXISTS subagent_edges")
+    conn.execute("DELETE FROM schema_version WHERE version >= 11")
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "subagent_edges" not in tables  # wedged state confirmed
+
+    db._ensure_schema(conn)
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "subagent_edges" in tables
+    db.record_subagent_start(
+        child_session_id="c-heal",
+        parent_session_id="p-heal",
+        started_at="2026-07-03T00:00:00+00:00",
+    )
+    row = conn.execute(
+        "SELECT parent_session_id FROM subagent_edges WHERE child_session_id='c-heal'"
+    ).fetchone()
+    assert row["parent_session_id"] == "p-heal"
+
+
+def test_unattributed_child_cost_flags_missing_parent():
+    """A child edge whose parent has no runs row surfaces as unattributed."""
+    db.start_run("orphan-child", model="m", platform="cli")
+    db.record_llm_call("orphan-child", db._utcnow(), "m", "p", 100, 50, 0.02, 100)
+    db.record_subagent_start(child_session_id="orphan-child", parent_session_id="ghost-parent")
+
+    d = db.unattributed_child_cost("2000-01-01T00:00:00+00:00")
+    assert d["edges"] == 1
+    assert d["unattributed_usd"] == pytest.approx(0.02)
+
+
+def test_unattributed_child_cost_zero_when_parent_present():
+    db.start_run("real-parent", model="m", platform="cli")
+    db.start_run("linked-child", model="m", platform="cli")
+    db.record_llm_call("linked-child", db._utcnow(), "m", "p", 100, 50, 0.02, 100)
+    db.record_subagent_start(child_session_id="linked-child", parent_session_id="real-parent")
+
+    d = db.unattributed_child_cost("2000-01-01T00:00:00+00:00")
+    assert d["edges"] == 0
+    assert d["unattributed_usd"] == pytest.approx(0.0)

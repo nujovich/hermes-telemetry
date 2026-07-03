@@ -17,7 +17,7 @@ Date range support:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -122,8 +122,9 @@ def _summary_block(
 
     if not s.get("parent_links_available", True):
         lines.append(
-            "  Note: Subagent tokens included in total "
-            "(individual sessions, no parent-child attribution)"
+            "  Note: Subagent tokens are included in the global total. Per-cron-job "
+            "budgets attribute them to the root job via subagent_edges (see /budget cron); "
+            "the per-session runs table still shows individual sessions."
         )
 
     moa_calls = int(s.get("moa_calls") or 0)
@@ -175,6 +176,21 @@ def _cron_block(
         lines.append(
             f"  {job_id:<20} {runs:>5} {ok:>5} {fail:>5} {tin:>9} {tout:>9} {cost:>12} {dur:>9}"
         )
+
+    since_iso = (
+        date_from
+        if date_from
+        else (datetime.now(timezone.utc) - timedelta(hours=window_hours or 720)).isoformat()
+    )
+    unattr = db.unattributed_child_cost(since_iso)
+    if unattr["edges"]:
+        lines.append("")
+        lines.append(
+            f"  ⚠ {unattr['edges']} subagent edge(s) with an unrecorded parent — "
+            f"{_fmt_cost(unattr['unattributed_usd'])} unattributed to any cron job."
+        )
+        lines.append("  (Attributed subagent spend is reflected in `/budget cron`.)")
+
     return "\n".join(lines)
 
 

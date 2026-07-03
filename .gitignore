@@ -18,3 +18,7 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Superpowers SDD working artifacts (design specs + implementation plans) are
+# local scratch, not committed to the repo.
+docs/superpowers/

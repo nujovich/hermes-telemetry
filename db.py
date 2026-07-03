@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 10
+_SCHEMA_VERSION = 11
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -167,6 +167,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v8(conn)
     _migrate_v9(conn)
     _migrate_v10(conn)
+    _migrate_v11(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -421,6 +422,42 @@ def _migrate_v10(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v11(conn: sqlite3.Connection) -> None:
+    """Add v11 schema: subagent_edges — the persistent parent→child delegation
+    tree used to attribute async/nested subagent cost to per_cron_job budgets
+    (issue #49).
+
+    child_session_id is the correlation key present in BOTH subagent_start and
+    subagent_stop (subagent_stop carries no child_subagent_id). No cost is stored
+    here; cost is resolved to the cron root at query time via a recursive CTE in
+    spend_by_scope, so there is no double counting against the global tally.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 11")
+    if cur.fetchone() is not None:
+        return
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS subagent_edges (
+            child_session_id   TEXT PRIMARY KEY,
+            parent_session_id  TEXT NOT NULL,
+            parent_turn_id     TEXT,
+            parent_subagent_id TEXT,
+            child_subagent_id  TEXT,
+            child_role         TEXT,
+            started_at         TEXT NOT NULL,
+            stopped_at         TEXT,
+            child_status       TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_subagent_edges_parent
+            ON subagent_edges(parent_session_id);
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (11, ?)",
+        (_utcnow(),),
+    )
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -614,6 +651,78 @@ def record_tool_call(
         "UPDATE runs SET tool_calls = tool_calls + 1 WHERE session_id = ?",
         (session_id,),
     )
+
+
+def record_subagent_start(
+    child_session_id: str,
+    parent_session_id: str,
+    parent_turn_id: str | None = None,
+    parent_subagent_id: str | None = None,
+    child_subagent_id: str | None = None,
+    child_role: str | None = None,
+    started_at: str | None = None,
+) -> None:
+    """Record a parent→child delegation edge. Idempotent on child_session_id.
+
+    Fires from the subagent_start hook, which runs synchronously in Hermes'
+    _build_child_agent BEFORE async dispatch — so the edge exists before the
+    child's first post_api_request and resolution never races the child's events.
+    """
+    _get_conn().execute(
+        """
+        INSERT OR IGNORE INTO subagent_edges
+            (child_session_id, parent_session_id, parent_turn_id,
+             parent_subagent_id, child_subagent_id, child_role, started_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            child_session_id,
+            parent_session_id,
+            parent_turn_id,
+            parent_subagent_id,
+            child_subagent_id,
+            child_role,
+            started_at or _utcnow(),
+        ),
+    )
+
+
+def record_subagent_stop(
+    child_session_id: str,
+    parent_session_id: str = "",
+    child_status: str | None = None,
+    child_role: str | None = None,
+    stopped_at: str | None = None,
+) -> None:
+    """Finalize a delegation edge: set stopped_at + child_status.
+
+    If the edge is missing (subagent_start not seen — rare, since start fires
+    synchronously before dispatch), backfill it from the stop kwargs so the
+    child's cost still resolves to its parent. child_subagent_id is absent on the
+    stop hook, so a backfilled edge has no subagent id.
+    """
+    conn = _get_conn()
+    now = stopped_at or _utcnow()
+    cur = conn.execute(
+        """
+        UPDATE subagent_edges
+        SET stopped_at   = ?,
+            child_status = ?,
+            child_role   = COALESCE(child_role, ?)
+        WHERE child_session_id = ?
+        """,
+        (now, child_status, child_role, child_session_id),
+    )
+    if cur.rowcount == 0 and parent_session_id:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO subagent_edges
+                (child_session_id, parent_session_id, child_role,
+                 started_at, stopped_at, child_status)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (child_session_id, parent_session_id, child_role, now, now, child_status),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -827,26 +936,48 @@ def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:
     a verdict rests on estimated (usage=None) rows.
     """
     conn = _get_conn()
-    where = ["started_at >= ?"]
-    params: list[Any] = [since_iso]
     if scope == "cron_job":
-        where.append("cron_job_id = ?")
-        params.append(scope_id)
-    elif scope == "sender":
-        where.append("sender_id = ?")
-        params.append(scope_id)
-    # "global": no extra filter
-
-    row = conn.execute(
-        f"""
-        SELECT COALESCE(SUM(cost_usd), 0.0)            AS spent_usd,
-               COALESCE(SUM(estimated_llm_calls), 0)   AS estimated_calls,
-               COALESCE(SUM(api_calls), 0)             AS total_calls
-        FROM runs
-        WHERE {" AND ".join(where)}
-        """,
-        params,
-    ).fetchone()
+        # Attribute the whole delegation subtree to the cron job: seed from the
+        # cron root session(s), walk down subagent_edges to every descendant, and
+        # sum cost over root + descendants. This pulls in async and nested
+        # subagent spend that lands under child session_ids with cron_job_id NULL.
+        # The "global" branch below sums ALL runs, so the same cost rows are only
+        # regrouped here — no double counting. UNION (not UNION ALL) guards cycles.
+        row = conn.execute(
+            """
+            WITH RECURSIVE tree(session_id) AS (
+                SELECT session_id FROM runs WHERE cron_job_id = ?
+                UNION
+                SELECT e.child_session_id
+                FROM subagent_edges e
+                JOIN tree t ON e.parent_session_id = t.session_id
+            )
+            SELECT COALESCE(SUM(r.cost_usd), 0.0)          AS spent_usd,
+                   COALESCE(SUM(r.estimated_llm_calls), 0) AS estimated_calls,
+                   COALESCE(SUM(r.api_calls), 0)           AS total_calls
+            FROM runs r
+            JOIN tree ON r.session_id = tree.session_id
+            WHERE r.started_at >= ?
+            """,
+            (scope_id, since_iso),
+        ).fetchone()
+    else:
+        where = ["started_at >= ?"]
+        params: list[Any] = [since_iso]
+        if scope == "sender":
+            where.append("sender_id = ?")
+            params.append(scope_id)
+        # "global": no extra filter
+        row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(cost_usd), 0.0)            AS spent_usd,
+                   COALESCE(SUM(estimated_llm_calls), 0)   AS estimated_calls,
+                   COALESCE(SUM(api_calls), 0)             AS total_calls
+            FROM runs
+            WHERE {" AND ".join(where)}
+            """,
+            params,
+        ).fetchone()
 
     spent = float(row["spent_usd"] or 0.0)
     est = int(row["estimated_calls"] or 0)
@@ -856,6 +987,31 @@ def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:
         "estimated_calls": est,
         "total_calls": tot,
         "estimated_pct": (est / tot) if tot else 0.0,
+    }
+
+
+def unattributed_child_cost(since_iso: str) -> dict[str, Any]:
+    """Query-time diagnostic (no stored state): cost of child sessions whose
+    immediate parent has no runs row, so the child cannot roll up to a real
+    root. Near-zero in practice because subagent_start records the edge before
+    the child runs; a non-zero value signals delegation edges we failed to
+    record (e.g. subagent_start handler error). Surfaced in /stats.
+    """
+    conn = _get_conn()
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(r.cost_usd), 0.0) AS unattributed_usd,
+               COUNT(*)                       AS edges
+        FROM subagent_edges e
+        JOIN runs r ON r.session_id = e.child_session_id
+        LEFT JOIN runs p ON p.session_id = e.parent_session_id
+        WHERE r.started_at >= ? AND p.session_id IS NULL
+        """,
+        (since_iso,),
+    ).fetchone()
+    return {
+        "unattributed_usd": float(row["unattributed_usd"] or 0.0),
+        "edges": int(row["edges"] or 0),
     }
 
 
@@ -1005,6 +1161,10 @@ def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
 
     This lets the budget engine degrade hard verdicts to soft when spend
     includes models without fixed pricing (e.g. OpenRouter auto-routing).
+    For "cron_job", this resolves the same delegation subtree as
+    spend_by_scope (root cron session + all subagent_edges descendants), so a
+    delegated child's estimated-price usage still degrades the parent job's
+    verdict.
 
     Returns 0.0–1.0.
     """
@@ -1021,33 +1181,47 @@ def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
     if not est_models:
         return 0.0
 
-    # Build WHERE clause for scope
-    where = ["r.started_at >= ?"]
-    params: list[Any] = [since_iso]
-    if scope == "cron_job":
-        where.append("r.cron_job_id = ?")
-        params.append(scope_id)
-    elif scope == "sender":
-        where.append("r.sender_id = ?")
-        params.append(scope_id)
-
     placeholders = ", ".join(f"'{m}'" for m in est_models)
-    # Clamp to avoid SQLite parameter limits on huge lists
-    row = (
-        _get_conn()
-        .execute(
+    conn = _get_conn()
+    if scope == "cron_job":
+        row = conn.execute(
             f"""
-        SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN l.model IN ({placeholders}) THEN 1 ELSE 0 END) AS est_calls
-        FROM llm_calls l
-        JOIN runs r ON l.session_id = r.session_id
-        WHERE {" AND ".join(where)}
-        """,
+            WITH RECURSIVE tree(session_id) AS (
+                SELECT session_id FROM runs WHERE cron_job_id = ?
+                UNION
+                SELECT e.child_session_id
+                FROM subagent_edges e
+                JOIN tree t ON e.parent_session_id = t.session_id
+            )
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN l.model IN ({placeholders}) THEN 1 ELSE 0 END) AS est_calls
+            FROM llm_calls l
+            JOIN runs r ON l.session_id = r.session_id
+            JOIN tree ON r.session_id = tree.session_id
+            WHERE r.started_at >= ?
+            """,
+            (scope_id, since_iso),
+        ).fetchone()
+    else:
+        where = ["r.started_at >= ?"]
+        params: list[Any] = [since_iso]
+        if scope == "sender":
+            where.append("r.sender_id = ?")
+            params.append(scope_id)
+
+        row = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN l.model IN ({placeholders}) THEN 1 ELSE 0 END) AS est_calls
+            FROM llm_calls l
+            JOIN runs r ON l.session_id = r.session_id
+            WHERE {" AND ".join(where)}
+            """,
             params,
-        )
-        .fetchone()
-    )
+        ).fetchone()
+
     total = row["total"] or 0
     est = row["est_calls"] or 0
     return est / total if total else 0.0

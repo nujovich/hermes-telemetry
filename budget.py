@@ -482,10 +482,11 @@ def _cron_block() -> str:
     for jid in cron_ids:
         lines.append(_fmt_verdict_line(jid, check("cron_job", jid)))
     lines.append("")
-    lines.append("  Note: per-cron-job spend EXCLUDES subagent (delegate_task) cost —")
-    lines.append("  child runs are tracked separately and are not attributable to a")
-    lines.append("  parent job (Hermes hooks expose no parent→child link). Use the")
-    lines.append("  global budget for a tope that captures delegated spend.")
+    lines.append("  Note: per-cron-job spend now INCLUDES linked subagent (delegate_task)")
+    lines.append("  cost — child runs are attributed to their root cron job via the")
+    lines.append("  subagent_edges tree (async + nested). Spend from unlinked children")
+    lines.append("  (edge not recorded) is not attributable; the global budget remains")
+    lines.append("  the catch-all cap.")
     return "\n".join(lines)
 
 
