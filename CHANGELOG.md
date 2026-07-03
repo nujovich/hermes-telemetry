@@ -7,44 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-07-01
-
-### Added — Mixture-of-Agents (MoA) attribution
-
-Hermes added a `moa` virtual provider: selecting a MoA preset runs N
-reference models plus an aggregator. The aggregator is the acting model,
-but `post_api_request` reports `provider="moa"` and `model="<preset>"` —
-neither priceable — while the usage belongs to the aggregator. Reference
-calls run through Hermes' auxiliary `call_llm` path, which fires no hooks,
-so their tokens are invisible.
-
-- **`moa.py`** (new): resolves a preset name to its aggregator's real
-  `provider`/`model` (and reference list) via
-  `hermes_cli.moa_config.resolve_moa_preset`. Fully defensive — never
-  raises, falls back to raw hook values.
-- **`post_api_request`** re-attributes MoA calls to the aggregator's real
-  provider/model, fixing the spurious `provider_assumed` pricing fallback,
-  and tags the row with the preset name.
-- **Schema v10** (`_migrate_v10`): `llm_calls.moa_preset` +
-  `runs.moa_calls`.
-- **`/stats summary`** shows a `MoA calls` line; the dashboard (standalone
-  + plugin) exposes `moa_calls` in the summary and `moa_preset` per request,
-  each noting that reference-model tokens are untracked (cost is a lower
-  bound).
-- Reference-model cost is deliberately **not** estimated (no token counts
-  available) — documented as a Known Limitation.
-- Re-attribution applies only to the **preset-as-model** path
-  (`/model <preset> --provider moa`). The one-shot `/moa <prompt>` command
-  runs both the references and the aggregator through the auxiliary
-  (no-hook) path, so it is entirely invisible to telemetry by Hermes'
-  design — documented as a Known Limitation.
-- Tests: new `test_moa.py`, `test_moa_integration.py`, and v10 schema /
-  `record_llm_call` cases in `test_db.py`.
-
-Verified against `NousResearch/hermes-agent@main`: `agent/moa_loop.py`,
-`agent/auxiliary_client.py`, `agent/agent_init.py`,
-`agent/conversation_loop.py`, `hermes_cli/moa_config.py`.
-
 ## [0.7.0] - 2026-06-20
 
 ### Added — Dashboard widget for model-unavailable alerts
