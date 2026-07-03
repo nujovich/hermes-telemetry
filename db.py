@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 10
+_SCHEMA_VERSION = 11
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -167,6 +167,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v8(conn)
     _migrate_v9(conn)
     _migrate_v10(conn)
+    _migrate_v11(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -417,6 +418,42 @@ def _migrate_v10(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (10, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v11(conn: sqlite3.Connection) -> None:
+    """Add v11 schema: subagent_edges — the persistent parent→child delegation
+    tree used to attribute async/nested subagent cost to per_cron_job budgets
+    (issue #49).
+
+    child_session_id is the correlation key present in BOTH subagent_start and
+    subagent_stop (subagent_stop carries no child_subagent_id). No cost is stored
+    here; cost is resolved to the cron root at query time via a recursive CTE in
+    spend_by_scope, so there is no double counting against the global tally.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 11")
+    if cur.fetchone() is not None:
+        return
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS subagent_edges (
+            child_session_id   TEXT PRIMARY KEY,
+            parent_session_id  TEXT NOT NULL,
+            parent_turn_id     TEXT,
+            parent_subagent_id TEXT,
+            child_subagent_id  TEXT,
+            child_role         TEXT,
+            started_at         TEXT NOT NULL,
+            stopped_at         TEXT,
+            child_status       TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_subagent_edges_parent
+            ON subagent_edges(parent_session_id);
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (11, ?)",
         (_utcnow(),),
     )
 
