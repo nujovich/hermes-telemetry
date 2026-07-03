@@ -341,13 +341,9 @@ def test_subagent_tool_call_recorded_on_parent():
     assert llm_count == 0
 
 
-def test_subagent_cron_parent_costs_exclude_child():
-    """Per-cron-job budget scope counts only the parent's own tokens (not child's).
-
-    This is a documented limitation: the child runs under its own session_id with
-    no cron_job_id, so per-cron-job cost excludes delegated spend. Global scope
-    correctly includes both.
-    """
+def test_subagent_cron_parent_costs_include_linked_child():
+    """With a subagent_start edge, per-cron-job spend INCLUDES the child's cost
+    (issue #49). Global still counts each cost row exactly once."""
     import hermes_telemetry.db as db
 
     ctx = MockPluginContext()
@@ -355,12 +351,9 @@ def test_subagent_cron_parent_costs_exclude_child():
 
     PARENT_SID = "cron_nightly_20260601_020000"
     CHILD_SID = "child_cron_recon_001"
-    MODEL = "claude-sonnet-4-6"
-    PROV = "anthropic"
+    MODEL, PROV = "claude-sonnet-4-6", "anthropic"
 
-    # Parent is a cron job
     ctx.fire("on_session_start", session_id=PARENT_SID, model=MODEL, platform="cron")
-    ctx.fire("pre_api_request", session_id=PARENT_SID, api_call_count=0, approx_input_tokens=1_000)
     ctx.fire(
         "post_api_request",
         session_id=PARENT_SID,
@@ -378,9 +371,16 @@ def test_subagent_cron_parent_costs_exclude_child():
         },
     )
 
-    # Child has its own session (no cron_job_id — standard child run format)
+    # Delegation edge established synchronously before the child runs.
+    ctx.fire(
+        "subagent_start",
+        parent_session_id=PARENT_SID,
+        child_session_id=CHILD_SID,
+        child_subagent_id="sa-0-aaaa",
+        child_role="worker",
+    )
+
     ctx.fire("on_session_start", session_id=CHILD_SID, model=MODEL, platform="cli")
-    ctx.fire("pre_api_request", session_id=CHILD_SID, api_call_count=0, approx_input_tokens=5_000)
     ctx.fire(
         "post_api_request",
         session_id=CHILD_SID,
@@ -397,33 +397,125 @@ def test_subagent_cron_parent_costs_exclude_child():
             "reasoning_tokens": 0,
         },
     )
-    ctx.fire("on_session_end", session_id=CHILD_SID, completed=True, interrupted=False)
-
-    result_json = _delegate_result(5_000, 500, MODEL)
     ctx.fire(
-        "post_tool_call",
-        tool_name="delegate_task",
-        result=result_json,
+        "subagent_stop",
+        parent_session_id=PARENT_SID,
+        child_session_id=CHILD_SID,
+        child_status="completed",
         duration_ms=2_000,
-        session_id=PARENT_SID,
     )
+    ctx.fire("on_session_end", session_id=CHILD_SID, completed=True, interrupted=False)
     ctx.fire("on_session_end", session_id=PARENT_SID, completed=True, interrupted=False)
 
-    parent_run = db.get_run(PARENT_SID)
-    child_run = db.get_run(CHILD_SID)
-
-    # The cron job row carries only the parent's tokens
-    assert parent_run["cron_job_id"] == "nightly"
-    assert child_run["cron_job_id"] is None
-
-    # Global spend includes both
     past = "2000-01-01T00:00:00+00:00"
     g = db.spend_by_scope("global", "", past)
-    assert g["total_calls"] == 2  # 2 llm_calls rows: one parent, one child
-
-    # Per-cron-job scope sees only the parent's llm_call (not the child's)
     j = db.spend_by_scope("cron_job", "nightly", past)
-    assert j["total_calls"] == 1
+
+    assert g["total_calls"] == 2
+    assert j["total_calls"] == 2  # parent + child now attributed to the cron job
+    # Both runs live under the one cron root, so the subtree total == global total.
+    assert j["spent_usd"] == pytest.approx(g["spent_usd"])
+    assert j["spent_usd"] > 0.0
+
+
+def test_unlinked_child_excluded_from_cron():
+    """Without a subagent_start edge, the child is NOT attributed to the cron
+    job — its cost appears only in global. Documents the attribution boundary."""
+    import hermes_telemetry.db as db
+
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+
+    PARENT_SID = "cron_nightly_20260601_020000"
+    CHILD_SID = "child_cron_unlinked_001"
+    MODEL, PROV = "claude-sonnet-4-6", "anthropic"
+
+    ctx.fire("on_session_start", session_id=PARENT_SID, model=MODEL, platform="cron")
+    ctx.fire(
+        "post_api_request",
+        session_id=PARENT_SID,
+        model=MODEL,
+        provider=PROV,
+        api_duration=0.5,
+        api_call_count=0,
+        assistant_content_chars=200,
+        usage={
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+    )
+    # Child with NO subagent_start edge.
+    ctx.fire("on_session_start", session_id=CHILD_SID, model=MODEL, platform="cli")
+    ctx.fire(
+        "post_api_request",
+        session_id=CHILD_SID,
+        model=MODEL,
+        provider=PROV,
+        api_duration=1.0,
+        api_call_count=0,
+        assistant_content_chars=1_000,
+        usage={
+            "input_tokens": 5_000,
+            "output_tokens": 500,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+    )
+
+    past = "2000-01-01T00:00:00+00:00"
+    assert db.spend_by_scope("global", "", past)["total_calls"] == 2
+    assert db.spend_by_scope("cron_job", "nightly", past)["total_calls"] == 1
+
+
+def test_nested_subagent_resolves_to_cron_root():
+    """Grandchild cost rolls up to the root cron job through two edges."""
+    import hermes_telemetry.db as db
+
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+
+    ROOT = "cron_nightly_20260601_020000"
+    CHILD = "child_lvl1_001"
+    GRAND = "child_lvl2_001"
+    MODEL, PROV = "claude-sonnet-4-6", "anthropic"
+
+    def _api(sid, tin, tout):
+        ctx.fire(
+            "on_session_start",
+            session_id=sid,
+            model=MODEL,
+            platform="cron" if sid == ROOT else "cli",
+        )
+        ctx.fire(
+            "post_api_request",
+            session_id=sid,
+            model=MODEL,
+            provider=PROV,
+            api_duration=0.5,
+            api_call_count=0,
+            assistant_content_chars=100,
+            usage={
+                "input_tokens": tin,
+                "output_tokens": tout,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+            },
+        )
+
+    _api(ROOT, 1_000, 100)
+    ctx.fire("subagent_start", parent_session_id=ROOT, child_session_id=CHILD)
+    _api(CHILD, 2_000, 200)
+    ctx.fire("subagent_start", parent_session_id=CHILD, child_session_id=GRAND)
+    _api(GRAND, 3_000, 300)
+
+    past = "2000-01-01T00:00:00+00:00"
+    j = db.spend_by_scope("cron_job", "nightly", past)
+    assert j["total_calls"] == 3  # root + child + grandchild
 
 
 # ---------------------------------------------------------------------------

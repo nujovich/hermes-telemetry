@@ -936,26 +936,48 @@ def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:
     a verdict rests on estimated (usage=None) rows.
     """
     conn = _get_conn()
-    where = ["started_at >= ?"]
-    params: list[Any] = [since_iso]
     if scope == "cron_job":
-        where.append("cron_job_id = ?")
-        params.append(scope_id)
-    elif scope == "sender":
-        where.append("sender_id = ?")
-        params.append(scope_id)
-    # "global": no extra filter
-
-    row = conn.execute(
-        f"""
-        SELECT COALESCE(SUM(cost_usd), 0.0)            AS spent_usd,
-               COALESCE(SUM(estimated_llm_calls), 0)   AS estimated_calls,
-               COALESCE(SUM(api_calls), 0)             AS total_calls
-        FROM runs
-        WHERE {" AND ".join(where)}
-        """,
-        params,
-    ).fetchone()
+        # Attribute the whole delegation subtree to the cron job: seed from the
+        # cron root session(s), walk down subagent_edges to every descendant, and
+        # sum cost over root + descendants. This pulls in async and nested
+        # subagent spend that lands under child session_ids with cron_job_id NULL.
+        # The "global" branch below sums ALL runs, so the same cost rows are only
+        # regrouped here — no double counting. UNION (not UNION ALL) guards cycles.
+        row = conn.execute(
+            """
+            WITH RECURSIVE tree(session_id) AS (
+                SELECT session_id FROM runs WHERE cron_job_id = ?
+                UNION
+                SELECT e.child_session_id
+                FROM subagent_edges e
+                JOIN tree t ON e.parent_session_id = t.session_id
+            )
+            SELECT COALESCE(SUM(r.cost_usd), 0.0)          AS spent_usd,
+                   COALESCE(SUM(r.estimated_llm_calls), 0) AS estimated_calls,
+                   COALESCE(SUM(r.api_calls), 0)           AS total_calls
+            FROM runs r
+            JOIN tree ON r.session_id = tree.session_id
+            WHERE r.started_at >= ?
+            """,
+            (scope_id, since_iso),
+        ).fetchone()
+    else:
+        where = ["started_at >= ?"]
+        params: list[Any] = [since_iso]
+        if scope == "sender":
+            where.append("sender_id = ?")
+            params.append(scope_id)
+        # "global": no extra filter
+        row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(cost_usd), 0.0)            AS spent_usd,
+                   COALESCE(SUM(estimated_llm_calls), 0)   AS estimated_calls,
+                   COALESCE(SUM(api_calls), 0)             AS total_calls
+            FROM runs
+            WHERE {" AND ".join(where)}
+            """,
+            params,
+        ).fetchone()
 
     spent = float(row["spent_usd"] or 0.0)
     est = int(row["estimated_calls"] or 0)
