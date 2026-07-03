@@ -1243,20 +1243,44 @@ def test_migrate_v10_adds_columns_from_wedged_v9(monkeypatch):
         )
     """)
     conn.execute("DROP TABLE _llm_calls_old")
-    # Drop moa_calls from runs by rebuilding is heavy; simpler to assert it is
-    # re-added even when we just remove the v10 marker after dropping the llm
-    # column. Remove the v10 marker so the migration re-runs.
+
+    # Rebuild runs without moa_calls too, so v10's runs.moa_calls add-branch is
+    # genuinely exercised (not just llm_calls.moa_preset). Copy the live schema
+    # minus moa_calls so this stays correct as the runs shape evolves.
+    runs_info = [r for r in conn.execute("PRAGMA table_info(runs)") if r[1] != "moa_calls"]
+    col_defs = []
+    for _cid, name, ctype, notnull, dflt, pk in runs_info:
+        piece = f"{name} {ctype}"
+        if pk:
+            piece += " PRIMARY KEY"
+        elif notnull:
+            piece += " NOT NULL"
+        if dflt is not None:
+            piece += f" DEFAULT {dflt}"
+        col_defs.append(piece)
+    kept = ", ".join(r[1] for r in runs_info)
+    conn.execute("ALTER TABLE runs RENAME TO _runs_old")
+    conn.execute(f"CREATE TABLE runs ({', '.join(col_defs)})")
+    conn.execute(f"INSERT INTO runs ({kept}) SELECT {kept} FROM _runs_old")
+    conn.execute("DROP TABLE _runs_old")
+
+    # Remove the v10 marker so the migration re-runs on the next connect.
     conn.execute("DELETE FROM schema_version WHERE version = 10")
 
-    cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('llm_calls')")}
-    assert "moa_preset" not in cols  # wedged state confirmed
+    llm_cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('llm_calls')")}
+    runs_cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('runs')")}
+    assert "moa_preset" not in llm_cols  # wedged state confirmed
+    assert "moa_calls" not in runs_cols  # wedged state confirmed
 
     db._ensure_schema(conn)
 
-    cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('llm_calls')")}
-    assert "moa_preset" in cols, "v10 must re-add moa_preset when the marker is cleared"
+    llm_cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('llm_calls')")}
+    runs_cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('runs')")}
+    assert "moa_preset" in llm_cols, "v10 must re-add moa_preset when the marker is cleared"
+    assert "moa_calls" in runs_cols, "v10 must re-add runs.moa_calls when the marker is cleared"
 
-    # And record_llm_call with a preset must succeed end-to-end.
+    # And a MoA call must round-trip end-to-end: preset stored, runs counter bumped.
+    db.start_run("moa-repair", model="anthropic/claude-opus-4.8", platform="cli")
     db.record_llm_call(
         "moa-repair",
         "2026-06-20T20:00:00+00:00",
@@ -1270,3 +1294,5 @@ def test_migrate_v10_adds_columns_from_wedged_v9(monkeypatch):
     )
     row = conn.execute("SELECT moa_preset FROM llm_calls WHERE session_id='moa-repair'").fetchone()
     assert row["moa_preset"] == "default"
+    run = conn.execute("SELECT moa_calls FROM runs WHERE session_id='moa-repair'").fetchone()
+    assert run["moa_calls"] == 1
