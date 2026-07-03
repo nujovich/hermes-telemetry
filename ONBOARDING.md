@@ -129,7 +129,7 @@ discovered by auditing the Hermes Agent source:
 
 ## Hook Pipeline
 
-The plugin registers 10 of the 16 available Hermes hooks. Here is what each
+The plugin registers 12 Hermes hooks. Here is what each
 one does and why it was chosen:
 
 ```
@@ -146,6 +146,9 @@ post_api_request        PRIMARY TOKEN SOURCE. One call per individual API call
                         counts. Calculates cost, records llm_calls row, updates
                         runs totals.
 
+api_request_error       Captures 404 "model removed / unavailable" errors to
+                        power the model-unavailable alert. NO token data.
+
 post_tool_call          Records tool name, success/failure, latency. Also records
                         a proxy row for delegate_task/subagent calls (no token
                         data there, just a count).
@@ -154,9 +157,13 @@ post_llm_call           Fires once per turn after the tool loop. NO token data.
                         Used only to keep runs.ended_at current during multi-turn
                         interactive sessions.
 
+subagent_start          Records the parent→child delegation edge (subagent_edges)
+                        so subagent cost attributes to the root cron_job. Fires
+                        synchronously before the child dispatches. NO token data.
+
 subagent_stop           Records a synthetic tool_call row ("delegate_task/subagent")
-                        for proxy count of subagent invocations. NO token data
-                        available in this hook.
+                        for proxy count of subagent invocations, and finalizes the
+                        subagent_edges row (stopped_at + child_status). NO token data.
 
 on_session_end          Fires at the end of every run_conversation() call. Sets
                         final status: ok / error / interrupted.
@@ -328,7 +335,8 @@ child's own first `post_api_request` can race it. Now consumed by the plugin:
 `child_session_id` (schema v11, issue #49).
 
 ### `subagent_stop`
-Source: `tools/delegate_tool.py:2728`
+Source: `tools/delegate_tool.py` — the `_invoke_hook("subagent_stop", …)` call
+(exact line drifts across upstream commits; match by symbol, not line number).
 ```python
 parent_session_id: str
 parent_turn_id: str
@@ -338,8 +346,8 @@ child_summary: str
 child_status: str    # "completed" | "failed" | "error" | "interrupted" | "timeout"
 duration_ms: int
 ```
-**Carries `child_session_id`** — verified at `tools/delegate_tool.py:2728`
-(`child_session_id=getattr(_child_agent, "session_id", None)`). An earlier
+**Carries `child_session_id`** — verified in `tools/delegate_tool.py`'s
+`subagent_stop` invocation (`child_session_id=getattr(_child_agent, "session_id", None)`). An earlier
 version of this doc claimed `subagent_stop` had no child session id; that was
 stale and is corrected here. It does **not** carry `child_subagent_id`, and
 still has **no token or cost data**. We record a synthetic `tool_calls` row
@@ -912,8 +920,8 @@ Hermes creates child `AIAgent` instances for `delegate_task`. Each child:
 total_duration_seconds}`) still carries no child `session_id`. But
 `subagent_start` fires with both `parent_session_id` and `child_session_id`
 before the child ever dispatches, and `subagent_stop` **does** carry
-`child_session_id` (verified at `tools/delegate_tool.py:2728`; an earlier
-version of this doc claimed otherwise — that was stale). That pair is enough
+`child_session_id` (verified in `tools/delegate_tool.py`'s `subagent_stop`
+invocation; an earlier version of this doc claimed otherwise — that was stale). That pair is enough
 to build the full delegation tree without touching the `delegate_task` result
 at all.
 
