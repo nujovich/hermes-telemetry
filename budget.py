@@ -486,7 +486,7 @@ def _cron_block() -> str:
     lines.append("  cost — child runs are attributed to their root cron job via the")
     lines.append("  subagent_edges tree (async + nested). Spend from unlinked children")
     lines.append("  (edge not recorded) is not attributable; the global budget remains")
-    lines.append("  the catch-all tope.")
+    lines.append("  the catch-all cap.")
     return "\n".join(lines)
 
 
