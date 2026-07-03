@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 11
+_SCHEMA_VERSION = 12
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -168,6 +168,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v9(conn)
     _migrate_v10(conn)
     _migrate_v11(conn)
+    _migrate_v12(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -454,6 +455,28 @@ def _migrate_v11(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (11, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v12(conn: sqlite3.Connection) -> None:
+    """Add v12 schema: profile on runs (per-profile cost attribution).
+
+    profile is captured from ``ctx.profile_name`` at session start and
+    backfilled in ``pre_llm_call`` (first non-null wins). Nullable: pre-v12
+    rows and sessions whose profile could not be resolved stay NULL. An index
+    supports the per-profile budget scope's ``WHERE profile = ?`` filter
+    (mirrors ``idx_runs_sender``)."""
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 12")
+    if cur.fetchone() is not None:
+        return
+
+    _add_column_if_missing(conn, "runs", "profile", "TEXT")
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_profile ON runs(profile)")
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (12, ?)",
         (_utcnow(),),
     )
 
