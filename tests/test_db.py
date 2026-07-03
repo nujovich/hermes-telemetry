@@ -677,6 +677,38 @@ def test_spend_by_scope_estimated_pct():
     assert abs(s["estimated_pct"] - 0.5) < 1e-9
 
 
+def test_estimated_price_share_cron_job_includes_subagent_subtree():
+    """estimated_price_share("cron_job", ...) must resolve the same delegation
+    subtree as spend_by_scope. A delegated child (cron_job_id NULL) that uses
+    an estimated-price model has to count toward the parent cron job's share —
+    otherwise budget.py never degrades a HARD verdict driven by that child's
+    spend to SOFT, and the job hard-pauses on pricing the system itself deems
+    unreliable."""
+    import yaml
+
+    pricing_file = db._get_db_path().parent / "pricing.yaml"
+    pricing_file.write_text(
+        yaml.safe_dump(
+            {
+                "models": {},
+                "_meta": {"estimated_price_models": ["some/estimated-model"]},
+            }
+        )
+    )
+
+    db.start_run("cron_job1_20260601_020000", model="m", platform="cron", cron_job_id="job1")
+    db.start_run("child-est-1", model="m", platform="cli")
+    db.record_subagent_start(
+        child_session_id="child-est-1", parent_session_id="cron_job1_20260601_020000"
+    )
+    db.record_llm_call(
+        "child-est-1", db._utcnow(), "some/estimated-model", "openrouter", 100, 50, 0.02, 100
+    )
+
+    past = "2000-01-01T00:00:00+00:00"
+    assert db.estimated_price_share("cron_job", "job1", past) > 0.0
+
+
 def test_try_budget_alert_is_idempotent():
     first = db.try_budget_alert("global", "", "daily", "2026-05-31", "soft", 4.0, 5.0)
     second = db.try_budget_alert("global", "", "daily", "2026-05-31", "soft", 4.0, 5.0)

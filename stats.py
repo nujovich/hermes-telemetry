@@ -122,8 +122,9 @@ def _summary_block(
 
     if not s.get("parent_links_available", True):
         lines.append(
-            "  Note: Subagent tokens included in total "
-            "(individual sessions, no parent-child attribution)"
+            "  Note: Subagent tokens are included in the global total. Per-cron-job "
+            "budgets attribute them to the root job via subagent_edges (see /budget cron); "
+            "the per-session runs table still shows individual sessions."
         )
 
     moa_calls = int(s.get("moa_calls") or 0)

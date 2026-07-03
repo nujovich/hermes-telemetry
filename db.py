@@ -1161,6 +1161,10 @@ def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
 
     This lets the budget engine degrade hard verdicts to soft when spend
     includes models without fixed pricing (e.g. OpenRouter auto-routing).
+    For "cron_job", this resolves the same delegation subtree as
+    spend_by_scope (root cron session + all subagent_edges descendants), so a
+    delegated child's estimated-price usage still degrades the parent job's
+    verdict.
 
     Returns 0.0–1.0.
     """
@@ -1177,33 +1181,47 @@ def estimated_price_share(scope: str, scope_id: str, since_iso: str) -> float:
     if not est_models:
         return 0.0
 
-    # Build WHERE clause for scope
-    where = ["r.started_at >= ?"]
-    params: list[Any] = [since_iso]
-    if scope == "cron_job":
-        where.append("r.cron_job_id = ?")
-        params.append(scope_id)
-    elif scope == "sender":
-        where.append("r.sender_id = ?")
-        params.append(scope_id)
-
     placeholders = ", ".join(f"'{m}'" for m in est_models)
-    # Clamp to avoid SQLite parameter limits on huge lists
-    row = (
-        _get_conn()
-        .execute(
+    conn = _get_conn()
+    if scope == "cron_job":
+        row = conn.execute(
             f"""
-        SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN l.model IN ({placeholders}) THEN 1 ELSE 0 END) AS est_calls
-        FROM llm_calls l
-        JOIN runs r ON l.session_id = r.session_id
-        WHERE {" AND ".join(where)}
-        """,
+            WITH RECURSIVE tree(session_id) AS (
+                SELECT session_id FROM runs WHERE cron_job_id = ?
+                UNION
+                SELECT e.child_session_id
+                FROM subagent_edges e
+                JOIN tree t ON e.parent_session_id = t.session_id
+            )
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN l.model IN ({placeholders}) THEN 1 ELSE 0 END) AS est_calls
+            FROM llm_calls l
+            JOIN runs r ON l.session_id = r.session_id
+            JOIN tree ON r.session_id = tree.session_id
+            WHERE r.started_at >= ?
+            """,
+            (scope_id, since_iso),
+        ).fetchone()
+    else:
+        where = ["r.started_at >= ?"]
+        params: list[Any] = [since_iso]
+        if scope == "sender":
+            where.append("r.sender_id = ?")
+            params.append(scope_id)
+
+        row = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN l.model IN ({placeholders}) THEN 1 ELSE 0 END) AS est_calls
+            FROM llm_calls l
+            JOIN runs r ON l.session_id = r.session_id
+            WHERE {" AND ".join(where)}
+            """,
             params,
-        )
-        .fetchone()
-    )
+        ).fetchone()
+
     total = row["total"] or 0
     est = row["est_calls"] or 0
     return est / total if total else 0.0
