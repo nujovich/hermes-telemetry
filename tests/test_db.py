@@ -1301,6 +1301,75 @@ def test_schema_v11_recorded():
     assert 11 in versions
 
 
+def test_record_subagent_start_inserts_edge():
+    db.record_subagent_start(
+        child_session_id="c1",
+        parent_session_id="p1",
+        parent_turn_id="t1",
+        parent_subagent_id="sa-0-aaa",
+        child_subagent_id="sa-1-bbb",
+        child_role="researcher",
+        started_at="2026-07-03T00:00:00+00:00",
+    )
+    conn = db._get_conn()
+    row = conn.execute("SELECT * FROM subagent_edges WHERE child_session_id='c1'").fetchone()
+    assert row["parent_session_id"] == "p1"
+    assert row["child_subagent_id"] == "sa-1-bbb"
+    assert row["child_role"] == "researcher"
+    assert row["stopped_at"] is None
+    assert row["child_status"] is None
+
+
+def test_record_subagent_start_idempotent():
+    """First edge wins (INSERT OR IGNORE) — a duplicate start does not clobber."""
+    db.record_subagent_start(child_session_id="c1", parent_session_id="p1")
+    db.record_subagent_start(child_session_id="c1", parent_session_id="p_other")
+    conn = db._get_conn()
+    rows = conn.execute(
+        "SELECT parent_session_id FROM subagent_edges WHERE child_session_id='c1'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["parent_session_id"] == "p1"
+
+
+def test_record_subagent_stop_finalizes_edge():
+    db.record_subagent_start(
+        child_session_id="c1", parent_session_id="p1", started_at="2026-07-03T00:00:00+00:00"
+    )
+    db.record_subagent_stop(
+        child_session_id="c1",
+        parent_session_id="p1",
+        child_status="completed",
+        stopped_at="2026-07-03T00:05:00+00:00",
+    )
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT stopped_at, child_status FROM subagent_edges WHERE child_session_id='c1'"
+    ).fetchone()
+    assert row["stopped_at"] == "2026-07-03T00:05:00+00:00"
+    assert row["child_status"] == "completed"
+
+
+def test_record_subagent_stop_backfills_when_start_missed():
+    """If subagent_start was never seen, stop backfills the edge so the child
+    still resolves to its parent. child_subagent_id is NULL (absent on stop)."""
+    db.record_subagent_stop(
+        child_session_id="c-orphan",
+        parent_session_id="p1",
+        child_status="completed",
+        stopped_at="2026-07-03T00:05:00+00:00",
+    )
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT parent_session_id, child_status, child_subagent_id "
+        "FROM subagent_edges WHERE child_session_id='c-orphan'"
+    ).fetchone()
+    assert row is not None
+    assert row["parent_session_id"] == "p1"
+    assert row["child_status"] == "completed"
+    assert row["child_subagent_id"] is None
+
+
 def test_migrate_v11_creates_table_from_wedged_v10():
     """Upgrade path: a DB stuck in the pre-v11 shape (no subagent_edges, v11
     marker absent) self-heals on the next connect and the edge write works."""

@@ -653,6 +653,78 @@ def record_tool_call(
     )
 
 
+def record_subagent_start(
+    child_session_id: str,
+    parent_session_id: str,
+    parent_turn_id: str | None = None,
+    parent_subagent_id: str | None = None,
+    child_subagent_id: str | None = None,
+    child_role: str | None = None,
+    started_at: str | None = None,
+) -> None:
+    """Record a parent→child delegation edge. Idempotent on child_session_id.
+
+    Fires from the subagent_start hook, which runs synchronously in Hermes'
+    _build_child_agent BEFORE async dispatch — so the edge exists before the
+    child's first post_api_request and resolution never races the child's events.
+    """
+    _get_conn().execute(
+        """
+        INSERT OR IGNORE INTO subagent_edges
+            (child_session_id, parent_session_id, parent_turn_id,
+             parent_subagent_id, child_subagent_id, child_role, started_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            child_session_id,
+            parent_session_id,
+            parent_turn_id,
+            parent_subagent_id,
+            child_subagent_id,
+            child_role,
+            started_at or _utcnow(),
+        ),
+    )
+
+
+def record_subagent_stop(
+    child_session_id: str,
+    parent_session_id: str = "",
+    child_status: str | None = None,
+    child_role: str | None = None,
+    stopped_at: str | None = None,
+) -> None:
+    """Finalize a delegation edge: set stopped_at + child_status.
+
+    If the edge is missing (subagent_start not seen — rare, since start fires
+    synchronously before dispatch), backfill it from the stop kwargs so the
+    child's cost still resolves to its parent. child_subagent_id is absent on the
+    stop hook, so a backfilled edge has no subagent id.
+    """
+    conn = _get_conn()
+    now = stopped_at or _utcnow()
+    cur = conn.execute(
+        """
+        UPDATE subagent_edges
+        SET stopped_at   = ?,
+            child_status = ?,
+            child_role   = COALESCE(child_role, ?)
+        WHERE child_session_id = ?
+        """,
+        (now, child_status, child_role, child_session_id),
+    )
+    if cur.rowcount == 0 and parent_session_id:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO subagent_edges
+                (child_session_id, parent_session_id, child_role,
+                 started_at, stopped_at, child_status)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (child_session_id, parent_session_id, child_role, now, now, child_status),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Read API (used by stats.py)
 # ---------------------------------------------------------------------------
