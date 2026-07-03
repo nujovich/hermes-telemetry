@@ -1472,3 +1472,96 @@ def test_unattributed_child_cost_zero_when_parent_present():
     d = db.unattributed_child_cost("2000-01-01T00:00:00+00:00")
     assert d["edges"] == 0
     assert d["unattributed_usd"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# v12 — runs.profile (per-profile cost attribution)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_v12_columns():
+    """v12 adds the profile column on runs."""
+    conn = db._get_conn()
+    runs_cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    assert "profile" in runs_cols
+
+
+def test_schema_v12_recorded():
+    versions = {row[0] for row in db._get_conn().execute("SELECT version FROM schema_version")}
+    assert 12 in versions
+
+
+def test_migrate_v12_repairs_missing_column_from_v11():
+    """If a v11 DB lacks runs.profile (e.g. the v12 ALTER was swallowed by a
+    transient SQLITE_LOCKED), the next connect must self-heal via v12 — not
+    leave the column missing while marking version 12 applied.
+
+    The previous shipped version is v11 (subagent_edges; MoA at v10), so the
+    simulated wedged state keeps every v11 column (including runs.moa_calls) and
+    only drops profile. Rebuild runs from the live schema minus profile so this
+    stays correct as the runs shape evolves. SQLite pre-3.35 has no DROP COLUMN,
+    so we rebuild."""
+    conn = db._get_conn()
+
+    runs_info = [r for r in conn.execute("PRAGMA table_info(runs)") if r[1] != "profile"]
+    col_defs = []
+    for _cid, name, ctype, notnull, dflt, pk in runs_info:
+        piece = f"{name} {ctype}"
+        if pk:
+            piece += " PRIMARY KEY"
+        elif notnull:
+            piece += " NOT NULL"
+        if dflt is not None:
+            piece += f" DEFAULT {dflt}"
+        col_defs.append(piece)
+    kept = ", ".join(r[1] for r in runs_info)
+    conn.execute("ALTER TABLE runs RENAME TO _runs_old")
+    conn.execute(f"CREATE TABLE runs ({', '.join(col_defs)})")
+    conn.execute(f"INSERT INTO runs ({kept}) SELECT {kept} FROM _runs_old")
+    conn.execute("DROP TABLE _runs_old")
+    conn.execute("DELETE FROM schema_version WHERE version = 12")
+
+    cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('runs')")}
+    assert "profile" not in cols  # wedged state confirmed
+    assert "moa_calls" in cols  # v10/v11 columns preserved
+
+    db._ensure_schema(conn)
+
+    cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('runs')")}
+    assert "profile" in cols, "v12 must re-add runs.profile when it was missing"
+
+
+def test_start_run_stores_profile():
+    db.start_run("s_prof", "m", "cli", profile="coder")
+    assert db.get_run("s_prof")["profile"] == "coder"
+
+
+def test_start_run_profile_defaults_none():
+    db.start_run("s_noprof", "m", "cli")
+    assert db.get_run("s_noprof")["profile"] is None
+
+
+def test_set_profile_first_non_null_wins():
+    db.start_run("s_bf", "m", "cli")  # no profile
+    db.set_profile("s_bf", "coder")
+    assert db.get_run("s_bf")["profile"] == "coder"
+    db.set_profile("s_bf", "ops")  # must NOT overwrite
+    assert db.get_run("s_bf")["profile"] == "coder"
+
+
+def test_set_profile_ignores_empty():
+    db.start_run("s_empty", "m", "cli")
+    db.set_profile("s_empty", "")
+    db.set_profile("s_empty", None)
+    assert db.get_run("s_empty")["profile"] is None
+
+
+def test_spend_by_scope_profile_filters():
+    db.start_run("s_coder", "m", "cli", profile="coder")
+    db.start_run("s_ops", "m", "cli", profile="ops")
+    conn = db._get_conn()
+    conn.execute("UPDATE runs SET cost_usd = 1.50 WHERE session_id = 's_coder'")
+    conn.execute("UPDATE runs SET cost_usd = 0.25 WHERE session_id = 's_ops'")
+
+    result = db.spend_by_scope("profile", "coder", "2000-01-01T00:00:00+00:00")
+    assert result["spent_usd"] == 1.50

@@ -189,7 +189,11 @@ def register(ctx) -> None:  # noqa: ANN001
         try:
             cron_job_id = _extract_cron_job_id(session_id, platform)
             db.start_run(
-                session_id=session_id, model=model, platform=platform, cron_job_id=cron_job_id
+                session_id=session_id,
+                model=model,
+                platform=platform,
+                cron_job_id=cron_job_id,
+                profile=getattr(ctx, "profile_name", None),
             )
             tele_log.debug(
                 "session_start session=%s platform=%s cron_job=%s",
@@ -634,6 +638,7 @@ def register(ctx) -> None:  # noqa: ANN001
         try:
             if sender_id:
                 db.set_sender(session_id, sender_id)
+            db.set_profile(session_id, getattr(ctx, "profile_name", None))
             run = db.get_run(session_id)
             if not run:
                 return None

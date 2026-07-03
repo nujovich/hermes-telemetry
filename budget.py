@@ -194,7 +194,7 @@ def _period_key(window: str) -> str:
 
 @dataclass
 class BudgetVerdict:
-    scope: str  # global | cron_job | sender
+    scope: str  # global | cron_job | sender | profile
     scope_id: str  # "" for global
     window: str  # daily | monthly
     status: str  # ok | soft | hard
@@ -218,6 +218,8 @@ class BudgetVerdict:
             return f"Cron job '{self.scope_id}'"
         if self.scope == "sender":
             return f"Sender '{self.scope_id}'"
+        if self.scope == "profile":
+            return f"Profile '{self.scope_id}'"
         return self.scope
 
 
@@ -234,6 +236,10 @@ def _resolve_limits(scope: str, scope_id: str) -> dict[str, float]:
         node = overrides.get(scope_id) or per.get("default") or {}
     elif scope == "sender":
         per = budgets.get("per_sender") or {}
+        overrides = per.get("overrides") or {}
+        node = overrides.get(scope_id) or per.get("default") or {}
+    elif scope == "profile":
+        per = budgets.get("per_profile") or {}
         overrides = per.get("overrides") or {}
         node = overrides.get(scope_id) or per.get("default") or {}
 
@@ -330,6 +336,11 @@ def evaluate_run(run_row: dict) -> list[BudgetVerdict]:
     sender_id = run_row.get("sender_id")
     if sender_id:
         v = check("sender", sender_id)
+        if v:
+            verdicts.append(v)
+    profile = run_row.get("profile")
+    if profile:
+        v = check("profile", profile)
         if v:
             verdicts.append(v)
     return verdicts

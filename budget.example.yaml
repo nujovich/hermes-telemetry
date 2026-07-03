@@ -7,6 +7,7 @@
 #   global        — all spend, every platform
 #   per_cron_job  — keyed by cron job id (the {job_id} in cron_{job_id}_{ts})
 #   per_sender    — keyed by sender_id (gateway multi-user setups)
+#   per_profile   — keyed by Hermes profile name (from ctx.profile_name)
 #
 # Windows: daily_usd and monthly_usd, evaluated in your LOCAL timezone.
 #
@@ -38,6 +39,12 @@ budgets:
       daily_usd: 2.00
     # overrides:
     #   "telegram:123456": { daily_usd: 10.00 }
+
+  per_profile:
+    default:
+      daily_usd: 2.00
+    # overrides:
+    #   "coder": { daily_usd: 10.00 }
 
 thresholds:
   soft_pct: 0.80          # warn at 80% of a limit

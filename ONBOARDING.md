@@ -409,6 +409,7 @@ table before applying.
 | v9 | Repair pass — re-adds any column from v2/v3/v4/v7 that was silently skipped by the old blanket `except OperationalError: pass` pattern when an `ALTER TABLE` hit a transient `SQLITE_LOCKED` (cross-process cron contention). Uses `_add_column_if_missing`; idempotent. |
 | v10 | MoA (Mixture-of-Agents) attribution: `llm_calls.moa_preset` (preset name for a MoA aggregator call; NULL otherwise) + `runs.moa_calls` (per-session counter). See `§ Mixture of Agents (MoA)`. |
 | v11 | New table `subagent_edges` (parent→child delegation tree) + `idx_subagent_edges_parent`. Attributes async/nested subagent cost to `per_cron_job` via a recursive CTE at query time. (#49) |
+| v12 | Add `runs.profile` (per-profile cost attribution) + `idx_runs_profile`. Captured from `ctx.profile_name` at `on_session_start`, backfilled in `pre_llm_call` (first non-null wins). Adds the `per_profile` budget scope. |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -497,6 +498,7 @@ already uses `INSERT OR IGNORE`).
 | `estimated_llm_calls` | Count of calls where provider returned `usage=None`. Used for budget degradation. |
 | `parent_session_id` | Dormant by design — kept in the schema but never populated. Parent→child attribution is handled by the separate `subagent_edges` table (v11) instead; see `§ Subagent Architecture`. |
 | `sender_id` | Set from `pre_llm_call.sender_id`. First non-null wins (`COALESCE(sender_id, ?)`). |
+| `profile` | Set from `ctx.profile_name` (the only profile-identity surface Hermes exposes to plugins — NOT encoded in `session_id`, no `HERMES_PROFILE` env var). Captured at `on_session_start`, backfilled in `pre_llm_call` via `db.set_profile` (`COALESCE(profile, ?)`, first non-null wins). Powers the `per_profile` budget scope. NULL for pre-v12 rows and sessions whose profile could not be resolved. |
 | `model` / `provider` | Set from first `record_llm_call`. `COALESCE(model, ?)` so they're never overwritten. |
 
 ---
@@ -733,6 +735,7 @@ timestamp is converted back to UTC ISO before querying the DB (the DB stores UTC
 | `global` | All `runs` rows in the window |
 | `per_cron_job` | `runs WHERE cron_job_id = ?`, plus every descendant reachable through `subagent_edges` (recursive CTE) — includes delegated subagent spend |
 | `per_sender` | `runs WHERE sender_id = ?` |
+| `per_profile` | `runs WHERE profile = ?` — NULL-profile runs excluded |
 
 `per_cron_job` seeds from the cron job's own root session(s) and walks
 `subagent_edges` down to every descendant, so delegated (async/nested)
@@ -740,6 +743,17 @@ subagent spend is now attributed back to the cron job that started the
 chain (schema v11, issue #49). `global` still sums every `runs` row
 unconditionally, so `per_cron_job` only *regroups* the same cost rows —
 there is no double counting. See `§ Subagent Architecture`.
+
+**Profile attribution — known limitations**
+- **Multiplexed-gateway accuracy:** `profile` is captured from `ctx.profile_name`,
+  which the core derives from the `HERMES_HOME` ContextVar. In a multiplexed gateway
+  (one process serving many profiles), the value is correct only if the core
+  propagated that ContextVar into the thread that fires the hook. If it did not, a run
+  may be tagged with the wrong profile (typically `default`). Dedicated per-profile
+  processes (per-profile gateway/cron) are not affected — they resolve the profile
+  from the process's own `HERMES_HOME`.
+- **NULL profile:** pre-v12 rows and any session whose profile could not be resolved
+  keep `profile = NULL`; these are excluded from `per_profile` spend and budgets.
 
 ---
 
