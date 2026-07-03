@@ -118,14 +118,12 @@ discovered by auditing the Hermes Agent source:
 | Abort an in-flight model API call | No hook fires after the call starts and before it ends. `pre_api_request` and `pre_llm_call` both fire BEFORE; their return value cannot abort. |
 | Get token data from `pre_llm_call` | This hook fires once per turn but before any API call. No token data is available here. |
 | Get token data from `post_llm_call` | This hook fires after the tool loop. No token data. Wrong hook for cost capture. |
-| Link a subagent's tokens back to its parent cron job | `subagent_stop` has no child `session_id`. `on_session_start` has no `parent_session_id`. The link is unrecoverable from hooks. |
 
 **Source references** (verified against hermes-agent source):
 - `pre_llm_call` return: `agent/conversation_loop.py:687-722` (context injection only)
 - `pre_api_request` return: `agent/conversation_loop.py:1235-1255` (return discarded)
 - `pre_tool_call` block: `hermes_cli/plugins.py:1666-1707` ✅
 - `cron.jobs.pause_job`: `cron/scheduler.py` ✅
-- `subagent_stop` no child id: `tools/delegate_tool.py:2269-2277`
 
 ---
 
@@ -312,17 +310,43 @@ Fires on true session teardown. Safety net: sets status to `"ok"` if not already
 set (the `on_session_end` → `on_session_finalize` sequence ensures at least one
 of them fires).
 
-### `subagent_stop`
-Source: `tools/delegate_tool.py:2269-2277`
+### `subagent_start`
+Source: `tools/delegate_tool.py` (`_build_child_agent`)
 ```python
 parent_session_id: str
+parent_turn_id: str
+parent_subagent_id: str
+child_session_id: str
+child_subagent_id: str   # format: "sa-{i}-{uuid8}"
+child_role: str
+child_goal: str
+```
+Fires **synchronously** in `_build_child_agent`, BEFORE the child is
+dispatched asynchronously — so the parent→child edge is persisted before the
+child's own first `post_api_request` can race it. Now consumed by the plugin:
+`db.record_subagent_start` inserts a `subagent_edges` row keyed on
+`child_session_id` (schema v11, issue #49).
+
+### `subagent_stop`
+Source: `tools/delegate_tool.py:2728`
+```python
+parent_session_id: str
+parent_turn_id: str
+child_session_id: str
 child_role: str
 child_summary: str
 child_status: str    # "completed" | "failed" | "error" | "interrupted" | "timeout"
 duration_ms: int
 ```
-**NO token or cost data.** We record a synthetic `tool_calls` row with
-`tool_name="delegate_task/subagent"` for proxy count only.
+**Carries `child_session_id`** — verified at `tools/delegate_tool.py:2728`
+(`child_session_id=getattr(_child_agent, "session_id", None)`). An earlier
+version of this doc claimed `subagent_stop` had no child session id; that was
+stale and is corrected here. It does **not** carry `child_subagent_id`, and
+still has **no token or cost data**. We record a synthetic `tool_calls` row
+with `tool_name="delegate_task/subagent"` for proxy count, and
+`db.record_subagent_stop` finalizes the matching `subagent_edges` row
+(`stopped_at` + `child_status`) — `child_session_id` is the correlation key
+that ties this hook back to `subagent_start`.
 
 ---
 
@@ -376,6 +400,7 @@ table before applying.
 | v8 | New table: `model_unavailable_alerts` (404s captured via `api_request_error` — model removed/deprecated by provider) |
 | v9 | Repair pass — re-adds any column from v2/v3/v4/v7 that was silently skipped by the old blanket `except OperationalError: pass` pattern when an `ALTER TABLE` hit a transient `SQLITE_LOCKED` (cross-process cron contention). Uses `_add_column_if_missing`; idempotent. |
 | v10 | MoA (Mixture-of-Agents) attribution: `llm_calls.moa_preset` (preset name for a MoA aggregator call; NULL otherwise) + `runs.moa_calls` (per-session counter). See `§ Mixture of Agents (MoA)`. |
+| v11 | New table `subagent_edges` (parent→child delegation tree) + `idx_subagent_edges_parent`. Attributes async/nested subagent cost to `per_cron_job` via a recursive CTE at query time. (#49) |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -462,7 +487,7 @@ already uses `INSERT OR IGNORE`).
 | `session_id` | PK. CLI: `{YYYYMMDD_HHMMSS}_{uuid6}`. Cron: `cron_{job_id}_{YYYYMMDD_HHMMSS}`. |
 | `cron_job_id` | Extracted from `session_id` via anchored regex (see Cron regex below). NULL for non-cron. |
 | `estimated_llm_calls` | Count of calls where provider returned `usage=None`. Used for budget degradation. |
-| `parent_session_id` | Schema column reserved for future parent-child attribution. **Never populated** — the Hermes hooks do not expose the link. |
+| `parent_session_id` | Dormant by design — kept in the schema but never populated. Parent→child attribution is handled by the separate `subagent_edges` table (v11) instead; see `§ Subagent Architecture`. |
 | `sender_id` | Set from `pre_llm_call.sender_id`. First non-null wins (`COALESCE(sender_id, ?)`). |
 | `model` / `provider` | Set from first `record_llm_call`. `COALESCE(model, ?)` so they're never overwritten. |
 
@@ -698,12 +723,15 @@ timestamp is converted back to UTC ISO before querying the DB (the DB stores UTC
 | Scope | How spend is aggregated |
 |-------|------------------------|
 | `global` | All `runs` rows in the window |
-| `per_cron_job` | `runs WHERE cron_job_id = ?` — excludes subagent spend |
+| `per_cron_job` | `runs WHERE cron_job_id = ?`, plus every descendant reachable through `subagent_edges` (recursive CTE) — includes delegated subagent spend |
 | `per_sender` | `runs WHERE sender_id = ?` |
 
-`per_cron_job` deliberately excludes subagent spend — there's no way to
-attribute it. Document this to users: use `global` for a cap that captures
-delegated work.
+`per_cron_job` seeds from the cron job's own root session(s) and walks
+`subagent_edges` down to every descendant, so delegated (async/nested)
+subagent spend is now attributed back to the cron job that started the
+chain (schema v11, issue #49). `global` still sums every `runs` row
+unconditionally, so `per_cron_job` only *regroups* the same cost rows —
+there is no double counting. See `§ Subagent Architecture`.
 
 ---
 
@@ -879,17 +907,40 @@ Hermes creates child `AIAgent` instances for `delegate_task`. Each child:
 - Calls `run_conversation()` which fires the full hook lifecycle
 - Records its own `runs` row independently
 
-**Verified finding (A3):** `delegate_task` result in `model_tools.py:999`
-contains `{results:[{tokens, model, api_calls, status, ...}], total_duration_seconds}` —
-**no child `session_id`**. `subagent_stop` also doesn't carry a child id.
+**Verified finding (A3, superseded by #49):** the `delegate_task` result in
+`model_tools.py:999` (`{results:[{tokens, model, api_calls, status, ...}],
+total_duration_seconds}`) still carries no child `session_id`. But
+`subagent_start` fires with both `parent_session_id` and `child_session_id`
+before the child ever dispatches, and `subagent_stop` **does** carry
+`child_session_id` (verified at `tools/delegate_tool.py:2728`; an earlier
+version of this doc claimed otherwise — that was stale). That pair is enough
+to build the full delegation tree without touching the `delegate_task` result
+at all.
 
-**Consequence:** `/stats` global totals already include subagent tokens (they
-appear as separate `runs` rows). But parent-child attribution is impossible from
-hooks alone. `runs.parent_session_id` was added as a schema column for future
-use, but it is **never populated** in any version through v0.4.0.
+**How attribution works now (schema v11, issue #49):** every `subagent_start`
+records a `subagent_edges` row — `child_session_id → parent_session_id`, plus
+role, subagent ids, and a start timestamp (`db.record_subagent_start`).
+`subagent_stop` finalizes that row with `stopped_at` + `child_status`
+(`db.record_subagent_stop`), backfilling a missing edge from its own kwargs in
+the rare case `subagent_start` was never seen. `db.spend_by_scope("cron_job",
+...)` seeds from the cron job's own root session(s) and walks the edge tree
+down with a recursive CTE, summing cost over the root plus every descendant —
+so both async and nested delegation resolve back to the root cron job.
+`global` still sums every `runs` row unconditionally, so `per_cron_job` only
+*regroups* the same cost rows; there is no double counting.
 
-**Practical implication for budgets:** `per_cron_job` scope undercounts
-delegated spend. Use `global` scope to cap total cost including subagents.
+**`runs.parent_session_id` stays dormant, on purpose.** `subagent_edges` is
+the single source of truth for the delegation tree, and it's a persistent
+table, so there's no in-memory map to leak or lose on restart. The dormant
+column is not being repurposed.
+
+**Phase-1 boundary:** this closes the *reporting/aggregation* gap only. A
+detached child still self-enforces its own budget only against `global`
+while it runs — an in-path stop for a runaway async child mid-flight
+(pausing it before it racks up more cost) is a planned Phase 2, not part of
+this change. `db.unattributed_child_cost` is a query-time diagnostic that
+flags child spend recorded in `subagent_edges` whose parent has no matching
+`runs` row, so the chain can't resolve to a real root; surfaced in `/stats`.
 
 ---
 
@@ -920,8 +971,12 @@ There are **two** execution paths, and they behave differently:
 calls go through `agent/auxiliary_client.py::call_llm`, which contains **no hook
 dispatch** (no `invoke_hook`). So:
 
-- **Reference-model tokens are never captured** — same class of blind spot as
-  subagent per-cron attribution. Unrecoverable from hooks.
+- **Reference-model tokens are never captured** — a hook-*dispatch* gap
+  (`call_llm` invokes no hook at all), not a missing-kwarg gap. Contrast with
+  the old subagent per-cron-job gap: that one was a missing-kwarg problem and
+  is now solved via `subagent_edges` (schema v11, issue #49) — see
+  `§ Subagent Architecture`. This one is structural: with no hook firing,
+  there's no kwarg to add.
 - In the preset-as-model path, the **aggregator** *is* captured (it becomes the
   main response), but the hook reports `provider="moa"` and `model="<preset>"` —
   neither is a real, priceable identifier.
@@ -1183,7 +1238,7 @@ with `pytest --basetemp=DIR`.
 | Cost (USD) | ⚠️ Estimated | Local pricing table × token counts |
 | Tokens when `usage=None` | ⚠️ Estimated, flagged | `approx_input_tokens + chars/4`, row marked `estimated=1` |
 | Subagent cost (global) | ✅ Real | Child runs fire own hooks → independent `runs` rows |
-| Subagent cost (per-cron-job) | ❌ Not available | No parent→child link in any hook |
+| Subagent cost (per-cron-job) | ✅ Real (attributed) | `subagent_edges` (v11) + recursive CTE in `db.spend_by_scope("cron_job", ...)` |
 | MoA aggregator cost | ✅ Real (re-attributed) | Aggregator usage from `post_api_request`, priced under the aggregator's real provider/model resolved from the preset (`moa.py`) |
 | MoA reference-model cost | ❌ Not available | References run via auxiliary `call_llm`, which fires no hooks — tokens unrecoverable (recorded MoA cost is a lower bound) |
 
@@ -1238,11 +1293,19 @@ Enable with `git config core.hooksPath .githooks`.
 
 ### Subagent attribution
 
-- `per_cron_job` budgets undercount delegated spend. The `global` budget is the
-  only reliable cap for total cost including subagents.
-- `runs.parent_session_id` is in the schema but never populated. If Hermes adds
-  a `parent_session_id` kwarg to `on_session_start` in the future, the column
-  is ready.
+- `per_cron_job` budgets now attribute delegated (async/nested) subagent
+  spend back to the cron job that started the delegation chain, via the
+  `subagent_edges` table and a recursive CTE in `db.spend_by_scope` (schema
+  v11, issue #49). `global` remains the cap that captures literally
+  everything, including any edge that fails to resolve.
+- `runs.parent_session_id` stays dormant by design — `subagent_edges` is the
+  persistent, single source of truth for the delegation tree, so there is no
+  need to populate the column retroactively.
+- **Phase-1 boundary:** this is reporting/aggregation correctness only. A
+  detached async child still self-enforces only against `global` while it
+  runs; in-path enforcement that pauses a runaway child mid-flight is a
+  planned Phase 2. `db.unattributed_child_cost` flags, at query time, child
+  spend whose parent edge never resolves to a real root.
 
 ### MoA reference-model tokens
 
@@ -1354,7 +1417,6 @@ Hooks not used (and why):
 - `transform_*` — output mutation, not needed for telemetry
 - `on_session_reset` — fired by `/reset`; would be useful for clearing session
   state without restart, but not yet wired
-- `subagent_start` — only `subagent_stop` is consumed (no token data on start)
 - `pre_gateway_dispatch` / `pre_approval_request` / `post_approval_response` —
   documented as "observers only"; cannot block or modify
 
