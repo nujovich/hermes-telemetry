@@ -17,7 +17,7 @@ Date range support:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -175,6 +175,21 @@ def _cron_block(
         lines.append(
             f"  {job_id:<20} {runs:>5} {ok:>5} {fail:>5} {tin:>9} {tout:>9} {cost:>12} {dur:>9}"
         )
+
+    since_iso = (
+        date_from
+        if date_from
+        else (datetime.now(timezone.utc) - timedelta(hours=window_hours or 720)).isoformat()
+    )
+    unattr = db.unattributed_child_cost(since_iso)
+    if unattr["edges"]:
+        lines.append("")
+        lines.append(
+            f"  ⚠ {unattr['edges']} subagent edge(s) with an unrecorded parent — "
+            f"{_fmt_cost(unattr['unattributed_usd'])} unattributed to any cron job."
+        )
+        lines.append("  (Attributed subagent spend is reflected in `/budget cron`.)")
+
     return "\n".join(lines)
 
 

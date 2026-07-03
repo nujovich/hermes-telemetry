@@ -352,7 +352,7 @@ def test_budget_status_no_config(tmp_path):
     assert "No budgets configured" in out
 
 
-def test_budget_cron_subcommand_notes_subagent_limit(tmp_path):
+def test_budget_cron_subcommand_notes_subagent_attribution(tmp_path):
     _write_budget(
         tmp_path,
         """
@@ -365,4 +365,5 @@ def test_budget_cron_subcommand_notes_subagent_limit(tmp_path):
     _seed("s1", 0.50, platform="cron", cron_job_id="job1")
     out = budget.handle("cron")
     assert "job1" in out
-    assert "subagent" in out.lower()  # honest attribution caveat
+    assert "subagent" in out.lower()
+    assert "includes" in out.lower()  # per-cron-job now attributes linked subagent spend

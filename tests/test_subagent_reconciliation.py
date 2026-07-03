@@ -699,3 +699,39 @@ def test_post_api_request_flags_provider_assumed(tmp_path):
     assert row["estimated"] == 0  # real usage, not a usage=None estimate
     assert abs(row["cost_usd"] - (0.68 + 3.41)) < 1e-9  # real cost recorded, NOT $0
     pricing.reload_custom_pricing()
+
+
+def test_stats_cron_footer_flags_unattributed(tmp_path, monkeypatch):
+    """/stats cron shows a warning footer when a delegation edge has an
+    unrecorded parent."""
+    import hermes_telemetry.db as db
+    import hermes_telemetry.stats as stats
+
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+
+    # A cron run so the cron block renders at all.
+    ctx.fire("on_session_start", session_id="cron_job1_20260601_020000", model="m", platform="cron")
+    ctx.fire(
+        "post_api_request",
+        session_id="cron_job1_20260601_020000",
+        model="m",
+        provider="anthropic",
+        api_duration=0.1,
+        api_call_count=0,
+        assistant_content_chars=10,
+        usage={
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+    )
+    # An orphan child edge (parent never recorded) with real cost.
+    db.start_run("orphan-child", model="m", platform="cli")
+    db.record_llm_call("orphan-child", db._utcnow(), "m", "anthropic", 100, 50, 0.02, 100)
+    db.record_subagent_start(child_session_id="orphan-child", parent_session_id="ghost")
+
+    out = stats._cron_block(window_hours=720)
+    assert "unattributed" in out.lower()
