@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Attribute async/nested subagent cost to `per_cron_job` budgets (#49)
+
+Subagent (`delegate_task`) spend is now attributed to the parent cron job's
+`per_cron_job` budget, closing the gap where child cost landed only in `global`
+totals and was invisible to per-cron-job budgets.
+
+- New `subagent_edges` table (schema **v11**) records each parent→child delegation
+  edge, keyed by `child_session_id` (the only correlation key present in both
+  `subagent_start` and `subagent_stop`). Populated by the newly-registered
+  `subagent_start` hook (fires synchronously before async dispatch) and finalized
+  by `subagent_stop` (`stopped_at` + `child_status`), with a backfill path if
+  `subagent_start` was missed.
+- `db.spend_by_scope("cron_job", …)` resolves the whole delegation subtree via a
+  recursive CTE (seed from cron root sessions, walk edges down), so async
+  (`background=true`) and nested delegation attribute to the **root** cron job.
+  `global` is unchanged, so the same cost rows are only regrouped — no double
+  counting. `estimated_price_share` made subtree-aware for the same scope so the
+  budget hard→soft degradation stays consistent.
+- Query-time `unattributed_child_cost` diagnostic (no stored state) surfaced in
+  `/stats cron`; the `/budget cron` note updated to reflect the new attribution.
+
+Phase 1 is reporting/aggregation correctness; in-path enforcement of a runaway
+async child mid-flight is deferred to Phase 2.
+
 ## [0.7.0] - 2026-06-20
 
 ### Added — Dashboard widget for model-unavailable alerts
