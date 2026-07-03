@@ -498,6 +498,69 @@ def test_subagent_stop_failure_statuses(status):
 # ---------------------------------------------------------------------------
 
 
+def test_subagent_start_hook_records_edge():
+    import hermes_telemetry.db as db
+
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+
+    ctx.fire(
+        "subagent_start",
+        parent_session_id="cron_nightly_20260601_020000",
+        parent_turn_id="turn-1",
+        parent_subagent_id="",
+        child_session_id="child_edge_001",
+        child_subagent_id="sa-0-abcd1234",
+        child_role="researcher",
+        child_goal="find things",
+    )
+
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT parent_session_id, child_subagent_id, child_role, stopped_at "
+        "FROM subagent_edges WHERE child_session_id='child_edge_001'"
+    ).fetchone()
+    assert row["parent_session_id"] == "cron_nightly_20260601_020000"
+    assert row["child_subagent_id"] == "sa-0-abcd1234"
+    assert row["child_role"] == "researcher"
+    assert row["stopped_at"] is None
+
+
+def test_subagent_stop_hook_finalizes_edge_and_keeps_proxy_row():
+    import hermes_telemetry.db as db
+
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+
+    ctx.fire(
+        "subagent_start",
+        parent_session_id="p1",
+        child_session_id="child_stop_001",
+        child_subagent_id="sa-0-x",
+    )
+    ctx.fire(
+        "subagent_stop",
+        parent_session_id="p1",
+        child_session_id="child_stop_001",
+        child_role="researcher",
+        child_status="completed",
+        duration_ms=500,
+    )
+
+    conn = db._get_conn()
+    edge = conn.execute(
+        "SELECT stopped_at, child_status FROM subagent_edges WHERE child_session_id='child_stop_001'"
+    ).fetchone()
+    assert edge["stopped_at"] is not None
+    assert edge["child_status"] == "completed"
+    # Existing behavior preserved: proxy tool_calls row on the parent.
+    tc = conn.execute(
+        "SELECT ok FROM tool_calls WHERE session_id='p1' AND tool_name='delegate_task/subagent'"
+    ).fetchone()
+    assert tc is not None
+    assert tc[0] == 1
+
+
 def test_post_api_request_flags_provider_assumed(tmp_path):
     import hermes_telemetry.db as db
     import hermes_telemetry.pricing as pricing
