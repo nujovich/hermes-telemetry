@@ -1392,3 +1392,25 @@ def test_migrate_v11_creates_table_from_wedged_v10():
         "SELECT parent_session_id FROM subagent_edges WHERE child_session_id='c-heal'"
     ).fetchone()
     assert row["parent_session_id"] == "p-heal"
+
+
+def test_unattributed_child_cost_flags_missing_parent():
+    """A child edge whose parent has no runs row surfaces as unattributed."""
+    db.start_run("orphan-child", model="m", platform="cli")
+    db.record_llm_call("orphan-child", db._utcnow(), "m", "p", 100, 50, 0.02, 100)
+    db.record_subagent_start(child_session_id="orphan-child", parent_session_id="ghost-parent")
+
+    d = db.unattributed_child_cost("2000-01-01T00:00:00+00:00")
+    assert d["edges"] == 1
+    assert d["unattributed_usd"] == pytest.approx(0.02)
+
+
+def test_unattributed_child_cost_zero_when_parent_present():
+    db.start_run("real-parent", model="m", platform="cli")
+    db.start_run("linked-child", model="m", platform="cli")
+    db.record_llm_call("linked-child", db._utcnow(), "m", "p", 100, 50, 0.02, 100)
+    db.record_subagent_start(child_session_id="linked-child", parent_session_id="real-parent")
+
+    d = db.unattributed_child_cost("2000-01-01T00:00:00+00:00")
+    assert d["edges"] == 0
+    assert d["unattributed_usd"] == pytest.approx(0.0)

@@ -990,6 +990,31 @@ def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:
     }
 
 
+def unattributed_child_cost(since_iso: str) -> dict[str, Any]:
+    """Query-time diagnostic (no stored state): cost of child sessions whose
+    immediate parent has no runs row, so the child cannot roll up to a real
+    root. Near-zero in practice because subagent_start records the edge before
+    the child runs; a non-zero value signals delegation edges we failed to
+    record (e.g. subagent_start handler error). Surfaced in /stats.
+    """
+    conn = _get_conn()
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(r.cost_usd), 0.0) AS unattributed_usd,
+               COUNT(*)                       AS edges
+        FROM subagent_edges e
+        JOIN runs r ON r.session_id = e.child_session_id
+        LEFT JOIN runs p ON p.session_id = e.parent_session_id
+        WHERE r.started_at >= ? AND p.session_id IS NULL
+        """,
+        (since_iso,),
+    ).fetchone()
+    return {
+        "unattributed_usd": float(row["unattributed_usd"] or 0.0),
+        "edges": int(row["edges"] or 0),
+    }
+
+
 def try_budget_alert(
     scope: str,
     scope_id: str,
