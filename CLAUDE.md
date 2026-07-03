@@ -48,6 +48,7 @@ https://raw.githubusercontent.com/NousResearch/hermes-agent/main/<path>
 | `tools/delegate_tool.py` | subagent_stop kwargs, child_status canonical values |
 | `model_tools.py` | post_tool_call kwargs |
 | `cron/scheduler.py` | cron session_id format |
+| `agent/moa_loop.py` · `agent/auxiliary_client.py` · `hermes_cli/moa_config.py` | MoA virtual provider: reference/aggregator call mechanics (auxiliary `call_llm`, no hooks fire), preset config shape. See `ONBOARDING.md § Mixture of Agents (MoA)` |
 | `docs/extending-the-dashboard.md` | Dashboard slot catalogue (valid `registerSlot` names) |
 
 ---

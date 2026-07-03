@@ -5,6 +5,7 @@ but Python package names use underscores. We register a module alias so the
 tests can use `import hermes_telemetry.db` etc. without a real install.
 """
 
+import logging
 import sys
 import types
 from pathlib import Path
@@ -41,3 +42,32 @@ def isolate_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows equivalent of HOME
+
+
+@pytest.fixture(autouse=True)
+def restore_plugin_logger_state():
+    """Isolate the process-global ``hermes_telemetry`` logger between tests.
+
+    ``register()`` → ``_setup_log_file()`` adds a ``FileHandler`` and sets
+    ``propagate = False`` on the ``hermes_telemetry`` logger (so the plugin's
+    logs go to its own file, not the host's root logger). That mutation is
+    process-global and would otherwise leak: once any test loads the plugin,
+    ``propagate`` stays ``False`` for the rest of the run, so ``caplog`` (which
+    captures at the root logger) silently stops seeing ``hermes_telemetry.*``
+    records — breaking every later warning-assertion test regardless of run
+    order. Snapshot and restore the logger's mutable state around each test.
+    See tests/test_logging_isolation.py for the enforced contract.
+    """
+    lg = logging.getLogger("hermes_telemetry")
+    saved_propagate = lg.propagate
+    saved_level = lg.level
+    saved_handlers = lg.handlers[:]
+    yield
+    lg.propagate = saved_propagate
+    lg.setLevel(saved_level)
+    # Close handlers a test added (e.g. register()'s FileHandler) before dropping
+    # them, so their open file descriptors aren't orphaned until process exit.
+    for handler in lg.handlers:
+        if handler not in saved_handlers:
+            handler.close()
+    lg.handlers[:] = saved_handlers

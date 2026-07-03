@@ -79,8 +79,11 @@ def test_migrate_v9_repairs_missing_column_from_wedged_v7(monkeypatch):
         )
     """)
     conn.execute("DROP TABLE _llm_calls_old")
-    # Force v9 to re-run by deleting its marker (mimics a DB that predates v9)
-    conn.execute("DELETE FROM schema_version WHERE version = 9")
+    # Force v9+ to re-run by deleting their markers (mimics a DB that predates
+    # v9). The rebuilt table above also lacks v10's moa_preset column, so v10
+    # must re-run too — otherwise record_llm_call below hits "no such column:
+    # moa_preset" against a table stuck in the pre-v10 shape.
+    conn.execute("DELETE FROM schema_version WHERE version >= 9")
 
     cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('llm_calls')")}
     assert "provider_assumed" not in cols  # wedged state confirmed
@@ -1111,3 +1114,185 @@ def test_model_unavailable_truncated_message_roundtrip():
     db.record_model_unavailable("m", "p", 404, long_msg)
     row = db.get_model_unavailable("m", "p")
     assert row["error_message"] == long_msg
+
+
+# ---------------------------------------------------------------------------
+# v10 — MoA (Mixture-of-Agents) attribution
+# ---------------------------------------------------------------------------
+
+
+def test_schema_v10_moa_columns():
+    """v10 adds moa_preset on llm_calls and moa_calls on runs."""
+    conn = db._get_conn()
+    llm_cols = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)").fetchall()}
+    assert "moa_preset" in llm_cols
+    runs_cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    assert "moa_calls" in runs_cols
+
+
+def test_schema_v10_recorded():
+    versions = {row[0] for row in db._get_conn().execute("SELECT version FROM schema_version")}
+    assert 10 in versions
+
+
+def test_record_llm_call_moa_preset():
+    """moa_preset is stored on the call and increments runs.moa_calls; a
+    non-MoA call leaves the counter untouched."""
+    db.start_run("sess-moa", model="anthropic/claude-opus-4.8", platform="cli")
+    db.record_llm_call(
+        "sess-moa",
+        "2026-01-01T00:00:00+00:00",
+        "anthropic/claude-opus-4.8",
+        "openrouter",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.01,
+        latency_ms=200,
+        moa_preset="default",
+    )
+    conn = db._get_conn()
+    call = conn.execute(
+        "SELECT provider, model, moa_preset FROM llm_calls WHERE session_id='sess-moa'"
+    ).fetchone()
+    # Attributed to the real aggregator provider/model, not "moa"/"default".
+    assert call["provider"] == "openrouter"
+    assert call["model"] == "anthropic/claude-opus-4.8"
+    assert call["moa_preset"] == "default"
+    run = conn.execute("SELECT moa_calls FROM runs WHERE session_id='sess-moa'").fetchone()
+    assert run["moa_calls"] == 1
+
+    # A plain (non-MoA) call must not bump the MoA counter.
+    db.record_llm_call(
+        "sess-moa",
+        "2026-01-01T00:01:00+00:00",
+        "anthropic/claude-opus-4.8",
+        "openrouter",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.01,
+        latency_ms=200,
+    )
+    run = conn.execute("SELECT moa_calls FROM runs WHERE session_id='sess-moa'").fetchone()
+    assert run["moa_calls"] == 1
+
+
+def test_record_llm_call_default_moa_preset_null():
+    """A normal call leaves moa_preset NULL and moa_calls at 0."""
+    db.start_run("sess-nomoa", model="claude-sonnet-4-6", platform="cli")
+    db.record_llm_call(
+        "sess-nomoa",
+        "2026-01-01T00:00:00+00:00",
+        "claude-sonnet-4-6",
+        "anthropic",
+        tokens_in=10,
+        tokens_out=5,
+        cost_usd=0.001,
+        latency_ms=50,
+    )
+    conn = db._get_conn()
+    call = conn.execute("SELECT moa_preset FROM llm_calls WHERE session_id='sess-nomoa'").fetchone()
+    assert call["moa_preset"] is None
+    run = conn.execute("SELECT moa_calls FROM runs WHERE session_id='sess-nomoa'").fetchone()
+    assert run["moa_calls"] == 0
+
+
+def test_stats_summary_reports_moa_calls():
+    """stats_summary surfaces the aggregated moa_calls count."""
+    db.start_run("sess-moa-sum", model="anthropic/claude-opus-4.8", platform="cli")
+    db.record_llm_call(
+        "sess-moa-sum",
+        "2026-01-01T00:00:00+00:00",
+        "anthropic/claude-opus-4.8",
+        "openrouter",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.01,
+        latency_ms=200,
+        moa_preset="review",
+    )
+    s = db.stats_summary(window_hours=0)
+    assert int(s.get("moa_calls") or 0) == 1
+
+
+def test_migrate_v10_adds_columns_from_wedged_v9(monkeypatch):
+    """Upgrade path: a DB stuck in the pre-v10 shape (v10 marker absent, columns
+    missing) self-heals on the next connect — record_llm_call must not crash
+    with 'no such column: moa_preset'."""
+    conn = db._get_conn()
+
+    # Rebuild llm_calls without moa_preset and runs without moa_calls, mimicking
+    # a v9 DB that predates the v10 migration. SQLite has no DROP COLUMN before
+    # 3.35, so rebuild the tables.
+    conn.execute("ALTER TABLE llm_calls RENAME TO _llm_calls_old")
+    conn.execute("""
+        CREATE TABLE llm_calls (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id          TEXT NOT NULL,
+            ts                  TEXT NOT NULL,
+            model               TEXT,
+            provider            TEXT DEFAULT '',
+            tokens_in           INTEGER DEFAULT 0,
+            tokens_out          INTEGER DEFAULT 0,
+            cost_usd            REAL DEFAULT 0,
+            latency_ms          INTEGER DEFAULT 0,
+            cache_read_tokens   INTEGER DEFAULT 0,
+            cache_write_tokens  INTEGER DEFAULT 0,
+            reasoning_tokens    INTEGER DEFAULT 0,
+            estimated           INTEGER DEFAULT 0,
+            provider_assumed    INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("DROP TABLE _llm_calls_old")
+
+    # Rebuild runs without moa_calls too, so v10's runs.moa_calls add-branch is
+    # genuinely exercised (not just llm_calls.moa_preset). Copy the live schema
+    # minus moa_calls so this stays correct as the runs shape evolves.
+    runs_info = [r for r in conn.execute("PRAGMA table_info(runs)") if r[1] != "moa_calls"]
+    col_defs = []
+    for _cid, name, ctype, notnull, dflt, pk in runs_info:
+        piece = f"{name} {ctype}"
+        if pk:
+            piece += " PRIMARY KEY"
+        elif notnull:
+            piece += " NOT NULL"
+        if dflt is not None:
+            piece += f" DEFAULT {dflt}"
+        col_defs.append(piece)
+    kept = ", ".join(r[1] for r in runs_info)
+    conn.execute("ALTER TABLE runs RENAME TO _runs_old")
+    conn.execute(f"CREATE TABLE runs ({', '.join(col_defs)})")
+    conn.execute(f"INSERT INTO runs ({kept}) SELECT {kept} FROM _runs_old")
+    conn.execute("DROP TABLE _runs_old")
+
+    # Remove the v10 marker so the migration re-runs on the next connect.
+    conn.execute("DELETE FROM schema_version WHERE version = 10")
+
+    llm_cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('llm_calls')")}
+    runs_cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('runs')")}
+    assert "moa_preset" not in llm_cols  # wedged state confirmed
+    assert "moa_calls" not in runs_cols  # wedged state confirmed
+
+    db._ensure_schema(conn)
+
+    llm_cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('llm_calls')")}
+    runs_cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('runs')")}
+    assert "moa_preset" in llm_cols, "v10 must re-add moa_preset when the marker is cleared"
+    assert "moa_calls" in runs_cols, "v10 must re-add runs.moa_calls when the marker is cleared"
+
+    # And a MoA call must round-trip end-to-end: preset stored, runs counter bumped.
+    db.start_run("moa-repair", model="anthropic/claude-opus-4.8", platform="cli")
+    db.record_llm_call(
+        "moa-repair",
+        "2026-06-20T20:00:00+00:00",
+        "anthropic/claude-opus-4.8",
+        "openrouter",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.01,
+        latency_ms=200,
+        moa_preset="default",
+    )
+    row = conn.execute("SELECT moa_preset FROM llm_calls WHERE session_id='moa-repair'").fetchone()
+    assert row["moa_preset"] == "default"
+    run = conn.execute("SELECT moa_calls FROM runs WHERE session_id='moa-repair'").fetchone()
+    assert run["moa_calls"] == 1

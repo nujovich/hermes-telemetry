@@ -352,7 +352,8 @@ def api_summary(window_hours=24):
             SUM(tokens_out) AS tokens_out,
             ROUND(SUM(cost_usd), 6) AS cost_usd,
             AVG(duration_ms) AS avg_duration_ms,
-            SUM(estimated_llm_calls) AS estimated_llm_calls
+            SUM(estimated_llm_calls) AS estimated_llm_calls,
+            SUM(moa_calls) AS moa_calls
         FROM runs WHERE {since_clause}
     """)
 
