@@ -220,7 +220,8 @@ hermes-telemetry/
 ├── pricing.example.yaml # Example pricing table
 ├── budget.example.yaml  # Example budget limits
 ├── dashboard/           # Standalone HTML/JS dashboard
-│   └── serve.py         # stdlib HTTP server + Chart.js
+│   ├── serve.py         # stdlib HTTP server
+│   └── vendor/chart.umd.min.js  # Vendored Chart.js served locally first
 ├── docs/                # Documentation and screenshots
 └── tests/               # Test suite
 ```

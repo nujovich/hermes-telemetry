@@ -86,7 +86,7 @@ hermes-telemetry/
 │                          `__init__.py`. See `§ Plugin Discovery Gotcha` for the
 │                          `name`-collision trap that bit us with PR #44.
 ├── dashboard/
-│   ├── index.html       ← Standalone SPA. Chart.js, no build step, no auth.
+│   ├── index.html       ← Standalone SPA. Vendored Chart.js, no build step, no auth.
 │   └── serve.py         ← stdlib HTTP server, port 8765, --host flag.
 ├── tests/
 │   ├── conftest.py      ← Autouse HERMES_HOME isolation (see Test Isolation).
@@ -1542,7 +1542,7 @@ discovery rule is non-negotiable.
 ```
 dashboard/
 ├── serve.py         ← standalone surface (stdlib http.server, port 8765)
-├── index.html       ← standalone SPA (Chart.js via CDN)
+├── index.html       ← standalone SPA (vendored Chart.js, CDN fallback)
 ├── manifest.json    ← plugin manifest
 ├── plugin_api.py    ← plugin backend (FastAPI APIRouter; loaded by Hermes)
 └── dist/index.js    ← plugin frontend (IIFE; no build step)
@@ -1618,7 +1618,7 @@ source; the four slots we register are:
 | `sessions:top` | Last-run summary card (cost · tokens · model). |
 | `cron:top` | 7-day cron cost + failure badge. |
 | `header-right` | 24h spend + budget level (variant=destructive on hard breach). |
-| `analytics:bottom` | Daily cost line chart (Chart.js via CDN, graceful degradation). |
+| `analytics:bottom` | Daily cost line chart (vendored Chart.js served locally; CDN fallback only). |
 
 ### Slot names are NOT free-form — verify before adding new ones
 
@@ -1646,11 +1646,15 @@ endpoint `/session/{session_id}` is already in place.
 
 ### Chart.js delivery
 
-Chart.js is loaded on-demand from `cdn.jsdelivr.net/npm/chart.js@4` inside
-the IIFE. If the CDN is blocked, `analytics:bottom` renders a degraded
-"Chart.js unavailable" message and links the user to the tabular view in
-the `/telemetry` tab. We deliberately do not bundle Chart.js — no build
-step is the right answer for a hand-edited IIFE.
+Chart.js is vendored locally at `dashboard/vendor/chart.umd.min.js` and served
+by the standalone dashboard itself first. `index.html` falls back to
+`cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js` only if the local
+asset fails to load. This removes the main failure mode behind `Chart is not
+defined` on offline, filtered, or flaky networks while keeping a fallback path
+for manual recovery.
+
+The dashboard still has no build step — the vendored asset is a checked-in
+static file, not a bundler output.
 
 ### Update path
 

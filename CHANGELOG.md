@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Standalone dashboard now serves Chart.js from a vendored local asset at
+  `dashboard/vendor/chart.umd.min.js` and uses jsDelivr only as a fallback.
+  This removes the main cause of `Chart is not defined` when the CDN is
+  unreachable or filtered.
+
 ### Added — Attribute async/nested subagent cost to `per_cron_job` budgets (#49)
 
 Subagent (`delegate_task`) spend is now attributed to the parent cron job's
@@ -170,6 +177,15 @@ in-memory alert. Verified end-to-end against a live Hermes install.
   `analytics:bottom`); registering an unknown slot name is a silent
   no-op. CLAUDE.md and ONBOARDING.md now record this rule so it isn't
   re-learned the hard way.
+=======
+### Fixed
+
+- Standalone dashboard now serves Chart.js from a vendored local asset at
+  `dashboard/vendor/chart.umd.min.js` and uses jsDelivr only as a fallback.
+  This removes the main cause of `Chart is not defined` when the CDN is
+  unreachable or filtered.
+
+>>>>>>> 57ee60c (fix(dashboard): vendor Chart.js for standalone telemetry UI)
 
 ## [0.6.0] - 2026-06-16
 
