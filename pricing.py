@@ -413,6 +413,111 @@ def _resolve_pricing(model: str, provider: str = "") -> dict | None:
     return resolved
 
 
+# ---------------------------------------------------------------------------
+# Local model cost estimation via chip-aware power (issue #164, Milestone 2)
+# ---------------------------------------------------------------------------
+
+# Local model providers that use on-device inference
+_LOCAL_PROVIDERS = frozenset({"ollama", "llama.cpp", "llama-cpp", "llamacpp"})
+
+# Default electricity rate (USD per kWh) — US average residential rate.
+# Override with MINT_ELECTRICITY_RATE env var.
+_DEFAULT_ELECTRICITY_RATE = 0.12
+
+# Default tokens per second estimate for local models.
+# Override with MINT_LOCAL_TOKENS_PER_SECOND env var.
+_DEFAULT_TOKENS_PER_SECOND = 25
+
+
+def _is_local_provider(provider: str) -> bool:
+    """Return True if provider indicates a locally-run model."""
+    if not provider:
+        return False
+    prov_lower = provider.lower()
+    return any(
+        local in prov_lower
+        for local in _LOCAL_PROVIDERS
+    )
+
+
+def _get_electricity_rate() -> float:
+    """Return the configured electricity rate in USD per kWh."""
+    rate_str = os.environ.get("MINT_ELECTRICITY_RATE", "")
+    if rate_str:
+        with contextlib.suppress(ValueError):
+            return float(rate_str)
+    return _DEFAULT_ELECTRICITY_RATE
+
+
+def _get_local_tokens_per_second() -> float:
+    """Return the configured tokens-per-second estimate for local models."""
+    tps_str = os.environ.get("MINT_LOCAL_TOKENS_PER_SECOND", "")
+    if tps_str:
+        with contextlib.suppress(ValueError):
+            val = float(tps_str)
+            if val > 0:
+                return val
+    return _DEFAULT_TOKENS_PER_SECOND
+
+
+def _get_local_wattage() -> int | None:
+    """Return chip-aware wattage or user-configured wattage.
+
+    Priority:
+    1. MINT_LOCAL_WATTAGE env var (user override)
+    2. local_power.detect() (chip-aware detection)
+    3. None (undetected)
+    """
+    watt_str = os.environ.get("MINT_LOCAL_WATTAGE", "")
+    if watt_str:
+        with contextlib.suppress(ValueError):
+            val = int(watt_str)
+            if val > 0:
+                return val
+
+    try:
+        from .local_power import detect as detect_power
+
+        info = detect_power()
+        if info.is_detected and info.wattage is not None:
+            return info.wattage
+    except ImportError:
+        pass
+
+    return None
+
+
+def _compute_local_cost(
+    total_tokens: int,
+    wattage: int | None = None,
+    electric_rate: float | None = None,
+    tokens_per_second: float | None = None,
+) -> float:
+    """Compute estimated electricity cost for a local model.
+
+    Formula:
+      cost = wattage_kW * electric_rate * hours
+    where
+      hours = total_tokens / tokens_per_second / 3600
+
+    Returns 0.0 if wattage is unknown (undetected hardware).
+    """
+    if wattage is None:
+        wattage = _get_local_wattage()
+    if wattage is None:
+        return 0.0
+
+    if electric_rate is None:
+        electric_rate = _get_electricity_rate()
+    if tokens_per_second is None:
+        tokens_per_second = _get_local_tokens_per_second()
+
+    # kilowatts * dollars_per_kwh * hours
+    kw = wattage / 1000.0
+    hours = total_tokens / tokens_per_second / 3600.0
+    return kw * electric_rate * hours
+
+
 def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
     """Return estimated cost in USD for a usage dict.
 
@@ -444,15 +549,41 @@ def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
     cache_write_tok = int(usage.get("cache_write_tokens") or 0)
     reasoning_tok = int(usage.get("reasoning_tokens") or 0)
 
-    if (
-        input_tokens == 0
-        and output_tokens == 0
-        and cache_read_tok == 0
-        and cache_write_tok == 0
-        and reasoning_tok == 0
-    ):
+    total_tokens = (
+        input_tokens
+        + output_tokens
+        + cache_read_tok
+        + cache_write_tok
+        + reasoning_tok
+    )
+
+    if total_tokens == 0:
         return 0.0
 
+    # Local model cost: use chip-aware wattage as cost basis (issue #164)
+    if _is_local_provider(provider):
+        wattage = _get_local_wattage()
+        cost = _compute_local_cost(total_tokens, wattage=wattage)
+        if cost == 0.0 and wattage is not None:
+            # Degenerate case: wattage detected but compute produced 0
+            return 0.0
+        if wattage is None:
+            # Undetected hardware: log warning, return 0.0
+            warn_key = ("local_unknown_hw", provider)
+            if warn_key not in _warned_unknown:
+                _warned_unknown.add(warn_key)
+                logger.warning(
+                    "hermes-telemetry: local model %r on provider %r — chip "
+                    "wattage could not be detected. Cost recorded as $0.00. "
+                    "Set MINT_LOCAL_WATTAGE env var to your chip's TDP to get "
+                    "local cost estimates.",
+                    model,
+                    provider,
+                )
+            return 0.0
+        return cost
+
+    # Cloud model cost: standard token pricing lookup
     prices = _resolve_pricing(model, provider)
     if prices is None:
         # Dedup per (model, provider): the same model id can be unpriced under

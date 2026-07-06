@@ -1087,3 +1087,133 @@ def test_get_known_free_models_includes_subscription_models(tmp_path, monkeypatc
     assert "hermes-4-qwen-72b" in models
     assert "paid-model" not in models
     pricing.reload_custom_pricing()
+
+
+# ---------------------------------------------------------------------------
+# Local provider cost estimation (issue #164, Milestone 2)
+# ---------------------------------------------------------------------------
+
+
+class TestIsLocalProvider:
+    def test_ollama_is_local(self):
+        assert pricing._is_local_provider("ollama")
+
+    def test_llama_cpp_is_local(self):
+        assert pricing._is_local_provider("llama.cpp")
+
+    def test_llamacpp_is_local(self):
+        assert pricing._is_local_provider("llamacpp")
+
+    def test_llama_cpp_variation_is_local(self):
+        assert pricing._is_local_provider("Llama.CPP")
+
+    def test_empty_provider_is_not_local(self):
+        assert not pricing._is_local_provider("")
+
+    def test_anthropic_is_not_local(self):
+        assert not pricing._is_local_provider("anthropic")
+
+    def test_none_string_is_not_local(self):
+        assert not pricing._is_local_provider("")
+
+    def test_openrouter_is_not_local(self):
+        assert not pricing._is_local_provider("openrouter")
+
+
+class TestLocalCostComputation:
+    def test_compute_local_cost_with_known_wattage(self):
+        # 15W, 1M tokens at 25 t/s → cost
+        cost = pricing._compute_local_cost(
+            1_000_000, wattage=15, electric_rate=0.12, tokens_per_second=25
+        )
+        # hours = 1_000_000 / 25 / 3600 = 11.11
+        # cost = 0.015 * 0.12 * 11.11 = 0.02
+        assert cost > 0.0
+        assert cost < 1.0
+        assert abs(cost - 0.02) < 0.01
+
+    def test_compute_local_cost_zero_tokens(self):
+        cost = pricing._compute_local_cost(
+            0, wattage=15, electric_rate=0.12, tokens_per_second=25
+        )
+        assert cost == 0.0
+
+    def test_compute_local_cost_unknown_wattage(self):
+        cost = pricing._compute_local_cost(
+            1_000_000, wattage=None, electric_rate=0.12, tokens_per_second=25
+        )
+        assert cost == 0.0
+
+    def test_compute_local_cost_custom_electricity_rate(self):
+        cost = pricing._compute_local_cost(
+            1_000_000, wattage=15, electric_rate=0.24, tokens_per_second=25
+        )
+        # Double the electricity rate should roughly double the cost
+        base_cost = pricing._compute_local_cost(
+            1_000_000, wattage=15, electric_rate=0.12, tokens_per_second=25
+        )
+        assert abs(cost - (base_cost * 2)) < 0.0001
+
+    def test_compute_local_cost_custom_tokens_per_second(self):
+        cost = pricing._compute_local_cost(
+            1_000_000, wattage=15, electric_rate=0.12, tokens_per_second=50
+        )
+        # Double tps should halve the cost
+        base_cost = pricing._compute_local_cost(
+            1_000_000, wattage=15, electric_rate=0.12, tokens_per_second=25
+        )
+        assert abs(cost - (base_cost / 2)) < 0.0001
+
+
+class TestLocalProviderEstimateCost:
+    def test_local_ollama_uses_wattage_not_token_pricing(self, monkeypatch):
+        """With ollama provider, cost comes from chip wattage, not token pricing table."""
+        monkeypatch.setenv("MINT_LOCAL_WATTAGE", "15")
+        # This model has no pricing entry — but it shouldn't matter for local provider
+        cost = pricing.estimate_cost(
+            {"input_tokens": 1_000_000}, "llama3.2", provider="ollama"
+        )
+        assert cost > 0.0
+
+    def test_local_llama_cpp_uses_wattage(self, monkeypatch):
+        monkeypatch.setenv("MINT_LOCAL_WATTAGE", "28")
+        cost = pricing.estimate_cost(
+            {"input_tokens": 1_000_000}, "mistral", provider="llama.cpp"
+        )
+        assert cost > 0.0
+
+    def test_local_undetected_returns_zero(self, monkeypatch):
+        """When wattage is undetected and no env var set, local cost is $0."""
+        monkeypatch.delenv("MINT_LOCAL_WATTAGE", raising=False)
+        with monkeypatch.context() as m:
+            m.setattr(pricing, "_get_local_wattage", lambda: None)
+            cost = pricing.estimate_cost(
+                {"input_tokens": 1_000_000}, "local-model", provider="ollama"
+            )
+        assert cost == 0.0
+
+    def test_local_does_not_affect_cloud_providers(self, monkeypatch):
+        """Cloud providers still use normal token pricing."""
+        monkeypatch.setenv("MINT_LOCAL_WATTAGE", "15")
+        cost = pricing.estimate_cost(
+            {"input_tokens": 1_000_000}, "claude-sonnet-4-6", provider="anthropic"
+        )
+        assert abs(cost - 3.00) < 1e-9
+
+    def test_local_cost_scales_with_tokens(self, monkeypatch):
+        monkeypatch.setenv("MINT_LOCAL_WATTAGE", "15")
+        cost_1m = pricing.estimate_cost(
+            {"input_tokens": 1_000_000}, "llama3.2", provider="ollama"
+        )
+        cost_2m = pricing.estimate_cost(
+            {"input_tokens": 2_000_000}, "llama3.2", provider="ollama"
+        )
+        assert cost_2m > cost_1m
+        assert abs(cost_2m - (cost_1m * 2)) < 0.0001
+
+    def test_local_zero_tokens_is_zero(self, monkeypatch):
+        monkeypatch.setenv("MINT_LOCAL_WATTAGE", "15")
+        cost = pricing.estimate_cost(
+            {"input_tokens": 0, "output_tokens": 0}, "llama3.2", provider="ollama"
+        )
+        assert cost == 0.0
