@@ -1531,6 +1531,59 @@ def test_migrate_v12_repairs_missing_column_from_v11():
     assert "profile" in cols, "v12 must re-add runs.profile when it was missing"
 
 
+# ---------------------------------------------------------------------------
+# v13 — repair subagent_edges when v11 was marked without creating the table
+# (cross-branch skew: a build that numbered profile — not subagent_edges — as
+# v11 leaves a DB with version 11 applied but no subagent_edges table. v11's
+# own early-return then skips creation forever, so a plain upgrade to a build
+# where v11 IS subagent_edges never heals it. v13 is the forward-only repair.)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_v13_recorded():
+    versions = {row[0] for row in db._get_conn().execute("SELECT version FROM schema_version")}
+    assert 13 in versions
+
+
+def test_migrate_v13_repairs_subagent_edges_when_v11_marked_without_table():
+    """A DB where subagent_edges is MISSING but version 11 is already marked
+    (profile-as-v11 lineage). _migrate_v11 early-returns on the v11 marker, so it
+    never re-creates the table; only v13 can. The repaired table must match the
+    canonical v11 shape and accept edge writes."""
+    conn = db._get_conn()
+
+    # Canonical (v11-created) shape, captured before we wedge the DB.
+    expected_cols = {r[1] for r in conn.execute("PRAGMA table_info(subagent_edges)")}
+    expected_indexes = {r[1] for r in conn.execute("PRAGMA index_list('subagent_edges')")}
+
+    # Simulate the cross-branch wedge: drop the table but KEEP version 11 marked
+    # (clear only >= 13 so v13 is pending while 11 and 12 stay applied).
+    conn.execute("DROP TABLE IF EXISTS subagent_edges")
+    conn.execute("DELETE FROM schema_version WHERE version >= 13")
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "subagent_edges" not in tables  # wedged state confirmed
+    assert (
+        conn.execute("SELECT version FROM schema_version WHERE version = 11").fetchone() is not None
+    )  # v11 stays marked — v11 alone can NOT heal this
+
+    db._ensure_schema(conn)
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "subagent_edges" in tables, "v13 must create subagent_edges when v11 skipped it"
+    assert {r[1] for r in conn.execute("PRAGMA table_info(subagent_edges)")} == expected_cols
+    assert {r[1] for r in conn.execute("PRAGMA index_list('subagent_edges')")} == expected_indexes
+
+    db.record_subagent_start(
+        child_session_id="c-v13",
+        parent_session_id="p-v13",
+        started_at="2026-07-06T00:00:00+00:00",
+    )
+    row = conn.execute(
+        "SELECT parent_session_id FROM subagent_edges WHERE child_session_id='c-v13'"
+    ).fetchone()
+    assert row["parent_session_id"] == "p-v13"
+
+
 def test_start_run_stores_profile():
     db.start_run("s_prof", "m", "cli", profile="coder")
     assert db.get_run("s_prof")["profile"] == "coder"

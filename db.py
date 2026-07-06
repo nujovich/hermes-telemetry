@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 12
+_SCHEMA_VERSION = 13
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -169,6 +169,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v10(conn)
     _migrate_v11(conn)
     _migrate_v12(conn)
+    _migrate_v13(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -477,6 +478,45 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (12, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v13(conn: sqlite3.Connection) -> None:
+    """Repair migration: ensure ``subagent_edges`` exists.
+
+    v11 created ``subagent_edges`` but guards on the v11 marker. A DB upgraded
+    from a build that numbered a *different* migration as v11 (the per-profile
+    branch shipped ``runs.profile`` as v11 before #56 settled subagent_edges on
+    v11) has ``version = 11`` applied yet no ``subagent_edges`` table. On such a
+    DB ``_migrate_v11`` sees the marker and skips forever, so the table is never
+    created and ``record_subagent_start`` / ``spend_by_scope`` silently fail.
+    This forward-only pass re-creates the table (identical DDL to v11, ``IF NOT
+    EXISTS`` so it is a no-op on clean v11 DBs). See ONBOARDING.md § Schema
+    evolution.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 13")
+    if cur.fetchone() is not None:
+        return
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS subagent_edges (
+            child_session_id   TEXT PRIMARY KEY,
+            parent_session_id  TEXT NOT NULL,
+            parent_turn_id     TEXT,
+            parent_subagent_id TEXT,
+            child_subagent_id  TEXT,
+            child_role         TEXT,
+            started_at         TEXT NOT NULL,
+            stopped_at         TEXT,
+            child_status       TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_subagent_edges_parent
+            ON subagent_edges(parent_session_id);
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (13, ?)",
         (_utcnow(),),
     )
 
