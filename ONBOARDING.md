@@ -410,6 +410,7 @@ table before applying.
 | v10 | MoA (Mixture-of-Agents) attribution: `llm_calls.moa_preset` (preset name for a MoA aggregator call; NULL otherwise) + `runs.moa_calls` (per-session counter). See `§ Mixture of Agents (MoA)`. |
 | v11 | New table `subagent_edges` (parent→child delegation tree) + `idx_subagent_edges_parent`. Attributes async/nested subagent cost to `per_cron_job` via a recursive CTE at query time. (#49) |
 | v12 | Add `runs.profile` (per-profile cost attribution) + `idx_runs_profile`. Captured from `ctx.profile_name` at `on_session_start`, backfilled in `pre_llm_call` (first non-null wins). Adds the `per_profile` budget scope. |
+| v13 | Repair pass — re-creates `subagent_edges` (+ `idx_subagent_edges_parent`) via `CREATE TABLE IF NOT EXISTS`. Heals DBs upgraded from a build that numbered a *different* migration as v11: the per-profile branch shipped `runs.profile` as v11 before #56 settled `subagent_edges` on v11, so those DBs have `version=11` applied but no table, and v11's early-return skips creation forever. No-op on clean v11 DBs. |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
