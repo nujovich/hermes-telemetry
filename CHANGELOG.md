@@ -177,15 +177,6 @@ in-memory alert. Verified end-to-end against a live Hermes install.
   `analytics:bottom`); registering an unknown slot name is a silent
   no-op. CLAUDE.md and ONBOARDING.md now record this rule so it isn't
   re-learned the hard way.
-=======
-### Fixed
-
-- Standalone dashboard now serves Chart.js from a vendored local asset at
-  `dashboard/vendor/chart.umd.min.js` and uses jsDelivr only as a fallback.
-  This removes the main cause of `Chart is not defined` when the CDN is
-  unreachable or filtered.
-
->>>>>>> 57ee60c (fix(dashboard): vendor Chart.js for standalone telemetry UI)
 
 ## [0.6.0] - 2026-06-16
 
