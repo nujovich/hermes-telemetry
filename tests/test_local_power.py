@@ -1,18 +1,16 @@
 """Tests for local_power module."""
 
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 from hermes_telemetry.local_power import (
-    detect,
-    get_kwh_per_hour,
-    PowerInfo,
     _APPLE_MACHINE_MAP,
     _APPLE_SILICON_WATTAGE,
+    PowerInfo,
     _resolve_chip,
-    _GENERIC_WATTAGE,
+    detect,
+    get_kwh_per_hour,
 )
 
 
@@ -33,72 +31,66 @@ class TestDetect:
 
     def test_darwin_no_sysctl_returns_undetected(self):
         """sysctl failure should return undetected."""
-        with patch.object(sys, "platform", "darwin"):
-            with patch(
-                "hermes_telemetry.local_power._get_machine_id",
-                return_value=None,
-            ):
-                info = detect()
+        with patch.object(sys, "platform", "darwin"), patch(
+            "hermes_telemetry.local_power._get_machine_id",
+            return_value=None,
+        ):
+            info = detect()
         assert not info.is_detected
         assert info.wattage is None
         assert info.machine is None
 
     def test_darwin_unknown_machine_returns_undetected(self):
         """Unknown machine ID should return undetected with the machine set."""
-        with patch.object(sys, "platform", "darwin"):
-            with patch(
-                "hermes_telemetry.local_power._get_machine_id",
-                return_value="UnknownMachine1,1",
-            ):
-                info = detect()
+        with patch.object(sys, "platform", "darwin"), patch(
+            "hermes_telemetry.local_power._get_machine_id",
+            return_value="UnknownMachine1,1",
+        ):
+            info = detect()
         assert not info.is_detected
         assert info.wattage is None
         assert info.chip is None
         assert info.machine == "UnknownMachine1,1"
 
     def test_detects_m1_macbook_air(self):
-        with patch.object(sys, "platform", "darwin"):
-            with patch(
-                "hermes_telemetry.local_power._get_machine_id",
-                return_value="MacBookAir10,1",
-            ):
-                info = detect()
+        with patch.object(sys, "platform", "darwin"), patch(
+            "hermes_telemetry.local_power._get_machine_id",
+            return_value="MacBookAir10,1",
+        ):
+            info = detect()
         assert info.is_detected
         assert info.chip == "M1"
         assert info.machine == "MacBookAir10,1"
         assert info.wattage == 15
 
     def test_detects_m3_pro(self):
-        with patch.object(sys, "platform", "darwin"):
-            with patch(
-                "hermes_telemetry.local_power._get_machine_id",
-                return_value="Mac15,6",
-            ):
-                info = detect()
+        with patch.object(sys, "platform", "darwin"), patch(
+            "hermes_telemetry.local_power._get_machine_id",
+            return_value="Mac15,6",
+        ):
+            info = detect()
         assert info.is_detected
         assert info.chip == "M3 Pro"
         assert info.machine == "Mac15,6"
         assert info.wattage == 28
 
     def test_detects_m4_max(self):
-        with patch.object(sys, "platform", "darwin"):
-            with patch(
-                "hermes_telemetry.local_power._get_machine_id",
-                return_value="Mac16,4",
-            ):
-                info = detect()
+        with patch.object(sys, "platform", "darwin"), patch(
+            "hermes_telemetry.local_power._get_machine_id",
+            return_value="Mac16,4",
+        ):
+            info = detect()
         assert info.is_detected
         assert info.chip == "M4 Max"
         assert info.machine == "Mac16,4"
         assert info.wattage == 50
 
     def test_detects_m2_ultra(self):
-        with patch.object(sys, "platform", "darwin"):
-            with patch(
-                "hermes_telemetry.local_power._get_machine_id",
-                return_value="Mac14,14",
-            ):
-                info = detect()
+        with patch.object(sys, "platform", "darwin"), patch(
+            "hermes_telemetry.local_power._get_machine_id",
+            return_value="Mac14,14",
+        ):
+            info = detect()
         assert info.is_detected
         assert info.chip == "M2 Ultra"
         assert info.wattage == 90
@@ -106,12 +98,11 @@ class TestDetect:
 
 class TestGetKwhPerHour:
     def test_returns_float_when_detected(self):
-        with patch.object(sys, "platform", "darwin"):
-            with patch(
-                "hermes_telemetry.local_power._get_machine_id",
-                return_value="MacBookAir10,1",
-            ):
-                kwh = get_kwh_per_hour()
+        with patch.object(sys, "platform", "darwin"), patch(
+            "hermes_telemetry.local_power._get_machine_id",
+            return_value="MacBookAir10,1",
+        ):
+            kwh = get_kwh_per_hour()
         assert kwh == pytest.approx(0.015)  # 15W / 1000
 
     def test_returns_none_when_undetected(self):
@@ -120,12 +111,11 @@ class TestGetKwhPerHour:
         assert kwh is None
 
     def test_m3_pro_kwh(self):
-        with patch.object(sys, "platform", "darwin"):
-            with patch(
-                "hermes_telemetry.local_power._get_machine_id",
-                return_value="Mac15,6",
-            ):
-                kwh = get_kwh_per_hour()
+        with patch.object(sys, "platform", "darwin"), patch(
+            "hermes_telemetry.local_power._get_machine_id",
+            return_value="Mac15,6",
+        ):
+            kwh = get_kwh_per_hour()
         assert kwh == pytest.approx(0.028)  # 28W / 1000
 
 
@@ -164,8 +154,7 @@ class TestResolveChip:
         """Every machine in the map should have a wattage entry."""
         for machine, chip in _APPLE_MACHINE_MAP.items():
             assert chip in _APPLE_SILICON_WATTAGE, (
-                f"Machine '{machine}' maps to chip '{chip}' "
-                f"which has no wattage entry"
+                f"Machine '{machine}' maps to chip '{chip}' which has no wattage entry"
             )
 
 

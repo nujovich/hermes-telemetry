@@ -63,54 +63,54 @@ _APPLE_SILICON_WATTAGE: dict[str, int] = {
 _APPLE_MACHINE_MAP: dict[str, str] = {
     # Apple Silicon — arm64 only
     # M1
-    "MacBookAir10,1": "M1",      # M1 MacBook Air
-    "MacBookPro17,1": "M1",      # M1 MacBook Pro 13"
+    "MacBookAir10,1": "M1",  # M1 MacBook Air
+    "MacBookPro17,1": "M1",  # M1 MacBook Pro 13"
     "MacBookPro18,3": "M1 Pro",  # M1 Pro MacBook Pro 14"
     "MacBookPro18,4": "M1 Pro",  # M1 Pro MacBook Pro 16"
     "MacBookPro18,1": "M1 Max",  # M1 Max MacBook Pro 14"
     "MacBookPro18,2": "M1 Max",  # M1 Max MacBook Pro 16"
-    "Macmini9,1": "M1",          # M1 Mac mini
-    "iMac21,1": "M1",            # M1 iMac
-    "iMac21,2": "M1",            # M1 iMac
-    "Mac13,1": "M1 Ultra",       # Mac Studio M1 Ultra
-    "Mac13,2": "M1 Max",         # Mac Studio M1 Max
+    "Macmini9,1": "M1",  # M1 Mac mini
+    "iMac21,1": "M1",  # M1 iMac
+    "iMac21,2": "M1",  # M1 iMac
+    "Mac13,1": "M1 Ultra",  # Mac Studio M1 Ultra
+    "Mac13,2": "M1 Max",  # Mac Studio M1 Max
     # M2
-    "Mac14,2": "M2",             # M2 MacBook Air
-    "Mac14,7": "M2",             # M2 MacBook Pro 13"
-    "Mac14,5": "M2 Pro",         # M2 Pro MacBook Pro 14"
-    "Mac14,6": "M2 Pro",         # M2 Pro MacBook Pro 16"
-    "Mac14,9": "M2 Max",         # M2 Max MacBook Pro 14"
-    "Mac14,10": "M2 Max",        # M2 Max MacBook Pro 16"
-    "Mac14,3": "M2",             # M2 Mac mini
-    "Mac14,8": "M2 Pro",         # M2 Pro Mac mini
-    "Mac14,12": "M2",            # M2 Mac mini
-    "Mac14,13": "M2 Max",        # M2 Max Mac Studio
-    "Mac14,14": "M2 Ultra",      # M2 Ultra Mac Studio
-    "Mac15,12": "M2 Ultra",      # Mac Pro (2023) M2 Ultra
+    "Mac14,2": "M2",  # M2 MacBook Air
+    "Mac14,7": "M2",  # M2 MacBook Pro 13"
+    "Mac14,5": "M2 Pro",  # M2 Pro MacBook Pro 14"
+    "Mac14,6": "M2 Pro",  # M2 Pro MacBook Pro 16"
+    "Mac14,9": "M2 Max",  # M2 Max MacBook Pro 14"
+    "Mac14,10": "M2 Max",  # M2 Max MacBook Pro 16"
+    "Mac14,3": "M2",  # M2 Mac mini
+    "Mac14,8": "M2 Pro",  # M2 Pro Mac mini
+    "Mac14,12": "M2",  # M2 Mac mini
+    "Mac14,13": "M2 Max",  # M2 Max Mac Studio
+    "Mac14,14": "M2 Ultra",  # M2 Ultra Mac Studio
+    "Mac15,12": "M2 Ultra",  # Mac Pro (2023) M2 Ultra
     # M3
-    "Mac15,3": "M3",             # M3 MacBook Pro 14"
-    "Mac15,4": "M3",             # M3 iMac
-    "Mac15,5": "M3",             # M3 iMac
-    "Mac15,6": "M3 Pro",         # M3 Pro MacBook Pro 14"
-    "Mac15,7": "M3 Pro",         # M3 Pro MacBook Pro 16"
-    "Mac15,8": "M3 Max",         # M3 Max MacBook Pro 14"
-    "Mac15,9": "M3 Max",         # M3 Max MacBook Pro 16"
-    "Mac15,10": "M3 Max",        # M3 Max MacBook Pro 16"
-    "Mac15,11": "M3",            # M3 iMac
-    "Mac15,13": "M3",            # M3 MacBook Air
+    "Mac15,3": "M3",  # M3 MacBook Pro 14"
+    "Mac15,4": "M3",  # M3 iMac
+    "Mac15,5": "M3",  # M3 iMac
+    "Mac15,6": "M3 Pro",  # M3 Pro MacBook Pro 14"
+    "Mac15,7": "M3 Pro",  # M3 Pro MacBook Pro 16"
+    "Mac15,8": "M3 Max",  # M3 Max MacBook Pro 14"
+    "Mac15,9": "M3 Max",  # M3 Max MacBook Pro 16"
+    "Mac15,10": "M3 Max",  # M3 Max MacBook Pro 16"
+    "Mac15,11": "M3",  # M3 iMac
+    "Mac15,13": "M3",  # M3 MacBook Air
     # M4
-    "Mac16,1": "M4",             # M4 MacBook Pro 14"
-    "Mac16,2": "M4 Pro",         # M4 Pro MacBook Pro 14"
-    "Mac16,3": "M4 Pro",         # M4 Pro MacBook Pro 16"
-    "Mac16,4": "M4 Max",         # M4 Max MacBook Pro 14"
-    "Mac16,5": "M4 Max",         # M4 Max MacBook Pro 16"
-    "Mac16,6": "M4",             # M4 iMac
-    "Mac16,7": "M4",             # M4 MacBook Air
-    "Mac16,8": "M4 Pro",         # M4 Pro Mac mini
-    "Mac16,9": "M4",             # M4 Mac mini
-    "Mac16,10": "M4 Ultra",      # M4 Ultra Mac Studio
-    "Mac16,11": "M4 Max",        # M4 Max Mac Studio
-    "Mac16,12": "M4 Ultra",      # Mac Pro (2024) M4 Ultra
+    "Mac16,1": "M4",  # M4 MacBook Pro 14"
+    "Mac16,2": "M4 Pro",  # M4 Pro MacBook Pro 14"
+    "Mac16,3": "M4 Pro",  # M4 Pro MacBook Pro 16"
+    "Mac16,4": "M4 Max",  # M4 Max MacBook Pro 14"
+    "Mac16,5": "M4 Max",  # M4 Max MacBook Pro 16"
+    "Mac16,6": "M4",  # M4 iMac
+    "Mac16,7": "M4",  # M4 MacBook Air
+    "Mac16,8": "M4 Pro",  # M4 Pro Mac mini
+    "Mac16,9": "M4",  # M4 Mac mini
+    "Mac16,10": "M4 Ultra",  # M4 Ultra Mac Studio
+    "Mac16,11": "M4 Max",  # M4 Max Mac Studio
+    "Mac16,12": "M4 Ultra",  # Mac Pro (2024) M4 Ultra
 }
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ def detect() -> PowerInfo:
 
     chip = _resolve_chip(machine)
     if chip:
-        wattage = _APPLE_SILICON_WATTAGE.get(chip, None)
+        wattage = _APPLE_SILICON_WATTAGE.get(chip)
         return PowerInfo(
             wattage=wattage,
             chip=chip,
@@ -231,7 +231,9 @@ if __name__ == "__main__":
             print(f"kWh/hr:  {kwh:.4f}")
     elif info.machine:
         print(f"Machine: {info.machine}")
-        print(f"Status:  Unknown chip — set the MINT_LOCAL_WATTAGE env var to your chip's TDP in watts")
+        print(
+            "Status:  Unknown chip — set the MINT_LOCAL_WATTAGE env var to your chip's TDP in watts"
+        )
     else:
         print("Status:  Not running on macOS, or sysctl unavailable")
         print("Set the MINT_LOCAL_WATTAGE env var to your chip's TDP in watts")
