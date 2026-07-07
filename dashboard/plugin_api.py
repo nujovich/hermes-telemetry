@@ -38,8 +38,16 @@ _local = threading.local()
 
 
 def _db_path() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    return hermes_home / "telemetry" / "telemetry.db"
+    # Telemetry files honor the opt-in canonical home (HERMES_TELEMETRY_HOME), so a
+    # multi-profile user who consolidated via that var sees every profile's data here.
+    # Replicated inline: plugin_api.py is loaded standalone (self-contained — no import
+    # of paths.py), enforced by tests/test_dashboard_plugin_isolation.py.
+    base = (
+        os.environ.get("HERMES_TELEMETRY_HOME")
+        or os.environ.get("HERMES_HOME")
+        or str(Path.home() / ".hermes")
+    )
+    return Path(base) / "telemetry" / "telemetry.db"
 
 
 def _conn() -> sqlite3.Connection:

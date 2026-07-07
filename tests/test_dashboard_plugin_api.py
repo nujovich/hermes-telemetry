@@ -321,3 +321,10 @@ def test_db_connection_is_read_only(plugin_api):
     conn = plugin_api._conn()
     with pytest.raises(sqlite3.OperationalError):
         conn.execute("INSERT INTO runs (session_id, started_at) VALUES ('x', 'y')")
+
+
+def test_db_path_honors_telemetry_home(plugin_api, tmp_path, monkeypatch):
+    """_db_path resolves the consolidated DB when HERMES_TELEMETRY_HOME is set."""
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(tmp_path / "shared"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    assert plugin_api._db_path() == tmp_path / "shared" / "telemetry" / "telemetry.db"
