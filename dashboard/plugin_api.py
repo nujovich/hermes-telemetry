@@ -119,10 +119,13 @@ def health() -> dict:
 
 
 @router.get("/summary")
-def summary(window_hours: int = 24) -> dict:
+def summary(window_hours: int = 24, profile: str = "") -> dict:
     sc = _since_clause(window_hours, "started_at")
     sc_ts = _since_clause(window_hours, "ts")
-    runs = _one(f"""
+    rp, rp_params = _runs_profile_clause(profile)
+    cp, cp_params = _calls_profile_clause(profile)
+    runs = _one(
+        f"""
         SELECT COUNT(*) AS total_runs,
                SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS ok_runs,
                SUM(CASE WHEN status NOT IN ('ok','running') THEN 1 ELSE 0 END) AS failed_runs,
@@ -131,20 +134,28 @@ def summary(window_hours: int = 24) -> dict:
                ROUND(COALESCE(SUM(cost_usd), 0), 6) AS cost_usd,
                COALESCE(SUM(moa_calls), 0) AS moa_calls,
                AVG(duration_ms) AS avg_duration_ms
-        FROM runs WHERE {sc}
-    """)
-    llm = _one(f"""
+        FROM runs WHERE {sc}{rp}
+    """,
+        rp_params,
+    )
+    llm = _one(
+        f"""
         SELECT COUNT(*) AS api_calls, AVG(latency_ms) AS avg_latency_ms
-        FROM llm_calls WHERE {sc_ts}
-    """)
-    daily = _rows(f"""
+        FROM llm_calls WHERE {sc_ts}{cp}
+    """,
+        cp_params,
+    )
+    daily = _rows(
+        f"""
         SELECT DATE(started_at) AS day,
                ROUND(SUM(cost_usd), 4) AS cost,
                COUNT(*) AS runs
-        FROM runs WHERE {sc}
+        FROM runs WHERE {sc}{rp}
         GROUP BY DATE(started_at)
         ORDER BY day
-    """)
+    """,
+        rp_params,
+    )
     return {
         "window_hours": _coerce_window_hours(window_hours),
         "runs": runs,
@@ -154,9 +165,11 @@ def summary(window_hours: int = 24) -> dict:
 
 
 @router.get("/token-breakdown")
-def token_breakdown(window_hours: int = 24) -> dict:
+def token_breakdown(window_hours: int = 24, profile: str = "") -> dict:
     sc_ts = _since_clause(window_hours, "ts")
-    return _one(f"""
+    cp, cp_params = _calls_profile_clause(profile)
+    return _one(
+        f"""
         SELECT COALESCE(SUM(tokens_in), 0)         AS tokens_in,
                COALESCE(SUM(tokens_out), 0)        AS tokens_out,
                COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
@@ -167,8 +180,10 @@ def token_breakdown(window_hours: int = 24) -> dict:
                  + COALESCE(SUM(cache_read_tokens), 0)
                  + COALESCE(SUM(cache_write_tokens), 0)
                  + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
-        FROM llm_calls WHERE {sc_ts}
-    """)
+        FROM llm_calls WHERE {sc_ts}{cp}
+    """,
+        cp_params,
+    )
 
 
 @router.get("/profiles")
@@ -185,8 +200,9 @@ def profiles() -> dict:
 # Listings
 # ---------------------------------------------------------------------------
 @router.get("/runs")
-def runs(limit: int = 50, window_hours: int = 0) -> dict:
+def runs(limit: int = 50, window_hours: int = 0, profile: str = "") -> dict:
     sc = _since_clause(window_hours, "started_at")
+    rp, rp_params = _runs_profile_clause(profile)
     rows = _rows(
         f"""
         SELECT session_id, platform, cron_job_id, model, provider,
@@ -194,19 +210,20 @@ def runs(limit: int = 50, window_hours: int = 0) -> dict:
                tokens_in, tokens_out, cache_read_tokens, cache_write_tokens,
                cost_usd, duration_ms, api_calls, tool_calls, estimated_llm_calls
         FROM runs
-        WHERE {sc}
+        WHERE {sc}{rp}
         ORDER BY started_at DESC
         LIMIT ?
         """,
-        (max(1, min(int(limit), 500)),),
+        (*rp_params, max(1, min(int(limit), 500))),
     )
-    total = _one(f"SELECT COUNT(*) AS n FROM runs WHERE {sc}").get("n") or 0
+    total = _one(f"SELECT COUNT(*) AS n FROM runs WHERE {sc}{rp}", rp_params).get("n") or 0
     return {"total_runs": int(total), "rows": rows}
 
 
 @router.get("/requests")
-def requests(limit: int = 100, window_hours: int = 0) -> dict:
+def requests(limit: int = 100, window_hours: int = 0, profile: str = "") -> dict:
     sc_ts = _since_clause(window_hours, "ts")
+    cp, cp_params = _calls_profile_clause(profile, session_col="lc.session_id")
     rows = _rows(
         f"""
         SELECT lc.id, lc.ts, lc.session_id, lc.model, lc.provider,
@@ -217,20 +234,25 @@ def requests(limit: int = 100, window_hours: int = 0) -> dict:
                r.platform, r.cron_job_id, r.status
         FROM llm_calls lc
         LEFT JOIN runs r ON r.session_id = lc.session_id
-        WHERE {sc_ts}
+        WHERE {sc_ts}{cp}
         ORDER BY lc.ts DESC, lc.id DESC
         LIMIT ?
         """,
-        (max(1, min(int(limit), 1000)),),
+        (*cp_params, max(1, min(int(limit), 1000))),
     )
-    total = _one(f"SELECT COUNT(*) AS n FROM llm_calls WHERE {sc_ts}").get("n") or 0
+    cp2, cp2_params = _calls_profile_clause(profile)
+    total = (
+        _one(f"SELECT COUNT(*) AS n FROM llm_calls WHERE {sc_ts}{cp2}", cp2_params).get("n") or 0
+    )
     return {"total_requests": int(total), "rows": rows}
 
 
 @router.get("/providers")
-def providers(window_hours: int = 24) -> dict:
+def providers(window_hours: int = 24, profile: str = "") -> dict:
     sc_ts = _since_clause(window_hours, "ts")
-    rows = _rows(f"""
+    cp, cp_params = _calls_profile_clause(profile)
+    rows = _rows(
+        f"""
         SELECT COALESCE(provider, '—') AS provider,
                COUNT(*) AS total_calls,
                SUM(CASE WHEN estimated=0 THEN 1 ELSE 0 END) AS real_calls,
@@ -243,17 +265,21 @@ def providers(window_hours: int = 24) -> dict:
                COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
                COALESCE(SUM(reasoning_tokens), 0)   AS reasoning_tokens
         FROM llm_calls
-        WHERE {sc_ts}
+        WHERE {sc_ts}{cp}
         GROUP BY COALESCE(provider, '—')
         ORDER BY cost_usd DESC, total_calls DESC
-    """)
+    """,
+        cp_params,
+    )
     return {"rows": rows}
 
 
 @router.get("/cron")
-def cron(window_hours: int = 168) -> dict:
+def cron(window_hours: int = 168, profile: str = "") -> dict:
     sc = _since_clause(window_hours, "started_at")
-    rows = _rows(f"""
+    rp, rp_params = _runs_profile_clause(profile)
+    rows = _rows(
+        f"""
         SELECT cron_job_id,
                COUNT(*) AS runs,
                SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END)    AS ok_runs,
@@ -264,10 +290,12 @@ def cron(window_hours: int = 168) -> dict:
                AVG(duration_ms) AS avg_duration_ms,
                MAX(started_at)  AS last_run
         FROM runs
-        WHERE cron_job_id IS NOT NULL AND {sc}
+        WHERE cron_job_id IS NOT NULL AND {sc}{rp}
         GROUP BY cron_job_id
         ORDER BY last_run DESC
-    """)
+    """,
+        rp_params,
+    )
     return {"rows": rows}
 
 
