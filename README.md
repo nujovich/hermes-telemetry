@@ -828,6 +828,12 @@ budgets:
     overrides:
       premium_user_123:
         daily_usd: 5.00
+  per_profile:
+    default:
+      daily_usd: 2.00
+    overrides:
+      coder:
+        daily_usd: 10.00
 
 thresholds:
   soft_pct: 0.80    # warn at 80% of limit
@@ -844,6 +850,7 @@ on_estimated:
 |`global`      |All sessions + all cron jobs combined                        |
 |`per_cron_job`|Sessions where `cron_job_id` matches (excludes subagent cost)|
 |`per_sender`  |Sessions from a specific sender (multi-user gateways)        |
+|`per_profile` |Sessions tagged with a specific Hermes profile (`ctx.profile_name`)|
 
 **Window math:** daily and monthly windows are computed in the user’s local timezone. A cron job that runs at 11:59 PM and another at 12:01 AM count against different daily windows.
 
