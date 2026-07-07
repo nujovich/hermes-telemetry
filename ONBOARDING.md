@@ -1096,6 +1096,14 @@ seed it in the per-test temp dir, not rely on real files.
 pytest's built-in `tmp_path` fixture mints this per test. Override the base dir
 with `pytest --basetemp=DIR`.
 
+### `HERMES_TELEMETRY_HOME` neutralization
+
+`HERMES_TELEMETRY_HOME` outranks `HERMES_HOME` when resolving telemetry paths. The autouse
+`isolate_hermes_home` fixture (`conftest.py`) therefore DELETES `HERMES_TELEMETRY_HOME` per
+test, so a developer's ambient value cannot override the tmp redirect and leak the suite into
+the real `~/.hermes/telemetry`. Enforced by
+`tests/test_isolation.py::test_conftest_neutralizes_ambient_telemetry_home`.
+
 ---
 
 ## Design Decisions by Version
@@ -1384,6 +1392,38 @@ manual cleanup.
 
 All paths derived from `os.environ.get("HERMES_HOME", Path.home() / ".hermes")`.
 **Never use `Path.home()` directly** — breaks test isolation.
+
+---
+
+## Canonical telemetry home (`HERMES_TELEMETRY_HOME`)
+
+Telemetry file locations resolve through `paths.py`:
+
+- `paths.get_telemetry_home()` — PURE resolver (never creates the dir), precedence:
+  1. `HERMES_TELEMETRY_HOME` — opt-in shared cost-center dir, if set
+  2. `HERMES_HOME` — this profile's Hermes home
+  3. `~/.hermes` — default
+  …always under a `telemetry/` subdir.
+- `paths.get_db_path()` — `telemetry.db`; the ONLY getter that creates the telemetry dir
+  (the DB writes there).
+- `paths.get_budget_path()` / `paths.get_pricing_path()` — `budget.yaml` / `pricing.yaml`;
+  pure (no mkdir), so an absent/unwritable canonical home never turns a config read into a
+  crash (absence of `budget.yaml` = "budgets disabled").
+
+When `HERMES_TELEMETRY_HOME` is set, every profile/process/cron shares one `telemetry.db`,
+one `budget.yaml`, and one `pricing.yaml` — the single-pane cost center. When unset, behavior
+is unchanged (each `HERMES_HOME` keeps its own, still profile-tagged, telemetry dir).
+
+**Governs telemetry files only.** `state.db` and `cron/` are NOT relocated — they stay on
+`HERMES_HOME`.
+
+**Package vs dashboard.** The package runtime (`db.py`, `budget.py`, `pricing.py`) routes
+through `paths.py` (`db.py`/`pricing.py` use a `try: from . import paths / except ImportError:
+import paths` dual-mode import because some tests bare-import them). The dashboard surfaces
+(`dashboard/plugin_api.py`, `dashboard/serve.py`) are loaded outside the package and are
+code-isolated (`tests/test_dashboard_plugin_isolation.py`), so they replicate the precedence
+inline rather than importing `paths.py`. This PR updated `serve.py` (telemetry DB);
+`plugin_api.py` follows in the dashboard PR.
 
 ---
 

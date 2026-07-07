@@ -30,12 +30,16 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from . import paths
+except ImportError:  # pragma: no cover - db.py loaded standalone (no package context)
+    import paths
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +55,7 @@ _schema_lock = threading.Lock()
 
 
 def _get_db_path() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    tele_dir = hermes_home / "telemetry"
-    tele_dir.mkdir(parents=True, exist_ok=True)
-    return tele_dir / "telemetry.db"
+    return paths.get_db_path()
 
 
 def _get_conn() -> sqlite3.Connection:

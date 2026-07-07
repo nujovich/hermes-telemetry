@@ -23,8 +23,11 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
-from pathlib import Path
+
+try:
+    from . import paths
+except ImportError:  # pragma: no cover - pricing.py loaded standalone (no package context)
+    import paths
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +169,7 @@ def _load_custom_pricing() -> dict:
     global _custom_pricing
     if _custom_pricing is not None:
         return _custom_pricing
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    pricing_file = hermes_home / "telemetry" / "pricing.yaml"
+    pricing_file = paths.get_pricing_path()
     if not pricing_file.exists():
         _custom_pricing = _empty_custom_pricing()
         return _custom_pricing

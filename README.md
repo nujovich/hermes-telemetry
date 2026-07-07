@@ -97,6 +97,7 @@ LLM provider
   - [/stats](#stats)
   - [/budget](#budget)
 - [Configuration](#configuration)
+  - [Shared telemetry home (HERMES_TELEMETRY_HOME)](#shared-telemetry-home-hermes_telemetry_home)
   - [pricing.yaml](#pricingyaml)
   - [budget.yaml](#budgetyaml)
 - [Pricing Auto-Refresh](#pricing-auto-refresh)
@@ -732,6 +733,20 @@ Configuration lives in `~/.hermes/telemetry/`:
 
 If these files don’t exist, the plugin still works — it just uses defaults (all models at $0.00, budgets disabled).
 
+### Shared telemetry home (`HERMES_TELEMETRY_HOME`)
+
+By default the `telemetry/` directory above resolves from your Hermes home (`HERMES_HOME`; `~/.hermes/` for the default profile), so **each Hermes profile keeps its own separate telemetry**.
+
+If you run multiple profiles and want a single **shared cost center** — one `telemetry.db`, one `budget.yaml`, and one `pricing.yaml` that every profile reads and writes — set the opt-in `HERMES_TELEMETRY_HOME` to a common directory in each profile's environment:
+
+```bash
+export HERMES_TELEMETRY_HOME=~/.hermes-shared
+```
+
+Telemetry paths resolve with precedence **`HERMES_TELEMETRY_HOME` › `HERMES_HOME` › `~/.hermes`**. When unset, nothing changes — each profile keeps its own (profile-tagged) telemetry dir.
+
+> This relocates **telemetry files only** (`telemetry.db`, `budget.yaml`, `pricing.yaml`). It never moves Hermes's own `state.db` or `cron/`, which stay on `HERMES_HOME`.
+
 ### `pricing.yaml`
 
 Override model prices in USD per 1 million tokens. Without overrides, unknown models log a one-time warning and record cost as `$0.00`.
@@ -813,6 +828,12 @@ budgets:
     overrides:
       premium_user_123:
         daily_usd: 5.00
+  per_profile:
+    default:
+      daily_usd: 2.00
+    overrides:
+      coder:
+        daily_usd: 10.00
 
 thresholds:
   soft_pct: 0.80    # warn at 80% of limit
@@ -829,6 +850,7 @@ on_estimated:
 |`global`      |All sessions + all cron jobs combined                        |
 |`per_cron_job`|Sessions where `cron_job_id` matches (excludes subagent cost)|
 |`per_sender`  |Sessions from a specific sender (multi-user gateways)        |
+|`per_profile` |Sessions tagged with a specific Hermes profile (`ctx.profile_name`)|
 
 **Window math:** daily and monthly windows are computed in the user’s local timezone. A cron job that runs at 11:59 PM and another at 12:01 AM count against different daily windows.
 

@@ -1087,3 +1087,26 @@ def test_get_known_free_models_includes_subscription_models(tmp_path, monkeypatc
     assert "hermes-4-qwen-72b" in models
     assert "paid-model" not in models
     pricing.reload_custom_pricing()
+
+
+# ---------------------------------------------------------------------------
+# Canonical home routing (HERMES_TELEMETRY_HOME) — per-profile cost center
+# ---------------------------------------------------------------------------
+
+
+def test_custom_pricing_reads_from_telemetry_home(tmp_path, monkeypatch):
+    """_load_custom_pricing reads pricing.yaml from the canonical home when
+    HERMES_TELEMETRY_HOME is set."""
+    import hermes_telemetry.pricing as pricing
+
+    shared_tele = tmp_path / "shared" / "telemetry"
+    shared_tele.mkdir(parents=True)
+    (shared_tele / "pricing.yaml").write_text(
+        "models:\n  my/model:\n    input: 1.0\n    output: 2.0\n"
+    )
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(tmp_path / "shared"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    pricing._custom_pricing = None  # clear module cache
+
+    loaded = pricing._load_custom_pricing()
+    assert "my/model" in loaded["models"]

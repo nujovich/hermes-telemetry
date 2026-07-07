@@ -42,6 +42,10 @@ def isolate_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows equivalent of HOME
+    # HERMES_TELEMETRY_HOME outranks HERMES_HOME (paths.get_telemetry_home);
+    # a developer's ambient value would otherwise override the tmp redirect and
+    # leak the suite into the real ~/.hermes/telemetry. Clear it per test.
+    monkeypatch.delenv("HERMES_TELEMETRY_HOME", raising=False)
 
 
 @pytest.fixture(autouse=True)

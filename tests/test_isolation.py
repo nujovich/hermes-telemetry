@@ -64,3 +64,33 @@ def test_budget_status_ignores_real_home_pricing(tmp_path, monkeypatch):
         "budget._status_block() read pricing.yaml from Path.home() instead of "
         "HERMES_HOME — real-home isolation is broken"
     )
+
+
+def test_conftest_neutralizes_ambient_telemetry_home():
+    """The autouse isolation fixture must clear HERMES_TELEMETRY_HOME so a
+    developer's ambient value cannot override the tmp HERMES_HOME and leak the
+    suite into the real telemetry dir."""
+    import os
+
+    assert "HERMES_TELEMETRY_HOME" not in os.environ
+
+
+def test_telemetry_home_precedence_stays_in_tmp():
+    """With the fixture active and no ambient var, telemetry resolves under the
+    tmp HERMES_HOME — never the developer's real ~/.hermes."""
+    import os
+
+    import hermes_telemetry.paths as paths
+
+    assert paths.get_telemetry_home() == Path(os.environ["HERMES_HOME"]) / "telemetry"
+
+
+def test_budget_paths_honor_telemetry_home(tmp_path, monkeypatch):
+    """budget._budget_path / _pricing_path route through the canonical home."""
+    import hermes_telemetry.budget as budget
+
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(tmp_path / "shared"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    tele = tmp_path / "shared" / "telemetry"
+    assert budget._budget_path() == tele / "budget.yaml"
+    assert budget._pricing_path() == tele / "pricing.yaml"

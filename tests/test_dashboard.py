@@ -915,3 +915,20 @@ def test_api_cron_includes_scheduler_runs_without_telemetry(serve_module, monkey
     assert by_job["script-only"]["last_status"] == "ok"
     assert by_job["telemetry-job"]["runs"] == 2
     assert by_job["telemetry-job"]["tokens_in"] == 50
+
+
+def test_serve_db_path_honors_telemetry_home(tmp_path, monkeypatch):
+    """serve.py resolves its telemetry DB from HERMES_TELEMETRY_HOME when set,
+    but keeps state.db / cron on HERMES_HOME."""
+    import importlib.util
+
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(tmp_path / "shared"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+
+    spec = importlib.util.spec_from_file_location("dashboard_serve_th", _SERVE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert tmp_path / "shared" / "telemetry" / "telemetry.db" == module.DB_PATH
+    assert tmp_path / "profile" / "state.db" == module.STATE_DB_PATH
+    assert tmp_path / "profile" / "cron" / "jobs.json" == module.CRON_JOBS_PATH
