@@ -907,9 +907,7 @@ def test_unknown_model_is_not_known_free():
 
 
 def test_schema_v5_recorded():
-    from db import _get_conn
-
-    versions = {row[0] for row in _get_conn().execute("SELECT version FROM schema_version")}
+    versions = {row[0] for row in db._get_conn().execute("SELECT version FROM schema_version")}
     assert 5 in versions
 
 
@@ -980,9 +978,7 @@ def test_free_tier_transition_suffixed_paid_id():
 
 
 def test_schema_v6_recorded():
-    from db import _get_conn
-
-    versions = {row[0] for row in _get_conn().execute("SELECT version FROM schema_version")}
+    versions = {row[0] for row in db._get_conn().execute("SELECT version FROM schema_version")}
     assert 6 in versions
 
 
@@ -1554,6 +1550,14 @@ def test_set_profile_ignores_empty():
     db.set_profile("s_empty", "")
     db.set_profile("s_empty", None)
     assert db.get_run("s_empty")["profile"] is None
+
+
+def test_get_db_path_honors_telemetry_home(tmp_path, monkeypatch):
+    """db._get_db_path routes through the canonical home: when
+    HERMES_TELEMETRY_HOME is set, the DB resolves there, not under HERMES_HOME."""
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(tmp_path / "shared"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    assert db._get_db_path() == tmp_path / "shared" / "telemetry" / "telemetry.db"
 
 
 def test_spend_by_scope_profile_filters():
