@@ -97,6 +97,7 @@ LLM provider
   - [/stats](#stats)
   - [/budget](#budget)
 - [Configuration](#configuration)
+  - [Shared telemetry home (HERMES_TELEMETRY_HOME)](#shared-telemetry-home-hermes_telemetry_home)
   - [pricing.yaml](#pricingyaml)
   - [budget.yaml](#budgetyaml)
 - [Pricing Auto-Refresh](#pricing-auto-refresh)
@@ -731,6 +732,20 @@ Configuration lives in `~/.hermes/telemetry/`:
 ```
 
 If these files don’t exist, the plugin still works — it just uses defaults (all models at $0.00, budgets disabled).
+
+### Shared telemetry home (`HERMES_TELEMETRY_HOME`)
+
+By default the `telemetry/` directory above resolves from your Hermes home (`HERMES_HOME`; `~/.hermes/` for the default profile), so **each Hermes profile keeps its own separate telemetry**.
+
+If you run multiple profiles and want a single **shared cost center** — one `telemetry.db`, one `budget.yaml`, and one `pricing.yaml` that every profile reads and writes — set the opt-in `HERMES_TELEMETRY_HOME` to a common directory in each profile's environment:
+
+```bash
+export HERMES_TELEMETRY_HOME=~/.hermes-shared
+```
+
+Telemetry paths resolve with precedence **`HERMES_TELEMETRY_HOME` › `HERMES_HOME` › `~/.hermes`**. When unset, nothing changes — each profile keeps its own (profile-tagged) telemetry dir.
+
+> This relocates **telemetry files only** (`telemetry.db`, `budget.yaml`, `pricing.yaml`). It never moves Hermes's own `state.db` or `cron/`, which stay on `HERMES_HOME`.
 
 ### `pricing.yaml`
 
