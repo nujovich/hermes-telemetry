@@ -83,3 +83,14 @@ def test_telemetry_home_precedence_stays_in_tmp():
     import hermes_telemetry.paths as paths
 
     assert paths.get_telemetry_home() == Path(os.environ["HERMES_HOME"]) / "telemetry"
+
+
+def test_budget_paths_honor_telemetry_home(tmp_path, monkeypatch):
+    """budget._budget_path / _pricing_path route through the canonical home."""
+    import hermes_telemetry.budget as budget
+
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(tmp_path / "shared"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    tele = tmp_path / "shared" / "telemetry"
+    assert budget._budget_path() == tele / "budget.yaml"
+    assert budget._pricing_path() == tele / "pricing.yaml"

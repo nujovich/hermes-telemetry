@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import db
+from . import db, paths
 
 logger = logging.getLogger(__name__)
 
@@ -113,13 +113,11 @@ _verdict_lock = threading.Lock()
 
 
 def _budget_path() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    return hermes_home / "telemetry" / "budget.yaml"
+    return paths.get_budget_path()
 
 
 def _pricing_path() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    return hermes_home / "telemetry" / "pricing.yaml"
+    return paths.get_pricing_path()
 
 
 def load_config() -> dict:
