@@ -328,3 +328,16 @@ def test_db_path_honors_telemetry_home(plugin_api, tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(tmp_path / "shared"))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
     assert plugin_api._db_path() == tmp_path / "shared" / "telemetry" / "telemetry.db"
+
+
+def test_profiles_lists_distinct_non_null(plugin_api):
+    _seed(
+        rows_runs=[
+            {"session_id": "p1", "model": "m", "platform": "cli", "profile": "coder"},
+            {"session_id": "p2", "model": "m", "platform": "cli", "profile": "ops"},
+            {"session_id": "p3", "model": "m", "platform": "cli", "profile": "coder"},
+            {"session_id": "p4", "model": "m", "platform": "cli"},  # NULL profile
+        ]
+    )
+    out = plugin_api.profiles()
+    assert out["profiles"] == ["coder", "ops"]

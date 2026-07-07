@@ -84,6 +84,27 @@ def _since_clause(window_hours, col: str = "started_at") -> str:
     return f"{col} >= '{cutoff}'"
 
 
+def _runs_profile_clause(profile: str | None) -> tuple[str, tuple]:
+    """AND-clause restricting a `runs` query to one profile (parameterized)."""
+    return (" AND profile = ?", (profile,)) if profile else ("", ())
+
+
+def _calls_profile_clause(
+    profile: str | None, session_col: str = "session_id"
+) -> tuple[str, tuple]:
+    """AND-clause restricting an `llm_calls` query to one profile. Correlates the
+    call's session to runs.profile via a subquery — avoids a JOIN and the
+    column-name ambiguity between runs and llm_calls (both have provider,
+    cost_usd, tokens_in, …). Pass a qualified session_col (e.g. "lc.session_id")
+    when the query already aliases llm_calls."""
+    if not profile:
+        return "", ()
+    return (
+        f" AND {session_col} IN (SELECT session_id FROM runs WHERE profile = ?)",
+        (profile,),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Health & summary
 # ---------------------------------------------------------------------------
@@ -148,6 +169,16 @@ def token_breakdown(window_hours: int = 24) -> dict:
                  + COALESCE(SUM(reasoning_tokens), 0) AS total_tokens
         FROM llm_calls WHERE {sc_ts}
     """)
+
+
+@router.get("/profiles")
+def profiles() -> dict:
+    """Distinct non-null profiles present in runs — feeds the dashboard filter."""
+    rows = _rows(
+        "SELECT DISTINCT profile FROM runs "
+        "WHERE profile IS NOT NULL AND profile != '' ORDER BY profile"
+    )
+    return {"profiles": [r["profile"] for r in rows]}
 
 
 # ---------------------------------------------------------------------------
