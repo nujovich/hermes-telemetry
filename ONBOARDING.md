@@ -1425,6 +1425,26 @@ code-isolated (`tests/test_dashboard_plugin_isolation.py`), so they replicate th
 inline rather than importing `paths.py`. This PR updated `serve.py` (telemetry DB);
 `plugin_api.py` follows in the dashboard PR.
 
+### Dashboard profile awareness (plugin surface)
+
+`dashboard/plugin_api.py` reads the canonical telemetry home (inline `HERMES_TELEMETRY_HOME`
+precedence — self-contained, no `paths.py` import). Its aggregate endpoints accept an optional
+`profile` query param: `runs`-based endpoints filter `AND profile = ?`; `llm_calls`-based
+endpoints filter `AND session_id IN (SELECT session_id FROM runs WHERE profile = ?)` (a
+correlated subquery — avoids a JOIN and the runs/llm_calls column-name ambiguity). `/profiles`
+returns the distinct non-null profiles. The `dist/index.js` `TelemetryPage` renders a selector
+(shown only when profiles exist) that threads `&profile=` into each panel. Shared-mode only —
+there is no cross-DB reading (consolidate via `HERMES_TELEMETRY_HOME` first). `/budget` and the
+slot widgets are not profile-filtered.
+
+**Gotcha — no `X | None` on FastAPI route params.** The `profile` query param is declared
+`profile: str = ""` (not `str | None = None`). FastAPI evaluates route-parameter annotations at
+decoration time (`get_type_hints`), and `str | None` raises `TypeError` on Python 3.8/3.9 (this
+repo targets `>=3.8`) — even with `from __future__ import annotations`. `Optional[str]` avoids
+that but ruff `UP045` would demand `X | None` back. `str = ""` is annotated, ruff-clean,
+cross-version-safe, and falsy-when-absent (the helpers gate on `if profile:`), so it's the
+correct shape for optional query params in this file.
+
 ---
 
 ## PluginContext API
