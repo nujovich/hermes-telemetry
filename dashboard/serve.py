@@ -48,7 +48,20 @@ logger = logging.getLogger("hermes_telemetry.dashboard")
 # DB / Hermes paths
 # ---------------------------------------------------------------------------
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-DB_PATH = HERMES_HOME / "telemetry" / "telemetry.db"
+# Telemetry files honor the opt-in canonical home (HERMES_TELEMETRY_HOME), so a
+# multi-profile user can point every profile's dashboard at one shared DB. This
+# mirrors paths.get_telemetry_home(); serve.py replicates it inline because the
+# standalone dashboard shares no code with the package (see
+# tests/test_dashboard_plugin_isolation.py). state.db / cron stay on HERMES_HOME.
+_TELEMETRY_HOME = (
+    Path(
+        os.environ.get("HERMES_TELEMETRY_HOME")
+        or os.environ.get("HERMES_HOME")
+        or str(Path.home() / ".hermes")
+    )
+    / "telemetry"
+)
+DB_PATH = _TELEMETRY_HOME / "telemetry.db"
 STATE_DB_PATH = HERMES_HOME / "state.db"
 CRON_JOBS_PATH = HERMES_HOME / "cron" / "jobs.json"
 CRON_OUTPUT_DIR = HERMES_HOME / "cron" / "output"
