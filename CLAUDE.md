@@ -122,3 +122,9 @@ hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 Tests redirect `HERMES_HOME` to an isolated tmp dir. A direct `Path.home()` call
 escapes the isolation and touches the developer's real `~/.hermes`.
 See `tests/test_isolation.py` and `ONBOARDING.md § Test Isolation Contract`.
+
+Telemetry files (`telemetry.db`, `budget.yaml`, `pricing.yaml`) additionally honor an
+opt-in `HERMES_TELEMETRY_HOME` that **outranks** `HERMES_HOME`, resolved once in
+`paths.py::get_telemetry_home()`. Route telemetry paths through `paths.py` (the dashboard
+surfaces replicate it inline — they must stay self-contained). Tests neutralize
+`HERMES_TELEMETRY_HOME` in `conftest.py` so it cannot break isolation.
