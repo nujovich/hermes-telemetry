@@ -2493,6 +2493,9 @@ SCRIPT_DIR = Path(__file__).parent
 
 
 class Handler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, directory=None, **kwargs):
+        super().__init__(*args, directory=str(SCRIPT_DIR), **kwargs)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -2744,8 +2747,7 @@ class Handler(SimpleHTTPRequestHandler):
         # Try to serve other static files from the same directory
         fpath = SCRIPT_DIR / path.lstrip("/")
         if fpath.is_file():
-            super().do_GET()
-            return
+            return super().do_GET()
 
         self.send_response(404)
         self.end_headers()

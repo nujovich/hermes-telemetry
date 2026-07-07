@@ -297,7 +297,7 @@ hermes gateway restart
   - `sessions:top` — last run summary (cost · tokens · model).
   - `cron:top` — 7-day cron cost and failure badge.
   - `header-right` — 24h spend + global daily budget level (semáforo).
-  - `analytics:bottom` — daily cost chart (Chart.js loaded from CDN).
+  - `analytics:bottom` — daily cost chart (Chart.js served from a vendored local asset; CDN fallback only).
 
 ### How discovery works
 
