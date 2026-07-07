@@ -58,12 +58,14 @@
     );
   }
 
-  function SummaryPanel() {
+  const profileQS = (p) => (p ? `&profile=${encodeURIComponent(p)}` : "");
+
+  function SummaryPanel({ profile }) {
     const [data, setData] = useState(null);
     const [err, setErr] = useState(null);
     useEffect(() => {
-      api("/summary?window_hours=24").then(setData).catch((e) => setErr(String(e)));
-    }, []);
+      api(`/summary?window_hours=24${profileQS(profile)}`).then(setData).catch((e) => setErr(String(e)));
+    }, [profile]);
     if (err) return h(Card, null, h(CardContent, { className: "py-4 text-sm" },
       "Backend not reachable: ", err));
     if (!data) return h(Card, null, h(CardContent, { className: "py-4 text-sm" }, "Loading…"));
@@ -102,9 +104,9 @@
     );
   }
 
-  function RunsPanel() {
+  function RunsPanel({ profile }) {
     const [data, setData] = useState(null);
-    useEffect(() => { api("/runs?limit=50&window_hours=168").then(setData).catch(() => setData({ rows: [] })); }, []);
+    useEffect(() => { api(`/runs?limit=50&window_hours=168${profileQS(profile)}`).then(setData).catch(() => setData({ rows: [] })); }, [profile]);
     if (!data) return h("p", { className: "text-sm" }, "Loading…");
     return h(RowsTable, {
       rows: data.rows,
@@ -123,9 +125,9 @@
     });
   }
 
-  function RequestsPanel() {
+  function RequestsPanel({ profile }) {
     const [data, setData] = useState(null);
-    useEffect(() => { api("/requests?limit=100&window_hours=168").then(setData).catch(() => setData({ rows: [] })); }, []);
+    useEffect(() => { api(`/requests?limit=100&window_hours=168${profileQS(profile)}`).then(setData).catch(() => setData({ rows: [] })); }, [profile]);
     if (!data) return h("p", { className: "text-sm" }, "Loading…");
     return h(RowsTable, {
       rows: data.rows,
@@ -148,9 +150,9 @@
     });
   }
 
-  function ProvidersPanel() {
+  function ProvidersPanel({ profile }) {
     const [data, setData] = useState(null);
-    useEffect(() => { api("/providers?window_hours=168").then(setData).catch(() => setData({ rows: [] })); }, []);
+    useEffect(() => { api(`/providers?window_hours=168${profileQS(profile)}`).then(setData).catch(() => setData({ rows: [] })); }, [profile]);
     if (!data) return h("p", { className: "text-sm" }, "Loading…");
     return h(RowsTable, {
       rows: data.rows,
@@ -167,9 +169,9 @@
     });
   }
 
-  function CronPanel() {
+  function CronPanel({ profile }) {
     const [data, setData] = useState(null);
-    useEffect(() => { api("/cron?window_hours=720").then(setData).catch(() => setData({ rows: [] })); }, []);
+    useEffect(() => { api(`/cron?window_hours=720${profileQS(profile)}`).then(setData).catch(() => setData({ rows: [] })); }, [profile]);
     if (!data) return h("p", { className: "text-sm" }, "Loading…");
     return h(RowsTable, {
       rows: data.rows,
@@ -238,6 +240,11 @@
 
   function TelemetryPage() {
     const [active, setActive] = useState("summary");
+    const [profile, setProfile] = useState("");        // "" = all profiles
+    const [profiles, setProfiles] = useState([]);
+    useEffect(() => {
+      api("/profiles").then((d) => setProfiles((d && d.profiles) || [])).catch(() => setProfiles([]));
+    }, []);
     const Panel = (TABS.find((t) => t.id === active) || TABS[0]).render;
     return h("div", { className: "flex flex-col gap-4" },
       h(ModelUnavailableWidget, null),
@@ -247,11 +254,21 @@
           h("div", { className: "flex items-center gap-3" },
             h(CardTitle, { className: "text-lg" }, "Telemetry"),
             h(Badge, { variant: "outline" }, "hermes-telemetry"),
+            (profiles.length ? h("select", {
+              className: "ml-auto text-sm border border-border bg-transparent px-2 py-1",
+              value: profile,
+              onChange: (e) => setProfile(e.target.value),
+              title: "Filter by Hermes profile",
+              "aria-label": "Filter by Hermes profile",
+            },
+              h("option", { value: "" }, "All profiles"),
+              profiles.map((p) => h("option", { key: p, value: p }, p)),
+            ) : null),
           ),
         ),
         h(CardContent, { className: "flex flex-col gap-4" },
           h(TabBar, { tabs: TABS, active, onChange: setActive }),
-          h(Panel, null),
+          h(Panel, { profile }),
         ),
       ),
     );
