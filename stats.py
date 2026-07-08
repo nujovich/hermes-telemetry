@@ -1,20 +1,20 @@
 """Handler for the /stats slash command.
 
 Subcommands:
-  /stats              -> summary for last 24h
-  /stats today        -> last 24h (alias)
-  /stats week         -> last 168h
-  /stats month        -> last 720h
-  /stats cron         -> cost/failure breakdown by cron_job_id
-  /stats raw [N]      -> last N runs (default 20)
-  /stats providers    -> per-provider real vs estimated breakdown (last 24h)
-  /stats models       -> per-model breakdown within each provider (last 24h)
-  /stats efficiency   -> per-session efficiency scores (0-100, last 24h)
-  /stats smells       -> AI smell detection: anti-patterns in sessions (last 24h)
+  /stats              → summary for last 24h
+  /stats today        → last 24h (alias)
+  /stats week         → last 168h
+  /stats month        → last 720h
+  /stats cron         → cost/failure breakdown by cron_job_id
+  /stats raw [N]      → last N runs (default 20)
+  /stats providers    → per-provider real vs estimated breakdown (last 24h)
+  /stats models       → per-model breakdown within each provider (last 24h)
+  /stats efficiency   → per-session efficiency scores (0-100, last 24h)
+  /stats smells       → AI smell detection: anti-patterns in sessions (last 24h)
 
 Date range support:
-  --from YYYY-MM-DD   -> start date (inclusive)
-  --to YYYY-MM-DD     -> end date (exclusive, defaults to now)
+  --from YYYY-MM-DD   → start date (inclusive)
+  --to YYYY-MM-DD     → end date (exclusive, defaults to now)
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def _fmt_cost(v: Any) -> str:
 
 def _fmt_ms(v: Any) -> str:
     if v is None:
-        return "\u2014"
+        return "—"
     ms = float(v)
     if ms >= 60_000:
         return f"{ms / 60_000:.1f}m"
@@ -91,7 +91,7 @@ def _summary_block(
     total = s.get("total_runs") or 0
     ok = s.get("ok_runs") or 0
     failed = s.get("failed_runs") or 0
-    success_rate = f"{ok / total * 100:.1f}%" if total else "\u2014"
+    success_rate = f"{ok / total * 100:.1f}%" if total else "—"
 
     api_calls = int(s.get("api_calls") or 0)
     estimated_calls = int(s.get("estimated_llm_calls") or 0)
@@ -105,7 +105,7 @@ def _summary_block(
     label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
 
     lines = [
-        f"hermes-telemetry \u2014 {label}",
+        f"hermes-telemetry — {label}",
         "=" * 44,
         f"  Sessions      : {_fmt_int(total)}",
         f"  Success rate  : {success_rate}  (ok={_fmt_int(ok)}, failed={_fmt_int(failed)})",
@@ -161,7 +161,7 @@ def _cron_block(
         return f"No cron runs in {label}."
 
     lines = [
-        f"hermes-telemetry \u2014 cron jobs ({label})",
+        f"hermes-telemetry — cron jobs ({label})",
         "=" * 72,
         f"  {'Job ID':<20} {'Runs':>5} {'OK':>5} {'Fail':>5} {'Tok-in':>9} {'Tok-out':>9} {'Cost':>12} {'Avg dur':>9}",
         "  " + "-" * 70,
@@ -205,7 +205,7 @@ def _providers_block(
         return f"No API calls recorded in {label}."
 
     lines = [
-        f"hermes-telemetry \u2014 providers ({label})",
+        f"hermes-telemetry — providers ({label})",
         "=" * 72,
         f"  {'Provider':<28} {'Calls':>6} {'Real':>6} {'Est':>5} {'Est%':>6} "
         f"{'Asm%':>6} {'Cost':>12}",
@@ -227,9 +227,7 @@ def _providers_block(
     lines.append("  Provider key:")
     lines.append("    The provider label is whatever the Hermes gateway reports for each API")
     lines.append("    call (post_api_request hook); it is stored verbatim and rows are grouped")
-    lines.append(
-        "    by it. It is NOT derived from the model name \u2014 so everything the gateway"
-    )
+    lines.append("    by it. It is NOT derived from the model name — so everything the gateway")
     lines.append("    routes through OpenRouter shows up under its 'openrouter' label regardless")
     lines.append("    of the model's own 'google/', 'openai/', 'anthropic/', \u2026 prefix.")
     lines.append("    '(unknown)' = the gateway reported no provider for that call.")
@@ -287,14 +285,14 @@ def _models_block(
         return f"No API calls recorded in {label}."
 
     # Subscription models (`_subscription: true` in pricing.yaml) are an
-    # explicitly declared $0 \u2014 surface them so the $0.00 footer can stop
+    # explicitly declared $0 — surface them so the $0.00 footer can stop
     # claiming every zero-cost row is a missing-pricing problem.
     from . import pricing as _pricing
 
     subscription_models = _pricing._load_custom_pricing().get("subscription_models", set())
 
     lines = [
-        f"hermes-telemetry \u2014 models ({label})",
+        f"hermes-telemetry — models ({label})",
         "=" * 108,
         f"  {'Provider':<20} {'Model':<46} {'Calls':>6} {'Real':>6} {'Est':>5} {'Cost':>12}  Notes",
         "  " + "-" * 106,
@@ -304,7 +302,7 @@ def _models_block(
     for r in rows:
         prov = (r.get("provider") or "(unknown)")[:20]
         # Model names (esp. OpenRouter's dated keys) are kept wide so the date
-        # suffix stays visible \u2014 that's the whole point of this view.
+        # suffix stays visible — that's the whole point of this view.
         model = (r.get("model") or "(unknown)")[:46]
         total = _fmt_int(r.get("total_calls"))
         real = _fmt_int(r.get("real_calls"))
@@ -331,7 +329,7 @@ def _models_block(
     if noentry_zero_count:
         lines.append(
             f"  {noentry_zero_count} model(s) at $0.00 have no price entry in "
-            "pricing.yaml \u2014 run /setup pricing auto"
+            "pricing.yaml — run /setup pricing auto"
         )
         lines.append("  to refresh, or add them manually.")
     return "\n".join(lines)
@@ -343,7 +341,7 @@ def _raw_block(limit: int = 20, *, date_from: str | None = None, date_to: str | 
         return "No runs recorded yet."
 
     lines = [
-        f"hermes-telemetry \u2014 last {limit} runs",
+        f"hermes-telemetry — last {limit} runs",
         "=" * 80,
     ]
     for r in rows:
@@ -372,7 +370,7 @@ _ISO_DATE_FORMATS = (
 def _parse_iso_date(raw: str) -> str | None:
     """Parse a date/timestamp into an ISO-8601 string with a UTC offset.
 
-    Returns None when the input isn't a recognized format \u2014 slash command args
+    Returns None when the input isn't a recognized format — slash command args
     are user-typed, so we surface a parse failure as "ignore this flag" rather
     than raising, and the caller renders an error message inline.
     """
@@ -405,7 +403,7 @@ def _extract_date_flags(raw_args: str) -> tuple[str, str | None, str | None, str
 
     Returns ``(remaining, date_from, date_to, error)`` where:
       - ``remaining`` is the arg string with the flags removed (preset tokens
-        survive untouched and keep their original casing \u2014 the caller still
+        survive untouched and keep their original casing — the caller still
         lowercases them).
       - ``date_from`` / ``date_to`` are ISO-normalized or ``None``.
       - ``error`` is a human-readable message if a flag value failed to parse,
@@ -523,11 +521,11 @@ def _smells_block(
 
     lines.append("")
     lines.append("  Smell types:")
-    lines.append("    Context Rotation  \u2014 input tokens vastly outnumber output")
-    lines.append("    Loop Trap         \u2014 single tool call dominates the session")
-    lines.append("    Tool Thrashing    \u2014 many tool calls with high failure rate")
-    lines.append("    High Error Rate   \u2014 elevated session failure rate")
-    lines.append("    Massive Session   \u2014 extreme token/API call volumes")
+    lines.append("    Context Rotation  — input tokens vastly outnumber output")
+    lines.append("    Loop Trap         — single tool call dominates the session")
+    lines.append("    Tool Thrashing    — many tool calls with high failure rate")
+    lines.append("    High Error Rate   — elevated session failure rate")
+    lines.append("    Massive Session   — extreme token/API call volumes")
     lines.append("")
     lines.append("  Severity: HIGH > MED > WARN")
     return "\n".join(lines)
@@ -633,19 +631,19 @@ def handle(raw_args: str) -> str:
     return (
         "Usage: /stats [today|week|month|cron|cron week|cron month|providers|models|efficiency|smells|raw [N]]\n"
         "             [--from YYYY-MM-DD[THH:MM:SS[Z]]] [--to YYYY-MM-DD[THH:MM:SS[Z]]]\n"
-        "  /stats               \u2014 last 24h summary\n"
-        "  /stats week          \u2014 last 7 days summary\n"
-        "  /stats month         \u2014 last 30 days summary\n"
-        "  /stats cron          \u2014 breakdown by cron job (last 7 days)\n"
-        "  /stats providers     \u2014 per-provider real vs estimated breakdown (24h)\n"
-        "  /stats providers week \u2014 provider breakdown, last 7 days\n"
-        "  /stats models        \u2014 per-model breakdown within each provider (24h)\n"
-        "  /stats models week   \u2014 per-model breakdown, last 7 days\n"
-        "  /stats efficiency    \u2014 per-session efficiency scores (0-100, 24h)\n"
-        "  /stats efficiency week \u2014 efficiency scores, last 7 days\n"
-        "  /stats smells        \u2014 AI smell detection (24h)\n"
-        "  /stats smells week   \u2014 AI smell detection, last 7 days\n"
-        "  /stats raw [N]       \u2014 last N raw run records (default 20)\n"
+        "  /stats               — last 24h summary\n"
+        "  /stats week          — last 7 days summary\n"
+        "  /stats month         — last 30 days summary\n"
+        "  /stats cron          — breakdown by cron job (last 7 days)\n"
+        "  /stats providers     — per-provider real vs estimated breakdown (24h)\n"
+        "  /stats providers week — provider breakdown, last 7 days\n"
+        "  /stats models        — per-model breakdown within each provider (24h)\n"
+        "  /stats models week   — per-model breakdown, last 7 days\n"
+        "  /stats efficiency    — per-session efficiency scores (0-100, 24h)\n"
+        "  /stats efficiency week — efficiency scores, last 7 days\n"
+        "  /stats smells        — AI smell detection (24h)\n"
+        "  /stats smells week   — AI smell detection, last 7 days\n"
+        "  /stats raw [N]       — last N raw run records (default 20)\n"
         "\n"
         "Date range examples (work the same way under the CLI):\n"
         "  /stats models --from 2026-06-16T12:00:00Z\n"
