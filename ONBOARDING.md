@@ -70,9 +70,14 @@ hermes-telemetry/
 │                          preserves manual overrides.
 ├── budget.py            ← Budget verdict engine. Window math in local tz,
 │                          verdict cache, anti-spam ledger, tool-gate helpers,
-│                          /budget command.
+│                          /budget command, burn-rate forecast.
 ├── stats.py             ← /stats command implementation. All subcommands:
-│                          summary, cron, providers, models, raw.
+│                          summary, cron, providers, models, raw, efficiency,
+│                          smells.
+├── smell_detector.py    ← AI smell detection. Read-only heuristics over existing
+│                          runs/tool_calls that flag session anti-patterns
+│                          (context rotation, loop traps, tool thrashing, high
+│                          error rate, massive sessions). See `§ Agent Intelligence`.
 ├── moa.py               ← Mixture-of-Agents awareness. Resolves the `provider=
 │                          "moa"` virtual-provider preset to its aggregator's
 │                          real provider/model so the call is priced/attributed
@@ -1040,6 +1045,117 @@ swallows every error).
 
 ---
 
+## Agent Intelligence (efficiency · smells · forecast)
+
+Three analytical capabilities layered on top of the telemetry that is **already
+captured**. None of them collect new data and none of them change the schema —
+they are pure `SELECT`-side reads over `runs`, `llm_calls`, and `tool_calls`, so
+there is no `_migrate_vN` for this feature. All three inject a `now`/injectable
+parameter where time matters so tests stay deterministic.
+
+### Efficiency score (0-100)
+
+`db.efficiency_runs()` (behind `/stats efficiency` and the CLI) scores each
+completed session. `dashboard/plugin_api._compute_efficiency()` mirrors the same
+formula for the plugin dashboard's `/efficiency` endpoint.
+
+```
+output_contribution = min(60, (tokens_out / max(tokens_in, 1)) * 40)
+error_penalty       = 30 if status == 'error'
+                      10 if status == 'interrupted'
+                       0 otherwise
+turn_penalty        = min(30, api_calls * 1.5)
+score               = clamp(0, 100, 40 + output_contribution
+                                       - error_penalty - turn_penalty)
+```
+
+- **Status semantics are source-verified.** The only non-`running` run statuses
+  the plugin ever writes are `ok`, `error`, and `interrupted` (`__init__.py`
+  session end). `error` is the real failure status and carries the heavy 30-point
+  penalty. `failed`/`cancelled` are **subagent `child_status`** values, not run
+  statuses, so they never reach this query — do not key the penalty on them.
+- The query reads the **100 most recent** completed (`status != 'running'`)
+  sessions in the window, scores them in Python, then ranks best-first. With more
+  than 100 sessions the ranking is over the recent slice, not the global best.
+- **Calibration caveat:** real multi-turn sessions resend context each turn, so
+  `tokens_in >> tokens_out` and `output_contribution` usually lands well under
+  40. Read the score as a *relative* signal within a window, not an absolute
+  grade. The same sessions flagged as `context_rotation` smells will always score
+  low here — that overlap is expected.
+- **Maintenance caveat:** the formula lives in two places (`db.efficiency_runs`
+  and `plugin_api._compute_efficiency`) because the plugin dashboard surface
+  shares no Python with the core package (see `§ Dashboard Plugin Surface`). Keep
+  them in lockstep; a single source of truth is a wanted follow-up.
+
+### AI smell detection
+
+`smell_detector.py` (behind `/stats smells`) runs five independent heuristics.
+Each returns a list of `{smell, severity, session_id, detail, …}` dicts.
+
+| Smell | Severity | Threshold |
+|-------|----------|-----------|
+| `context_rotation` | high | `tokens_in > 1,000` AND `tokens_out / tokens_in < 0.10` |
+| `loop_trap` | medium | `> 10` tool calls AND one tool name is `> 80%` of them |
+| `tool_thrashing` | high | `> 20` tool calls AND failure rate `> 30%` (`tool_calls.ok = 0`) |
+| `high_error_rate` | warning / high | sessions with `status = 'error'`; **high** when `> 30%` of the window's sessions errored |
+| `massive_session` | warning | `(tokens_in + tokens_out) > 100,000` OR `api_calls > 50` |
+
+- `detect_all()` concatenates the detectors and sorts by severity
+  (`high > medium > warning`) then smell type. `detect_by_session()` regroups the
+  same findings under each `session_id`.
+- Detection is **best-effort**: a detector that raises is logged at `debug`
+  (`hermes_telemetry` logger) and skipped, so one broken query never takes down
+  the whole `/stats smells` command.
+- `loop_trap` aggregates per session in Python because SQLite cannot reference a
+  `SELECT` alias for the top-tool-ratio check inside the same query.
+- `high_error_rate` matches only `status = 'error'` — the sole failure status a
+  run ever carries (see the efficiency note; `failed` is a subagent
+  `child_status`, never a run status).
+
+### Burn-rate forecast
+
+`budget.burn_rate_projection()` (behind `/budget forecast`, the CLI, and the
+standalone dashboard route `/api/budget/forecast` in `serve.py`) projects whether
+a scope is on track to breach its configured limit.
+
+- `db.daily_spend_series()` returns one row per calendar day (UTC) for the last
+  `lookback_days` (default 14), bucketing `runs.cost_usd` by
+  `substr(started_at, 1, 10)` and **zero-filling** days with no spend so gaps do
+  not bias the average.
+- `avg_daily = mean(series)`, then
+  `projected_total = spent_so_far + avg_daily * remaining_days_in_window`, where
+  `spent_so_far` comes from `db.spend_by_scope()` since the window start.
+- `status` uses the same thresholds as `/budget`: `hard` (≥ 100%), `soft`
+  (≥ 80%), else `ok`. A scope with no configured limit for the window returns
+  `{"enabled": False}`.
+- It is a **read-only projection** — no network calls, no state mutation.
+- Scopes exposed: `global` / `cron_job` / `sender` / `profile` (the CLI and slash
+  command validate all four; `_resolve_limits` maps `profile` → the `per_profile`
+  budget config key).
+
+### Dashboard surfaces
+
+All three features are wired into **both** dashboards. Because neither dashboard
+surface may import the package (`serve.py` runs standalone via `python serve.py`;
+`plugin_api.py` is loaded by the Hermes shell via `spec_from_file_location`),
+each **reimplements** the scoring/detection/projection logic inline against its
+own read-only connection — the same forced-duplication tradeoff already accepted
+for the efficiency score.
+
+| Surface | Efficiency | Smells | Forecast |
+|---------|-----------|--------|----------|
+| **Standalone** (`serve.py` + `index.html`) | `GET /api/efficiency` → Breakdown-tab table | `GET /api/smells` → Error-tab table | `GET /api/budget/forecast` → Home-tab panel |
+| **Plugin** (`plugin_api.py` + `dist/index.js`) | `GET /efficiency` → Efficiency sub-tab | `GET /smells` → top-of-page alert widget | `GET /forecast` → inside the Budgets panel |
+
+The plugin smells/forecast widgets render **nothing** on the happy path (no
+smells / no configured limit), matching the `ModelUnavailableWidget` convention.
+Note: the standalone `/api/budget/forecast` maps the config-key scopes
+(`per_cron_job`/`per_sender`/`per_profile`) to the engine scopes before
+projecting — the previous `from . import budget` version raised `ImportError`
+under the standalone loader and never resolved a non-global limit.
+
+---
+
 ## Cron Job Identification
 
 There is **no `cron_job_id` kwarg** in any hook.
@@ -1245,6 +1361,24 @@ the real `~/.hermes/telemetry`. Enforced by
   flagged as such in `/stats` and both dashboards.
 - Verified against `agent/moa_loop.py`, `agent/auxiliary_client.py`,
   `agent/agent_init.py`, `agent/conversation_loop.py`, `hermes_cli/moa_config.py`.
+
+---
+
+### Unreleased — Agent intelligence (efficiency · smells · forecast, issue #8)
+
+- **`smell_detector.py`** (new module): five read-only anti-pattern heuristics
+  over existing telemetry. See `§ Agent Intelligence`.
+- **`db.efficiency_runs`** + **`stats._efficiency_block`** + plugin dashboard
+  `/efficiency`: per-session efficiency score (0-100). Error penalty keyed on the
+  real run statuses `error`/`interrupted` (source-verified against `__init__.py`
+  session end — **not** the subagent-only `failed`/`cancelled`).
+- **`db.daily_spend_series`** + **`budget.burn_rate_projection`** +
+  `/budget forecast` + standalone `/api/budget/forecast`: moving-window burn-rate
+  projection toward the configured limit; read-only, no state mutation.
+- **No schema change** — all three are pure reads over `runs`/`llm_calls`/
+  `tool_calls`, so there is no `_migrate_vN`.
+- Run-status strings confirmed against `__init__.py` session-end logic, whose
+  `on_session_end` kwargs are sourced from `agent/conversation_loop.py`.
 
 ---
 

@@ -148,6 +148,14 @@ def _build_parser_into(sub) -> None:
     bs.add_argument("window", choices=["daily", "monthly"])
     bs.add_argument("usd", type=float)
 
+    bf = bsub.add_parser("forecast", help="Project burn rate toward the budget limit")
+    bf.add_argument("window", nargs="?", choices=["daily", "monthly"], default="monthly")
+    bf.add_argument(
+        "scope", nargs="?", default="global", choices=["global", "cron_job", "sender", "profile"]
+    )
+    bf.add_argument("scope_id", nargs="?", default="")
+    bf.add_argument("--json", action="store_true", help="Output as JSON")
+
 
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
@@ -219,11 +227,31 @@ def _handle_budget(args: argparse.Namespace) -> None:
         print(_budget._set_budget(args.scope, args.window, args.usd))
         return
 
+    if args.budget_command == "forecast":
+        if getattr(args, "json", False):
+            _budget_forecast_json(args)
+        else:
+            _budget_forecast_text(args)
+        return
+
     use_json = getattr(args, "json", False)
     if use_json:
         _budget_json(args.budget_command or "status")
     else:
         _budget_text(args.budget_command or "status")
+
+
+def _budget_forecast_text(args: argparse.Namespace) -> None:
+    from . import budget as _budget
+
+    print(_budget._forecast_block(args.scope, args.scope_id or "", args.window))
+
+
+def _budget_forecast_json(args: argparse.Namespace) -> None:
+    from . import budget as _budget
+
+    proj = _budget.burn_rate_projection(args.scope, args.scope_id or "", window=args.window)
+    print(json.dumps(proj, default=str))
 
 
 def _budget_text(subcommand: str) -> None:

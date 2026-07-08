@@ -32,7 +32,7 @@ import contextlib
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1007,6 +1007,57 @@ def recent_runs(
 # ---------------------------------------------------------------------------
 
 
+def daily_spend_series(
+    scope: str,
+    scope_id: str,
+    days: int,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Return total USD cost per calendar day for the last `days` days (UTC).
+
+    Used by the burn-rate forecast to learn a recent spend rate. Each day is
+    represented by exactly one row with key ``day`` (``YYYY-MM-DD``) and
+    ``cost_usd`` (float). Days with no recorded spend are included with
+    ``cost_usd == 0.0`` so the moving average is not biased by gaps in the
+    data. ``now`` is injectable for deterministic tests.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    conn = _get_conn()
+    where = []
+    params: list[Any] = []
+    if scope == "cron_job":
+        where.append("cron_job_id = ?")
+        params.append(scope_id)
+    elif scope == "sender":
+        where.append("sender_id = ?")
+        params.append(scope_id)
+    where_sql = (" AND " + " AND ".join(where)) if where else ""
+
+    # start = beginning (UTC midnight) of (days-1) days ago, i.e. inclusive window
+    start = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_iso = start.isoformat()
+    rows = conn.execute(
+        f"""
+        SELECT substr(started_at, 1, 10) AS day,
+               COALESCE(SUM(cost_usd), 0.0) AS cost_usd
+        FROM runs
+        WHERE started_at >= ?{where_sql}
+        GROUP BY day
+        """,
+        [start_iso, *params],
+    ).fetchall()
+
+    by_day = {r["day"]: float(r["cost_usd"] or 0.0) for r in rows}
+
+    series: list[dict[str, Any]] = []
+    for i in range(days):
+        d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+        series.append({"day": d, "cost_usd": by_day.get(d, 0.0)})
+    return series
+
+
 def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:
     """Aggregate spend for a budget scope since an ISO-8601 UTC timestamp.
 
@@ -1222,6 +1273,91 @@ def stats_by_model(
         row["estimated_pct"] = (est / total) if total else 0.0
         row["provider_assumed_pct"] = (assumed / total) if total else 0.0
         result.append(row)
+    return result
+
+
+def efficiency_runs(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    """Return per-session efficiency scores (0-100) based on token productivity.
+
+    Efficiency Score formula:
+        base = 40
+        output_contribution = MIN(60, (tokens_out / MAX(tokens_in, 1)) * 40)
+        error_penalty = CASE status:
+            'error' → 30, 'interrupted' → 10, else 0
+        turn_penalty = MIN(30, api_calls * 1.5)
+        score = MAX(0, MIN(100, base + output_contribution - error_penalty - turn_penalty))
+
+    Returns sessions ordered by score (highest efficiency first).
+    Scores are computed in Python after the SQL query.
+    """
+    conn = _get_conn()
+    where_sql, params = _build_where_clause(window_hours, date_from, date_to)
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            session_id,
+            COALESCE(cron_job_id, '')         AS cron_job_id,
+            COALESCE(status, 'running')        AS status,
+            COALESCE(tokens_in, 0)             AS tokens_in,
+            COALESCE(tokens_out, 0)            AS tokens_out,
+            COALESCE(api_calls, 0)             AS api_calls,
+            ROUND(COALESCE(cost_usd, 0.0), 6)  AS cost_usd,
+            started_at
+        FROM runs
+        WHERE {where_sql}
+          AND status != 'running'
+        ORDER BY started_at DESC
+        LIMIT 100
+        """,
+        params,
+    ).fetchall()
+
+    result = []
+    for r in rows:
+        tokens_in = r["tokens_in"]
+        tokens_out = r["tokens_out"]
+        api_calls = r["api_calls"]
+        status = r["status"]
+
+        # Output contribution: up to 60 points from token productivity
+        output_ratio = tokens_out / tokens_in if tokens_in > 0 else 0.0
+        output_contribution = min(60.0, output_ratio * 40.0)
+
+        # Error penalty. The only non-"running" run statuses the plugin ever
+        # writes are 'ok', 'error', and 'interrupted' (see __init__.py session
+        # end); 'error' is the real failure status, so it carries the heavy
+        # penalty. ('failed'/'cancelled' are subagent child_status values, not
+        # run statuses, and never reach this query.)
+        error_penalty = {
+            "error": 30,
+            "interrupted": 10,
+        }.get(status, 0)
+
+        # Turn penalty: each API call costs 1.5 points, max 30
+        turn_penalty = min(30.0, api_calls * 1.5)
+
+        score = 40.0 + output_contribution - error_penalty - turn_penalty
+        score = max(0.0, min(100.0, score))
+
+        result.append(
+            {
+                "session_id": r["session_id"],
+                "cron_job_id": r["cron_job_id"],
+                "status": status,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "api_calls": api_calls,
+                "cost_usd": r["cost_usd"],
+                "efficiency_score": round(score, 1),
+                "started_at": r["started_at"],
+            }
+        )
+
+    # Sort by efficiency score descending
+    result.sort(key=lambda x: x["efficiency_score"], reverse=True)
     return result
 
 

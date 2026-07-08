@@ -9,6 +9,8 @@ Subcommands:
   /stats raw [N]      → last N runs (default 20)
   /stats providers    → per-provider real vs estimated breakdown (last 24h)
   /stats models       → per-model breakdown within each provider (last 24h)
+  /stats efficiency   → per-session efficiency scores (0-100, last 24h)
+  /stats smells       → AI smell detection: anti-patterns in sessions (last 24h)
 
 Date range support:
   --from YYYY-MM-DD   → start date (inclusive)
@@ -21,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import db
+from . import db, smell_detector
 
 
 def _fmt_cost(v: Any) -> str:
@@ -227,7 +229,7 @@ def _providers_block(
     lines.append("    call (post_api_request hook); it is stored verbatim and rows are grouped")
     lines.append("    by it. It is NOT derived from the model name — so everything the gateway")
     lines.append("    routes through OpenRouter shows up under its 'openrouter' label regardless")
-    lines.append("    of the model's own 'google/', 'openai/', 'anthropic/', … prefix.")
+    lines.append("    of the model's own 'google/', 'openai/', 'anthropic/', \u2026 prefix.")
     lines.append("    '(unknown)' = the gateway reported no provider for that call.")
     lines.append("")
     lines.append(
@@ -439,6 +441,96 @@ def _extract_date_flags(raw_args: str) -> tuple[str, str | None, str | None, str
     return (" ".join(out), date_from, date_to, None)
 
 
+def _efficiency_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    rows = db.efficiency_runs(window_hours=window_hours, date_from=date_from, date_to=date_to)
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
+    if not rows:
+        return f"No completed sessions found for {label}."
+
+    avg_score = sum(r["efficiency_score"] for r in rows) / len(rows)
+
+    lines = [
+        f"hermes-telemetry -- efficiency score ({label})",
+        "=" * 72,
+        f"  Average efficiency: {avg_score:.1f}/100",
+        f"  Sessions scored: {len(rows)}",
+        "",
+        f"  {'Score':>6} {'Status':<12} {'APICalls':>9} {'Tok in':>9} {'Tok out':>9} {'Cost':>12}  Session",
+        "  " + "-" * 85,
+    ]
+    for r in rows:
+        score = r["efficiency_score"]
+        status = (r.get("status") or "?")[:12]
+        api = _fmt_int(r.get("api_calls"))
+        tin = _fmt_int(r.get("tokens_in"))
+        tout = _fmt_int(r.get("tokens_out"))
+        cost = _fmt_cost(r.get("cost_usd"))
+        sid = (r.get("session_id") or "")[:24]
+        lines.append(f"  {score:>6.1f} {status:<12} {api:>9} {tin:>9} {tout:>9} {cost:>12}  {sid}")
+
+    lines.append("")
+    lines.append("  Score ranges: 90+ Excellent, 70-89 Good, 50-69 Fair, <50 Needs attention")
+    lines.append(
+        "  Formula: base(40) + output_ratio(0-60) - error_penalty(0-30) - turn_penalty(0-30)"
+    )
+    return "\n".join(lines)
+
+
+def _smells_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    smells = smell_detector.detect_all(
+        window_hours=window_hours, date_from=date_from, date_to=date_to
+    )
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
+
+    if not smells:
+        return f"No AI smells detected for {label}."
+
+    lines = [
+        f"hermes-telemetry -- AI smell detection ({label})",
+        "=" * 72,
+        f"  Smells detected: {len(smells)}",
+        "",
+    ]
+
+    # Group by smell type for summary
+    from collections import Counter
+
+    type_counts = Counter(s["smell"] for s in smells)
+    for stype, count in sorted(type_counts.items()):
+        name = stype.replace("_", " ").title()
+        lines.append(f"  {name:<20} : {count}")
+
+    lines.append("")
+    lines.append(f"  {'Sev':<6} {'Smell':<20} {'Session':<26}  Detail")
+    lines.append("  " + "-" * 70)
+
+    sev_map = {"high": "HIGH", "medium": "MED", "warning": "WARN"}
+    for s in smells[:50]:
+        sev = (sev_map.get(s["severity"], s["severity"]) or s["severity"]).upper()[:6]
+        name = s["smell"].replace("_", " ").title()[:20]
+        sid = (s.get("session_id") or "")[:26]
+        detail = (s.get("detail") or "")[:80]
+        lines.append(f"  {sev:<6} {name:<20} {sid:<26}  {detail}")
+
+    if len(smells) > 50:
+        lines.append(f"  ... and {len(smells) - 50} more smells (truncated)")
+
+    lines.append("")
+    lines.append("  Smell types:")
+    lines.append("    Context Rotation  — input tokens vastly outnumber output")
+    lines.append("    Loop Trap         — single tool call dominates the session")
+    lines.append("    Tool Thrashing    — many tool calls with high failure rate")
+    lines.append("    High Error Rate   — elevated session failure rate")
+    lines.append("    Massive Session   — extreme token/API call volumes")
+    lines.append("")
+    lines.append("  Severity: HIGH > MED > WARN")
+    return "\n".join(lines)
+
+
 def handle(raw_args: str) -> str:
     """Entry point for /stats command handler (Slack slash command format).
 
@@ -514,8 +606,30 @@ def handle(raw_args: str) -> str:
         if sub == "month":
             return _models_block(720)
 
+    if args.startswith("efficiency"):
+        sub = args[len("efficiency") :].strip()
+        if has_range and sub in ("", "today", "week", "month"):
+            return _efficiency_block(date_from=date_from, date_to=date_to)
+        if sub in ("", "today"):
+            return _efficiency_block(24)
+        if sub == "week":
+            return _efficiency_block(168)
+        if sub == "month":
+            return _efficiency_block(720)
+
+    if args.startswith("smells"):
+        sub = args[len("smells") :].strip()
+        if has_range and sub in ("", "today", "week", "month"):
+            return _smells_block(date_from=date_from, date_to=date_to)
+        if sub in ("", "today"):
+            return _smells_block(24)
+        if sub == "week":
+            return _smells_block(168)
+        if sub == "month":
+            return _smells_block(720)
+
     return (
-        "Usage: /stats [today|week|month|cron|cron week|cron month|providers|models|raw [N]]\n"
+        "Usage: /stats [today|week|month|cron|cron week|cron month|providers|models|efficiency|smells|raw [N]]\n"
         "             [--from YYYY-MM-DD[THH:MM:SS[Z]]] [--to YYYY-MM-DD[THH:MM:SS[Z]]]\n"
         "  /stats               — last 24h summary\n"
         "  /stats week          — last 7 days summary\n"
@@ -525,6 +639,10 @@ def handle(raw_args: str) -> str:
         "  /stats providers week — provider breakdown, last 7 days\n"
         "  /stats models        — per-model breakdown within each provider (24h)\n"
         "  /stats models week   — per-model breakdown, last 7 days\n"
+        "  /stats efficiency    — per-session efficiency scores (0-100, 24h)\n"
+        "  /stats efficiency week — efficiency scores, last 7 days\n"
+        "  /stats smells        — AI smell detection (24h)\n"
+        "  /stats smells week   — AI smell detection, last 7 days\n"
         "  /stats raw [N]       — last N raw run records (default 20)\n"
         "\n"
         "Date range examples (work the same way under the CLI):\n"

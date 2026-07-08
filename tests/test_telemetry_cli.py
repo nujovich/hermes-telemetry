@@ -108,6 +108,24 @@ def test_budget_cron_text(capsys):
     assert out == "BUDGET_CRON\n"
 
 
+def test_budget_forecast_text(capsys):
+    with patch("hermes_telemetry.budget._forecast_block", return_value="FORECAST_OUT") as m:
+        main(["budget", "forecast", "monthly", "global"])
+    out, _ = capsys.readouterr()
+    assert out == "FORECAST_OUT\n"
+    m.assert_called_once_with("global", "", "monthly")
+
+
+def test_budget_forecast_json(capsys):
+    fake = {"enabled": True, "status": "ok", "projected_total_usd": 3.5}
+    with patch("hermes_telemetry.budget.burn_rate_projection", return_value=fake) as m:
+        main(["budget", "forecast", "daily", "global", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert data["status"] == "ok"
+    m.assert_called_once()
+
+
 def test_budget_set_text(capsys):
     with patch("hermes_telemetry.budget._set_budget", return_value="Budget updated.") as m:
         main(["budget", "set", "global", "daily", "10.00"])

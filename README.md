@@ -337,6 +337,14 @@ The plugin exposes a read-only FastAPI router. The DB connection opens with `PRA
 | GET | `/cron?window_hours=168` | Per-cron-job aggregate. |
 | GET | `/session/{session_id}` | Single-session detail. |
 | GET | `/budget` | Global daily/monthly budget status. |
+| GET | `/efficiency?window_hours=24` | Per-session efficiency scores + average (Efficiency sub-tab). |
+| GET | `/smells?window_hours=24` | Detected anti-patterns (top-of-page alert widget). |
+| GET | `/forecast?window=monthly` | Global burn-rate projection (shown in the Budgets panel). |
+
+Both dashboards surface all three intelligence features. The standalone
+dashboard exposes the parallel routes `/api/efficiency`, `/api/smells`, and
+`/api/budget/forecast`, rendered as panels in the Breakdown, Error, and Home
+tabs respectively.
 
 ### The two dashboards: when to use each
 
@@ -378,13 +386,19 @@ hermes-telemetry stats cron-week
 hermes-telemetry stats providers
 hermes-telemetry stats models
 
+# Agent intelligence
+hermes-telemetry stats efficiency          # per-session efficiency scores (0-100)
+hermes-telemetry stats smells              # anti-pattern detection
+
 # Budget status
 hermes-telemetry budget
 hermes-telemetry budget cron
+hermes-telemetry budget forecast monthly   # burn-rate projection (defaults: monthly, global)
 
 # JSON output (for scripting)
 hermes-telemetry stats today --json | jq ‘.cost_usd’
 hermes-telemetry budget --json | jq ‘.global’
+hermes-telemetry budget forecast daily --json | jq ‘.status’
 ```
 
 All subcommands read from the same SQLite database as the in-session `/stats` and
@@ -531,6 +545,10 @@ rm ~/.hermes/telemetry/budget.yaml
 /stats providers week   → provider breakdown, last 7 days
 /stats models           → per-model breakdown within each provider (last 24h)
 /stats models week      → per-model breakdown, last 7 days
+/stats efficiency       → per-session efficiency scores (0-100, last 24h)
+/stats efficiency week  → efficiency scores, last 7 days
+/stats smells           → AI smell detection: anti-patterns in sessions (last 24h)
+/stats smells week      → AI smell detection, last 7 days
 /stats raw [N]          → last N raw run records (default 20, max 200)
 ```
 
@@ -620,6 +638,65 @@ The `Notes` column disambiguates `$0.000000` rows so the user can tell intention
 
 The footer reflects the same split: subscription rows are claimed as declared, no-entry rows keep the original `/setup pricing auto` hint, and a mixed window emits both lines.
 
+**Example output (`/stats efficiency`):**
+
+```
+hermes-telemetry -- efficiency score (last 24 h)
+========================================================================
+  Average efficiency: 71.4/100
+  Sessions scored: 12
+
+   Score Status        APICalls    Tok in   Tok out         Cost  Session
+  -------------------------------------------------------------------------------------
+    97.0 ok                   2       200       400    $0.002000  9f2c1a7b8e04
+    68.5 interrupted          1       100       100    $0.001000  1c0d44ab90f2
+    48.5 error                1       100       100    $0.001000  7a3e55cd21b8
+
+  Score ranges: 90+ Excellent, 70-89 Good, 50-69 Fair, <50 Needs attention
+  Formula: base(40) + output_ratio(0-60) - error_penalty(0-30) - turn_penalty(0-30)
+```
+
+A per-session productivity score (0-100) computed from data already in the
+database — no new telemetry. Higher `tokens_out / tokens_in`, fewer API turns,
+and a clean (`ok`) finish score higher; an `error` finish costs 30 points and an
+`interrupted` finish costs 10. Scores are computed over the 100 most recent
+completed sessions in the window, then ranked best-first. See
+[ONBOARDING.md § Agent Intelligence](ONBOARDING.md#agent-intelligence-efficiency--smells--forecast)
+for the exact formula.
+
+**Example output (`/stats smells`):**
+
+```
+hermes-telemetry -- AI smell detection (last 24 h)
+========================================================================
+  Smells detected: 3
+
+  Context Rotation     : 1
+  High Error Rate      : 1
+  Tool Thrashing       : 1
+
+  Sev    Smell                Session                     Detail
+  ----------------------------------------------------------------------
+  HIGH   Context Rotation     9f2c1a7b8e04                12,400 tokens in vs 480 tokens out ...
+  HIGH   Tool Thrashing       1c0d44ab90f2                9/24 tool calls failed (37.5% failure rate)
+  WARN   High Error Rate      7a3e55cd21b8                Session ended with status 'error' ...
+
+  Smell types:
+    Context Rotation  — input tokens vastly outnumber output
+    Loop Trap         — single tool call dominates the session
+    Tool Thrashing    — many tool calls with high failure rate
+    High Error Rate   — elevated session failure rate
+    Massive Session   — extreme token/API call volumes
+  Severity: HIGH > MED > WARN
+```
+
+Flags anti-patterns in agent sessions using heuristics over existing telemetry.
+Each smell carries a severity (`HIGH`/`MED`/`WARN`) and a human-readable detail.
+Detection is best-effort: a broken detector is logged and skipped, never
+crashing the command. See
+[ONBOARDING.md § Agent Intelligence](ONBOARDING.md#agent-intelligence-efficiency--smells--forecast)
+for every threshold.
+
 ### `/budget`
 
 ```
@@ -628,7 +705,13 @@ The footer reflects the same split: subscription rows are claimed as declared, n
 /budget set global daily 5.00       → set or raise a limit (persists + hot-reloads)
 /budget set cron_job daily 1.00     → set default per-cron-job limit
 /budget set sender daily 2.00       → set default per-sender limit
+/budget forecast [daily|monthly] [scope] [id]  → project burn rate toward the limit
 ```
+
+`forecast` defaults to the `monthly` window and the `global` scope. It learns a
+recent daily spend rate (moving average over the last 14 days), projects spend
+to the end of the current window at that rate, and flags whether the scope is on
+track to breach. It is a read-only projection — it never mutates budget state.
 
 **Example output (`/budget`):**
 
@@ -648,6 +731,24 @@ hermes-telemetry — budget status
 |`!`    |Soft warning (≥ 80%) — notice injected into conversation   |
 |`█`    |Hard breach (≥ 100%) — tool calls blocked, cron jobs paused|
 |`~est` |Verdict based partly on estimated (usage=None) data        |
+
+**Example output (`/budget forecast`):**
+
+```
+hermes-telemetry — burn-rate forecast
+============================================================
+  Scope:    global (monthly)
+  Limit:    $100.00
+  Spent:    $42.5000
+  Avg/day:  $3.1000 (last 14d)
+  Projected $85.30 (85%) by window end
+  At this rate: breach in ~18.5 days
+  ! Projected status: SOFT
+```
+
+The projected `status` uses the same thresholds as `/budget`: `ok` (< 80%),
+`soft`/`!` (≥ 80%), `hard`/`X` (≥ 100%). A scope with no configured limit for the
+requested window is reported as not configured.
 
 -----
 
