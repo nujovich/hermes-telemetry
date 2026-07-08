@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Agent intelligence: efficiency scoring, smell detection, burn-rate forecasting (#8)
+
+Three read-only analytical capabilities over existing telemetry (no new capture,
+no schema change), each exposed through the slash command, the CLI, and both
+dashboards.
+
+- **Agent Efficiency Score (0-100)** — `db.efficiency_runs()` scores each completed
+  session from token productivity, error status, and turn count; `/stats efficiency`
+  and `hermes-telemetry stats efficiency`. The error penalty is keyed on the real
+  run statuses (`error`/`interrupted`) — the subagent-only `failed`/`cancelled`
+  never reach a run, so keying on them scored failed runs as healthy.
+- **AI Smell Detection** — new `smell_detector.py` with five heuristics (context
+  rotation, loop trap, tool thrashing, high error rate, massive session);
+  `/stats smells` and CLI. Best-effort: a broken detector is logged and skipped.
+- **Burn-rate Forecasting** — `budget.burn_rate_projection()` learns a 14-day
+  moving-window spend rate and projects window-end spend against the configured
+  limit; `/budget forecast` and CLI, for the `global`/`cron_job`/`sender`/`profile`
+  scopes.
+- **Dashboards** — all three surfaced in both the standalone dashboard
+  (`/api/efficiency`, `/api/smells`, `/api/budget/forecast`) and the Hermes plugin
+  (`/efficiency`, `/smells`, `/forecast`). The standalone forecast route, which
+  previously raised `ImportError` under the standalone loader and never resolved a
+  non-global limit, was reimplemented inline with a correct config-key → engine
+  scope mapping.
+
 ### Fixed
 
 - Standalone dashboard now serves Chart.js from a vendored local asset at
