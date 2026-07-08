@@ -153,12 +153,12 @@ def test_detect_high_error_rate():
     now = db._utcnow()
     db.start_run("s_err", model="m", platform="cli")
     db.record_llm_call("s_err", now, "modelA", "openai", 100, 50, 0.001, 100)
-    db.end_run("s_err", "failed")
+    db.end_run("s_err", "error")
 
     results = sd.detect_all(window_hours=24)
     smells = [r for r in results if r["smell"] == "high_error_rate"]
     assert len(smells) == 1
-    assert smells[0]["status"] == "failed"
+    assert smells[0]["status"] == "error"
 
 
 def test_detect_high_error_rate_severity():
@@ -169,7 +169,7 @@ def test_detect_high_error_rate_severity():
         sid = f"s_err_{i}"
         db.start_run(sid, model="m", platform="cli")
         db.record_llm_call(sid, now, "modelA", "openai", 100, 50, 0.001, 100)
-        db.end_run(sid, "failed")
+        db.end_run(sid, "error")
     db.start_run("s_ok", model="m", platform="cli")
     db.record_llm_call("s_ok", now, "modelA", "openai", 100, 50, 0.001, 100)
     db.end_run("s_ok", "ok")
@@ -254,12 +254,12 @@ def test_detect_by_session_orders_by_smells():
     # Session with only failure
     db.start_run("s_fail", model="m", platform="cli")
     db.record_llm_call("s_fail", now, "modelA", "openai", 100, 50, 0.001, 100)
-    db.end_run("s_fail", "failed")
+    db.end_run("s_fail", "error")
 
     # Session with failure + context rotation
     db.start_run("s_multi", model="m", platform="cli")
     db.record_llm_call("s_multi", now, "modelA", "openai", 10000, 500, 0.05, 100)
-    db.end_run("s_multi", "failed")
+    db.end_run("s_multi", "error")
 
     sessions = sd.detect_by_session(window_hours=24)
     # s_multi should have more smells (failed + context rotation)
@@ -281,7 +281,7 @@ def test_smells_block_with_smells():
     now = db._utcnow()
     db.start_run("s_err", model="m", platform="cli")
     db.record_llm_call("s_err", now, "modelA", "openai", 100, 50, 0.001, 100)
-    db.end_run("s_err", "failed")
+    db.end_run("s_err", "error")
 
     output = stats_mod.handle("smells")
     assert "Smells detected" in output

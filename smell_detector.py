@@ -235,9 +235,10 @@ def _detect_high_error_rate(
 ) -> list[dict[str, Any]]:
     """Sessions that ended with an error status.
 
-    Returns all sessions with status='failed' or 'error' in the window.
-    Severity is scaled: if > 30% of all sessions in the window failed,
-    the smell is 'high'; otherwise 'warning'.
+    Returns all sessions with status='error' in the window ('error' is the only
+    failure status the plugin writes for a run — see ONBOARDING § Agent
+    Intelligence). Severity is scaled: if > 30% of all sessions in the window
+    errored, the smell is 'high'; otherwise 'warning'.
     """
     conn = db._get_conn()
     where_sql, params = db._build_where_clause(window_hours, date_from, date_to)
@@ -246,9 +247,8 @@ def _detect_high_error_rate(
     agg = conn.execute(
         f"""\
         SELECT
-            COUNT(*)                                             AS total,
-            SUM(CASE WHEN status = 'failed'
-                      OR status = 'error' THEN 1 ELSE 0 END)   AS errors
+            COUNT(*)                                          AS total,
+            SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors
         FROM runs
         WHERE {where_sql}
           AND status != 'running'
@@ -276,7 +276,7 @@ def _detect_high_error_rate(
                started_at
         FROM runs
         WHERE {where_sql}
-          AND (status = 'failed' OR status = 'error')
+          AND status = 'error'
         ORDER BY started_at DESC
         LIMIT 50
         """,
