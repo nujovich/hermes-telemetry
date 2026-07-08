@@ -299,6 +299,7 @@ hermes gateway restart
   - `cron:top` — 7-day cron cost and failure badge.
   - `header-right` — 24h spend + global daily budget level (semáforo).
   - `analytics:bottom` — daily cost chart (Chart.js served from a vendored local asset; CDN fallback only).
+- **Profile filter** — when telemetry is consolidated via `HERMES_TELEMETRY_HOME`, a selector in the Telemetry tab filters every view (Summary / Runs / Requests / Providers / Cron) by Hermes profile. Hidden when no profile data is present.
 
 ### How discovery works
 

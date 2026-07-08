@@ -321,3 +321,134 @@ def test_db_connection_is_read_only(plugin_api):
     conn = plugin_api._conn()
     with pytest.raises(sqlite3.OperationalError):
         conn.execute("INSERT INTO runs (session_id, started_at) VALUES ('x', 'y')")
+
+
+def test_db_path_honors_telemetry_home(plugin_api, tmp_path, monkeypatch):
+    """_db_path resolves the consolidated DB when HERMES_TELEMETRY_HOME is set."""
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(tmp_path / "shared"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    assert plugin_api._db_path() == tmp_path / "shared" / "telemetry" / "telemetry.db"
+
+
+def test_profiles_lists_distinct_non_null(plugin_api):
+    _seed(
+        rows_runs=[
+            {"session_id": "p1", "model": "m", "platform": "cli", "profile": "coder"},
+            {"session_id": "p2", "model": "m", "platform": "cli", "profile": "ops"},
+            {"session_id": "p3", "model": "m", "platform": "cli", "profile": "coder"},
+            {"session_id": "p4", "model": "m", "platform": "cli"},  # NULL profile
+        ]
+    )
+    out = plugin_api.profiles()
+    assert out["profiles"] == ["coder", "ops"]
+
+
+def _seed_two_profiles():
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[
+            {
+                "session_id": "c1",
+                "model": "m",
+                "platform": "cli",
+                "profile": "coder",
+                "cron_job_id": "job_a",
+            },
+            {
+                "session_id": "o1",
+                "model": "m",
+                "platform": "cli",
+                "profile": "ops",
+                "cron_job_id": "job_b",
+            },
+        ],
+        rows_llm=[
+            {
+                "session_id": "c1",
+                "ts": now,
+                "model": "m",
+                "provider": "nous",
+                "tokens_in": 100,
+                "tokens_out": 10,
+                "cost_usd": 1.0,
+                "latency_ms": 5,
+            },
+            {
+                "session_id": "o1",
+                "ts": now,
+                "model": "m",
+                "provider": "openai",
+                "tokens_in": 200,
+                "tokens_out": 20,
+                "cost_usd": 2.0,
+                "latency_ms": 9,
+            },
+        ],
+    )
+
+
+def test_summary_filters_by_profile(plugin_api):
+    _seed_two_profiles()
+    out = plugin_api.summary(window_hours=24, profile="coder")
+    assert out["runs"]["total_runs"] == 1
+    assert out["runs"]["tokens_in"] == 100
+    assert out["llm"]["api_calls"] == 1
+
+
+def test_runs_filters_by_profile(plugin_api):
+    _seed_two_profiles()
+    out = plugin_api.runs(limit=50, window_hours=24, profile="ops")
+    assert out["total_runs"] == 1
+    assert [r["session_id"] for r in out["rows"]] == ["o1"]
+
+
+def test_requests_filters_by_profile(plugin_api):
+    _seed_two_profiles()
+    out = plugin_api.requests(limit=100, window_hours=24, profile="coder")
+    assert out["total_requests"] == 1
+    assert all(r["provider"] == "nous" for r in out["rows"])
+
+
+def test_providers_filters_by_profile(plugin_api):
+    _seed_two_profiles()
+    out = plugin_api.providers(window_hours=24, profile="ops")
+    assert {r["provider"] for r in out["rows"]} == {"openai"}
+
+
+def test_cron_filters_by_profile(plugin_api):
+    _seed_two_profiles()
+    out = plugin_api.cron(window_hours=168, profile="coder")
+    assert [r["cron_job_id"] for r in out["rows"]] == ["job_a"]
+
+
+def test_token_breakdown_filters_by_profile(plugin_api):
+    _seed_two_profiles()
+    out = plugin_api.token_breakdown(window_hours=24, profile="ops")
+    assert out["tokens_in"] == 200
+
+
+def test_no_profile_returns_all(plugin_api):
+    _seed_two_profiles()
+    assert plugin_api.summary(window_hours=24)["runs"]["total_runs"] == 2
+    assert plugin_api.runs(limit=50, window_hours=24)["total_runs"] == 2
+
+
+def test_summary_http_query_param_filters_by_profile(plugin_api):
+    """FastAPI wires ?profile= as an optional query param (direct-call tests
+    bypass this layer, so lock the HTTP wiring here)."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    _seed_two_profiles()
+    app = FastAPI()
+    app.include_router(plugin_api.router)
+    client = TestClient(app)
+
+    filtered = client.get("/summary", params={"profile": "coder"}).json()
+    assert filtered["runs"]["total_runs"] == 1
+    assert filtered["runs"]["tokens_in"] == 100
+
+    unfiltered = client.get("/summary").json()
+    assert unfiltered["runs"]["total_runs"] == 2
