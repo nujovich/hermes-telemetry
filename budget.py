@@ -692,8 +692,8 @@ def handle(raw_args: str) -> str:
         scope_id = ""
         if len(parts) >= 3:
             scope = parts[2].lower()
-            if scope not in ("global", "cron_job", "sender"):
-                return f"Unknown scope {scope!r}. Use: global | cron_job | sender"
+            if scope not in ("global", "cron_job", "sender", "profile"):
+                return f"Unknown scope {scope!r}. Use: global | cron_job | sender | profile"
             if len(parts) >= 4:
                 scope_id = parts[3]
         return _forecast_block(scope, scope_id, window)

@@ -482,3 +482,10 @@ def test_budget_forecast_command_no_limit(tmp_path):
 def test_budget_forecast_command_unknown_scope(tmp_path):
     out = budget.handle("forecast daily bogus")
     assert "Unknown scope" in out
+
+
+def test_budget_forecast_command_accepts_profile_scope(tmp_path):
+    """The profile scope must be accepted (per-profile attribution has landed)."""
+    out = budget.handle("forecast daily profile my-profile")
+    assert "Unknown scope" not in out
+    assert "No daily budget" in out  # no per_profile limit configured in this test

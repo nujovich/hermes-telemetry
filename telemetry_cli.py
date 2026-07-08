@@ -150,7 +150,9 @@ def _build_parser_into(sub) -> None:
 
     bf = bsub.add_parser("forecast", help="Project burn rate toward the budget limit")
     bf.add_argument("window", nargs="?", choices=["daily", "monthly"], default="monthly")
-    bf.add_argument("scope", nargs="?", default="global", choices=["global", "cron_job", "sender"])
+    bf.add_argument(
+        "scope", nargs="?", default="global", choices=["global", "cron_job", "sender", "profile"]
+    )
     bf.add_argument("scope_id", nargs="?", default="")
     bf.add_argument("--json", action="store_true", help="Output as JSON")
 
