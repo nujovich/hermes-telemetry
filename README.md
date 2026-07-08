@@ -337,7 +337,14 @@ The plugin exposes a read-only FastAPI router. The DB connection opens with `PRA
 | GET | `/cron?window_hours=168` | Per-cron-job aggregate. |
 | GET | `/session/{session_id}` | Single-session detail. |
 | GET | `/budget` | Global daily/monthly budget status. |
-| GET | `/efficiency?window_hours=24` | Per-session efficiency scores + average. |
+| GET | `/efficiency?window_hours=24` | Per-session efficiency scores + average (Efficiency sub-tab). |
+| GET | `/smells?window_hours=24` | Detected anti-patterns (top-of-page alert widget). |
+| GET | `/forecast?window=monthly` | Global burn-rate projection (shown in the Budgets panel). |
+
+Both dashboards surface all three intelligence features. The standalone
+dashboard exposes the parallel routes `/api/efficiency`, `/api/smells`, and
+`/api/budget/forecast`, rendered as panels in the Breakdown, Error, and Home
+tabs respectively.
 
 ### The two dashboards: when to use each
 

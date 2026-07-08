@@ -1108,9 +1108,9 @@ Each returns a list of `{smell, severity, session_id, detail, …}` dicts.
   the whole `/stats smells` command.
 - `loop_trap` aggregates per session in Python because SQLite cannot reference a
   `SELECT` alias for the top-tool-ratio check inside the same query.
-- `high_error_rate` also matches a dead `status = 'failed'` branch; `failed` is
-  never a run status (see efficiency note), so only the `'error'` arm ever fires.
-  Harmless, but a candidate for cleanup.
+- `high_error_rate` matches only `status = 'error'` — the sole failure status a
+  run ever carries (see the efficiency note; `failed` is a subagent
+  `child_status`, never a run status).
 
 ### Burn-rate forecast
 
@@ -1129,9 +1129,30 @@ a scope is on track to breach its configured limit.
   (≥ 80%), else `ok`. A scope with no configured limit for the window returns
   `{"enabled": False}`.
 - It is a **read-only projection** — no network calls, no state mutation.
-- Scopes exposed: `global` / `cron_job` / `sender`. `spend_by_scope` also supports
-  `per_profile` (see `§ Budget Engine`), but the forecast does not surface it yet
-  — a natural follow-up now that per-profile attribution has landed.
+- Scopes exposed: `global` / `cron_job` / `sender` / `profile` (the CLI and slash
+  command validate all four; `_resolve_limits` maps `profile` → the `per_profile`
+  budget config key).
+
+### Dashboard surfaces
+
+All three features are wired into **both** dashboards. Because neither dashboard
+surface may import the package (`serve.py` runs standalone via `python serve.py`;
+`plugin_api.py` is loaded by the Hermes shell via `spec_from_file_location`),
+each **reimplements** the scoring/detection/projection logic inline against its
+own read-only connection — the same forced-duplication tradeoff already accepted
+for the efficiency score.
+
+| Surface | Efficiency | Smells | Forecast |
+|---------|-----------|--------|----------|
+| **Standalone** (`serve.py` + `index.html`) | `GET /api/efficiency` → Breakdown-tab table | `GET /api/smells` → Error-tab table | `GET /api/budget/forecast` → Home-tab panel |
+| **Plugin** (`plugin_api.py` + `dist/index.js`) | `GET /efficiency` → Efficiency sub-tab | `GET /smells` → top-of-page alert widget | `GET /forecast` → inside the Budgets panel |
+
+The plugin smells/forecast widgets render **nothing** on the happy path (no
+smells / no configured limit), matching the `ModelUnavailableWidget` convention.
+Note: the standalone `/api/budget/forecast` maps the config-key scopes
+(`per_cron_job`/`per_sender`/`per_profile`) to the engine scopes before
+projecting — the previous `from . import budget` version raised `ImportError`
+under the standalone loader and never resolved a non-global limit.
 
 ---
 
