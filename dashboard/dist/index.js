@@ -189,7 +189,11 @@
 
   function BudgetsPanel() {
     const [data, setData] = useState(null);
+    const [forecast, setForecast] = useState(null);
     useEffect(() => { api("/budget").then(setData).catch(() => setData({ enabled: false })); }, []);
+    useEffect(() => {
+      api("/forecast?window=monthly").then(setForecast).catch(() => setForecast({ enabled: false }));
+    }, []);
     if (!data) return h("p", { className: "text-sm" }, "Loading…");
     if (!data.enabled) {
       return h(Card, null, h(CardContent, { className: "py-4 text-sm text-muted-foreground" },
@@ -199,7 +203,7 @@
       return h(Card, null, h(CardContent, { className: "py-4 text-sm text-muted-foreground" },
         "Budget enabled but no global daily/monthly limit set."));
     }
-    return h("div", { className: "grid gap-3" }, data.scopes.map((s) =>
+    const scopeCards = data.scopes.map((s) =>
       h(Card, { key: s.scope },
         h(CardHeader, null,
           h("div", { className: "flex items-center gap-2" },
@@ -209,7 +213,53 @@
         ),
         h(CardContent, { className: "text-sm font-courier" },
           `${fmtUsd(s.spent_usd)} / ${fmtUsd(s.limit_usd)}  (${pct(s.pct)})`),
-      )));
+      ));
+    // Burn-rate forecast (global scope) — only shown when a limit is configured.
+    const forecastCard = forecast && forecast.enabled
+      ? h(Card, { key: "__forecast" },
+          h(CardHeader, null,
+            h("div", { className: "flex items-center gap-2" },
+              h(CardTitle, { className: "text-sm" }, `Burn-rate forecast (${forecast.window})`),
+              h(Badge, { variant: forecast.status === "ok" ? "outline" : "destructive" }, forecast.status),
+            ),
+          ),
+          h(CardContent, { className: "text-sm font-courier" },
+            `Projected ${fmtUsd(forecast.projected_total_usd)} / ${fmtUsd(forecast.limit_usd)} ` +
+            `(${pct(Number(forecast.projected_pct || 0) * 100)}) · avg ${fmtUsd(forecast.avg_daily_usd)}/day` +
+            (forecast.est_days_to_breach != null
+              ? ` · breach in ~${Number(forecast.est_days_to_breach).toFixed(1)}d`
+              : "")),
+        )
+      : null;
+    return h("div", { className: "grid gap-3" }, [...scopeCards, forecastCard]);
+  }
+
+  function EfficiencyPanel() {
+    const [data, setData] = useState(null);
+    useEffect(() => {
+      api("/efficiency?window_hours=24").then(setData).catch(() => setData({ sessions: [] }));
+    }, []);
+    if (!data) return h("p", { className: "text-sm" }, "Loading…");
+    const rows = data.sessions || [];
+    return h("div", { className: "flex flex-col gap-3" },
+      h("p", { className: "text-xs text-muted-foreground" },
+        `Average ${Number(data.average_score || 0).toFixed(1)}/100 across ` +
+        `${fmtInt(data.sessions_scored || rows.length)} session(s). ` +
+        "90+ Excellent · 70-89 Good · 50-69 Fair · <50 Needs attention."),
+      h(RowsTable, {
+        rows,
+        empty: "No completed sessions in the last 24h.",
+        columns: [
+          { key: "efficiency_score", label: "Score", render: (r) => Number(r.efficiency_score || 0).toFixed(1) },
+          { key: "status",     label: "Status" },
+          { key: "api_calls",  label: "API",     render: (r) => fmtInt(r.api_calls) },
+          { key: "tokens_in",  label: "Tok in",  render: (r) => fmtInt(r.tokens_in) },
+          { key: "tokens_out", label: "Tok out", render: (r) => fmtInt(r.tokens_out) },
+          { key: "cost_usd",   label: "Cost",    render: (r) => fmtUsd(r.cost_usd) },
+          { key: "session_id", label: "Session", render: (r) => h("span", { title: r.session_id }, (r.session_id || "").slice(0, 18) + "…") },
+        ],
+      }),
+    );
   }
 
   const TABS = [
@@ -219,6 +269,7 @@
     { id: "providers", label: "Providers", render: ProvidersPanel },
     { id: "cron",      label: "Cron",      render: CronPanel },
     { id: "budgets",   label: "Budgets",   render: BudgetsPanel },
+    { id: "efficiency", label: "Efficiency", render: EfficiencyPanel },
   ];
 
   function TabBar({ tabs, active, onChange }) {
@@ -247,6 +298,7 @@
     }, []);
     const Panel = (TABS.find((t) => t.id === active) || TABS[0]).render;
     return h("div", { className: "flex flex-col gap-4" },
+      h(SmellsWidget, null),
       h(ModelUnavailableWidget, null),
       h(TierTransitionsWidget, null),
       h(Card, null,
@@ -461,6 +513,36 @@
               `${provider} · HTTP ${r.error_code}${occ}`),
           );
         }),
+      ),
+    );
+  }
+
+  function SmellsWidget() {
+    // Surfaces AI anti-patterns detected in the last 24h. Same happy-path
+    // contract as the sibling widgets: render nothing when no smells fire so
+    // it stays invisible in normal operation.
+    const [data, setData] = useState(null);
+    useEffect(() => {
+      api("/smells?window_hours=24").then(setData).catch(() => setData({ smells: [] }));
+    }, []);
+    const smells = (data && data.smells) || [];
+    if (!smells.length) return null;
+    const hasHigh = smells.some((s) => s.severity === "high");
+    return h(Card, { className: "border-dashed" },
+      h(CardHeader, { className: "pb-2" },
+        h(CardTitle, { className: "text-sm flex items-center gap-2" },
+          h(Badge, { variant: hasHigh ? "destructive" : "outline" }, "AI smells"),
+          h("span", null, `${smells.length} anti-pattern${smells.length === 1 ? "" : "s"} detected (24h)`),
+        ),
+      ),
+      h(CardContent, { className: "py-2 space-y-1 text-xs font-courier" },
+        smells.slice(0, 5).map((s, i) =>
+          h("div", { key: i, className: "flex items-center gap-2" },
+            h(Badge, { variant: s.severity === "high" ? "destructive" : "outline" },
+              (s.severity || "").toUpperCase()),
+            h("strong", null, (s.smell || "").replace(/_/g, " ")),
+            h("span", { className: "text-muted-foreground" }, s.detail || ""),
+          )),
       ),
     );
   }

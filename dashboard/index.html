@@ -1136,6 +1136,57 @@ function renderModelEfficiency(rows) {
   return renderTableCard('modelEfficiencyTable', 'Model Efficiency Score', t);
 }
 
+function renderEfficiency(data) {
+  const rows = data?.sessions || [];
+  if (!rows.length) return renderTableCard('sessionEfficiencyTable', 'Session Efficiency Score', '<div class="text-muted">No completed sessions for this range.</div>');
+  let t = `<div class="subtle-note">Average: <b>${Number(data.average_score || 0).toFixed(1)}</b>/100 across ${nf(data.sessions_scored || rows.length)} session(s). 90+ Excellent · 70-89 Good · 50-69 Fair · &lt;50 Needs attention.</div>`;
+  t += '<table><thead><tr><th>Score</th><th>Status</th><th>API Calls</th><th>Tok In</th><th>Tok Out</th><th>Cost</th><th>Session</th></tr></thead><tbody>';
+  for (const row of rows) {
+    const score = Number(row.efficiency_score || 0);
+    const scoreBadge = score >= 85 ? statusBadge('ok') : (score >= 50 ? statusBadge('running') : statusBadge('error'));
+    const sid = (row.session_id || '').substring(0, 24);
+    t += `<tr class="clickable-row" onclick='openSessionDetail(${jsAttr(row.session_id || '')})'><td>${scoreBadge} <span class="text-muted">${score.toFixed(1)}</span></td><td>${statusBadge(row.status || '—')}</td><td>${nf(row.api_calls || 0)}</td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml(sid)}</code></td></tr>`;
+  }
+  t += '</tbody></table><div class="subtle-note">Score = base(40) + output ratio(0-60) − error penalty(0-30) − turn penalty(0-30). Ranks the 100 most recent completed sessions. Click a row for full session detail.</div>';
+  return renderTableCard('sessionEfficiencyTable', 'Session Efficiency Score', t);
+}
+
+function severityBadge(sev) {
+  return badge((sev || '').toUpperCase(), { HIGH: 'error', MEDIUM: 'running', WARNING: 'cli' });
+}
+
+function renderSmells(data) {
+  const rows = data?.smells || [];
+  if (!rows.length) return renderTableCard('smellsTable', 'AI Smell Detection', '<div class="text-muted">No AI smells detected for this range. 🎉</div>');
+  let t = `<div class="subtle-note"><b>${nf(data.count || rows.length)}</b> smell(s) detected. Severity: HIGH &gt; MED &gt; WARN.</div>`;
+  t += '<table><thead><tr><th>Severity</th><th>Smell</th><th>Session</th><th>Detail</th></tr></thead><tbody>';
+  for (const row of rows) {
+    const name = (row.smell || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const sid = (row.session_id || '').substring(0, 24);
+    t += `<tr class="clickable-row" onclick='openSessionDetail(${jsAttr(row.session_id || '')})'><td>${severityBadge(row.severity)}</td><td>${escHtml(name)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml(sid)}</code></td><td class="text-muted">${escHtml(row.detail || '')}</td></tr>`;
+  }
+  t += '</tbody></table><div class="subtle-note">Context Rotation · Loop Trap · Tool Thrashing · High Error Rate · Massive Session. Heuristics over existing telemetry. Click a row for full session detail.</div>';
+  return renderTableCard('smellsTable', 'AI Smell Detection', t);
+}
+
+function renderForecast(data) {
+  if (!data || !data.enabled) return '<div class="budget-bar"><h3>Burn-rate Forecast</h3><div class="budget-disabled">No monthly budget configured for the global scope.</div></div>';
+  const cls = data.status === 'hard' ? 'hard' : data.status === 'soft' ? 'soft' : 'ok';
+  const pct = Number(data.projected_pct || 0) * 100;
+  const breach = data.est_days_to_breach == null ? '' : `<div class="subtle-note">At this rate: breach in ~${Number(data.est_days_to_breach).toFixed(1)} days</div>`;
+  let html = '<div class="budget-bar"><h3>Burn-rate Forecast</h3>';
+  html += '<div class="stat-grid">';
+  html += renderStatCard('forecastSpent', fmtCost(data.spent_so_far_usd), 'Spent so far', '');
+  html += renderStatCard('forecastAvg', fmtCost(data.avg_daily_usd), `Avg/day (${data.lookback_days || 14}d)`, 'blue');
+  html += renderStatCard('forecastProjected', fmtCost(data.projected_total_usd), 'Projected total', cls === 'hard' ? 'red' : cls === 'soft' ? 'yellow' : 'green');
+  html += renderStatCard('forecastLimit', fmtCost(data.limit_usd), `Limit (${escHtml(data.window || 'monthly')})`, '');
+  html += '</div>';
+  html += `<div class="budget-item"><div class="info"><span>Projected usage</span><span>${pct.toFixed(0)}% of limit — ${(data.status || 'ok').toUpperCase()}</span></div><div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(pct, 100)}%"></div></div></div>`;
+  html += breach;
+  html += '</div>';
+  return html;
+}
+
 function renderModelTokensTable(rows) {
   if (!rows || !rows.length) return renderTableCard('modelTokensTable', 'Model Token Usage', '<div class="text-muted">No model token data for this range.</div>');
   let t = '<table><thead><tr><th>Model</th><th>Calls</th><th>In</th><th>Out</th><th>Cache Read</th><th>Cache Write</th><th>Reasoning</th><th>Total</th><th>Cost</th></tr></thead><tbody>';
@@ -1901,7 +1952,7 @@ async function loadAll(options = {}) {
     const chartHours = Number(windowScope.hours);
     const chartLimitDays = homeTrendLimitFor(windowPreset, chartHours, effectiveHomeGranularity);
     const trendLimit = currentUsageGranularity === 'month' ? 18 : currentUsageGranularity === 'week' ? 24 : 21;
-    const [summary, cron, providers, providerHealth, runsData, budget, tokenBreakdown, modelTokens, modelEfficiency, dailyTokens, dailyTokenChart, dailyModelChart, modelPeriodTrends, modelShareComparison, cacheEfficiency, requestForensics, toolAnalytics, toolFailureHeatmap, errorCenter, cronFailureWaste] = await Promise.all([
+    const [summary, cron, providers, providerHealth, runsData, budget, tokenBreakdown, modelTokens, modelEfficiency, dailyTokens, dailyTokenChart, dailyModelChart, modelPeriodTrends, modelShareComparison, cacheEfficiency, requestForensics, toolAnalytics, toolFailureHeatmap, errorCenter, cronFailureWaste, sessionEfficiency, smellsData, forecastData] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
       fetchJSON(`/api/providers?hours=${hours}`),
@@ -1922,6 +1973,9 @@ async function loadAll(options = {}) {
       fetchJSON(`/api/tool-failure-heatmap?hours=${hours}&limit=80`),
       fetchJSON(`/api/error-center?${buildRunsQuery(windowPreset, 100)}`),
       fetchJSON(`/api/cron-failure-waste?hours=${hours}&limit=50`),
+      fetchJSON(`/api/efficiency?hours=${hours}`),
+      fetchJSON(`/api/smells?hours=${hours}`),
+      fetchJSON(`/api/budget/forecast?window=monthly`),
     ]);
     if (requestId !== latestLoadRequestId) return;
 
@@ -1950,6 +2004,9 @@ async function loadAll(options = {}) {
 
       // --- budget ---
       html += renderBudget(budget);
+
+      // --- burn-rate forecast ---
+      html += renderForecast(forecastData);
 
       // --- charts row 1: daily cost + top tools ---
       let dailyTitle;
@@ -1998,6 +2055,7 @@ async function loadAll(options = {}) {
       html += renderProviderBreakdownTable(providers);
       html += renderCacheEfficiency(cacheEfficiency);
       html += renderModelEfficiency(modelEfficiency);
+      html += renderEfficiency(sessionEfficiency);
       html += renderModelUsageTrendCard(modelPeriodTrends, modelShareComparison);
       html += renderModelShareComparisonCard(modelShareComparison);
       html += renderModelTokensTable(modelTokens);
@@ -2011,6 +2069,7 @@ async function loadAll(options = {}) {
       html += renderToolAnalytics(toolAnalytics);
       html += renderToolFailureHeatmap(toolFailureHeatmap);
     } else if (currentPage === 'errors') {
+      html += renderSmells(smellsData);
       html += renderCronFailureWaste(cronFailureWaste);
       html += renderErrorCenter(errorCenter);
     }

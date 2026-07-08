@@ -547,3 +547,243 @@ def efficiency(window_hours: int = 24) -> dict:
         "average_score": round(avg, 1),
         "sessions": scored,
     }
+
+
+# ---------------------------------------------------------------------------
+# AI smell detection
+# ---------------------------------------------------------------------------
+@router.get("/smells")
+def smells(window_hours: int = 24) -> dict:
+    """AI smell detection over existing telemetry. Inlined per the standalone
+    loader constraint; mirrors smell_detector.detect_all."""
+    from collections import Counter
+
+    sc = _since_clause(window_hours, "started_at")
+    tsc = _since_clause(window_hours, "tc.ts")
+    found: list[dict] = []
+
+    for r in _rows(
+        f"""SELECT session_id, COALESCE(cron_job_id,'') AS cron_job_id,
+                   COALESCE(tokens_in,0) AS tokens_in, COALESCE(tokens_out,0) AS tokens_out,
+                   COALESCE(status,'running') AS status, started_at
+            FROM runs WHERE {sc} AND status != 'running'
+              AND tokens_in > 1000
+              AND CAST(tokens_out AS REAL) / CAST(tokens_in AS REAL) < 0.10
+            ORDER BY tokens_in DESC LIMIT 50"""
+    ):
+        ratio = r["tokens_out"] / max(r["tokens_in"], 1) * 100
+        found.append(
+            {
+                "smell": "context_rotation",
+                "severity": "high",
+                "session_id": r["session_id"],
+                "cron_job_id": r["cron_job_id"],
+                "detail": f"{r['tokens_in']:,} tokens in vs {r['tokens_out']:,} out ({ratio:.1f}% output)",
+                "status": r["status"],
+                "started_at": r["started_at"],
+            }
+        )
+
+    for r in _rows(
+        f"""SELECT tc.session_id, r.cron_job_id, r.status, r.started_at,
+                   COUNT(*) AS total_tools,
+                   SUM(CASE WHEN tc.ok = 0 THEN 1 ELSE 0 END) AS failed_tools
+            FROM tool_calls tc JOIN runs r ON tc.session_id = r.session_id
+            WHERE {tsc} AND r.status != 'running'
+            GROUP BY tc.session_id
+            HAVING total_tools > 20
+               AND CAST(failed_tools AS REAL) / CAST(total_tools AS REAL) > 0.30
+            ORDER BY total_tools DESC LIMIT 50"""
+    ):
+        rate = r["failed_tools"] / max(r["total_tools"], 1) * 100
+        found.append(
+            {
+                "smell": "tool_thrashing",
+                "severity": "high",
+                "session_id": r["session_id"],
+                "cron_job_id": r["cron_job_id"] or "",
+                "detail": f"{r['failed_tools']}/{r['total_tools']} tool calls failed ({rate:.1f}%)",
+                "status": r["status"],
+                "started_at": r["started_at"],
+            }
+        )
+
+    tool_rows = _rows(
+        f"""SELECT tc.session_id, tc.tool_name, r.cron_job_id, r.status, r.started_at
+            FROM tool_calls tc JOIN runs r ON tc.session_id = r.session_id
+            WHERE {tsc} AND r.status != 'running'"""
+    )
+    by_session: dict = {}
+    meta: dict = {}
+    for r in tool_rows:
+        sid = r["session_id"]
+        by_session.setdefault(sid, Counter())[r["tool_name"]] += 1
+        meta.setdefault(
+            sid,
+            {
+                "cron_job_id": r["cron_job_id"] or "",
+                "status": r["status"],
+                "started_at": r["started_at"],
+            },
+        )
+    loop_traps = []
+    for sid, counter in by_session.items():
+        total = sum(counter.values())
+        if total <= 10:
+            continue
+        top_name, top_count = counter.most_common(1)[0]
+        if top_count / total > 0.80:
+            loop_traps.append(
+                {
+                    "smell": "loop_trap",
+                    "severity": "medium",
+                    "session_id": sid,
+                    "cron_job_id": meta[sid]["cron_job_id"],
+                    "detail": f"{top_count}/{total} tool calls were '{top_name}' ({top_count / total * 100:.0f}%)",
+                    "top_tool": top_name,
+                    "total_tools": total,
+                    "status": meta[sid]["status"],
+                    "started_at": meta[sid]["started_at"],
+                }
+            )
+    loop_traps.sort(key=lambda x: x["total_tools"], reverse=True)
+    found.extend(loop_traps[:50])
+
+    agg = _one(
+        f"""SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors
+            FROM runs WHERE {sc} AND status != 'running'"""
+    )
+    total_runs = agg.get("total") or 0
+    error_runs = agg.get("errors") or 0
+    if error_runs:
+        overall = "high" if (total_runs and error_runs / total_runs > 0.30) else "warning"
+        for r in _rows(
+            f"""SELECT session_id, COALESCE(cron_job_id,'') AS cron_job_id, status,
+                       COALESCE(api_calls,0) AS api_calls, ROUND(COALESCE(cost_usd,0.0),6) AS cost_usd, started_at
+                FROM runs WHERE {sc} AND status = 'error'
+                ORDER BY started_at DESC LIMIT 50"""
+        ):
+            found.append(
+                {
+                    "smell": "high_error_rate",
+                    "severity": overall,
+                    "session_id": r["session_id"],
+                    "cron_job_id": r["cron_job_id"],
+                    "detail": f"Session ended with status 'error' — {r['api_calls']} API calls, ${r['cost_usd']:.6f}",
+                    "status": r["status"],
+                    "started_at": r["started_at"],
+                }
+            )
+
+    for r in _rows(
+        f"""SELECT session_id, COALESCE(cron_job_id,'') AS cron_job_id, COALESCE(status,'running') AS status,
+                   COALESCE(tokens_in,0) AS tokens_in, COALESCE(tokens_out,0) AS tokens_out,
+                   COALESCE(api_calls,0) AS api_calls, ROUND(COALESCE(cost_usd,0.0),6) AS cost_usd, started_at
+            FROM runs WHERE {sc} AND status != 'running'
+              AND ((tokens_in + tokens_out) > 100000 OR api_calls > 50)
+            ORDER BY (tokens_in + tokens_out) DESC LIMIT 50"""
+    ):
+        found.append(
+            {
+                "smell": "massive_session",
+                "severity": "warning",
+                "session_id": r["session_id"],
+                "cron_job_id": r["cron_job_id"],
+                "detail": f"{(r['tokens_in'] + r['tokens_out']):,} total tokens, {r['api_calls']} API calls, ${r['cost_usd']:.4f}",
+                "status": r["status"],
+                "started_at": r["started_at"],
+            }
+        )
+
+    rank = {"high": 0, "medium": 1, "warning": 2}
+    found.sort(key=lambda s: (rank.get(s["severity"], 99), s["smell"]))
+    return {
+        "window_hours": _coerce_window_hours(window_hours),
+        "count": len(found),
+        "smells": found,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Burn-rate forecast (global scope)
+# ---------------------------------------------------------------------------
+@router.get("/forecast")
+def forecast(window: str = "monthly") -> dict:
+    """Global burn-rate projection toward the configured limit. Inlined per the
+    standalone loader constraint; mirrors budget.burn_rate_projection."""
+    if window not in ("daily", "monthly"):
+        return {"enabled": False, "scope": "global", "window": window, "error": "invalid window"}
+    path = _budget_path()
+    if not path.exists():
+        return {"enabled": False, "scope": "global", "window": window}
+    try:
+        import yaml
+
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {"enabled": False, "scope": "global", "window": window}
+    limit = ((cfg.get("budgets", {}) or {}).get("global", {}) or {}).get(f"{window}_usd")
+    if not limit or limit <= 0:
+        return {"enabled": False, "scope": "global", "window": window}
+
+    lookback_days = 14
+    now_utc = datetime.now(timezone.utc)
+    start = (now_utc - timedelta(days=lookback_days - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    series = _rows(
+        "SELECT substr(started_at, 1, 10) AS day, COALESCE(SUM(cost_usd), 0.0) AS cost_usd "
+        "FROM runs WHERE started_at >= ? GROUP BY day",
+        (start.isoformat(),),
+    )
+    by_day = {r["day"]: float(r["cost_usd"] or 0.0) for r in series}
+    total = sum(
+        by_day.get((start + timedelta(days=i)).strftime("%Y-%m-%d"), 0.0)
+        for i in range(lookback_days)
+    )
+    avg_daily = total / lookback_days
+
+    start_utc = _window_start_utc(window)
+    spent = float(
+        _one(
+            "SELECT COALESCE(SUM(cost_usd), 0.0) AS spent FROM runs WHERE started_at >= ?",
+            (start_utc,),
+        ).get("spent")
+        or 0.0
+    )
+
+    local_now = datetime.now().astimezone()
+    if window == "monthly":
+        import calendar
+
+        days_in_window = calendar.monthrange(local_now.year, local_now.month)[1]
+        win_start_local = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        days_in_window = 1
+        win_start_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed = (local_now - win_start_local).total_seconds()
+    remaining_days = max(0.0, days_in_window * 86400.0 - elapsed) / 86400.0
+
+    projected_total = spent + avg_daily * remaining_days
+    pct = projected_total / limit if limit > 0 else 0.0
+    status = "hard" if pct >= 1.00 else ("soft" if pct >= 0.80 else "ok")
+    usd_left = limit - spent
+    if avg_daily > 0:
+        est_days_to_breach = round(usd_left / avg_daily, 2) if usd_left > 0 else 0.0
+    else:
+        est_days_to_breach = None
+
+    return {
+        "enabled": True,
+        "scope": "global",
+        "window": window,
+        "limit_usd": float(limit),
+        "spent_so_far_usd": round(spent, 6),
+        "avg_daily_usd": round(avg_daily, 6),
+        "projected_total_usd": round(projected_total, 6),
+        "projected_pct": round(pct, 4),
+        "status": status,
+        "lookback_days": lookback_days,
+        "est_days_to_breach": est_days_to_breach,
+    }

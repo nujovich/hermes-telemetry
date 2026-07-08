@@ -2499,13 +2499,336 @@ def api_budget_detail(scope: str, window: str, tz_name: str | None = None):
     }
 
 
-def api_budget_forecast(scope: str = "global", window: str = "monthly", scope_id: str = ""):
-    """Forecast burn rate for a scope/window. Thin wrapper over budget.burn_rate_projection."""
-    if scope not in ALLOWED_SCOPES or window not in ALLOWED_WINDOWS:
-        return {"error": "invalid scope or window"}
-    from . import budget as _budget
+# Scope column used to filter `runs` for a scoped forecast. Keys are the budget
+# config-key vocabulary the rest of the standalone dashboard uses (global,
+# per_cron_job, per_sender, per_profile) — NOT the budget engine's internal
+# scope names. None = no filter (global).
+_FORECAST_SCOPE_COLUMN = {
+    "global": None,
+    "per_cron_job": "cron_job_id",
+    "per_sender": "sender_id",
+    "per_profile": "profile",
+}
 
-    return _budget.burn_rate_projection(scope, scope_id or "", window=window)
+
+def _forecast_limit(scope: str, scope_id: str, window: str):
+    """Resolve the configured USD limit for a scope/window from budget.yaml.
+
+    Mirrors budget._resolve_limits but reads the file directly so serve.py stays
+    self-contained (it must not import the package — see the isolation contract).
+    """
+    budget_path = DB_PATH.parent / "budget.yaml"
+    if not budget_path.exists():
+        return None
+    try:
+        import yaml
+
+        cfg = yaml.safe_load(budget_path.read_text()) or {}
+    except Exception:
+        return None
+    budgets = cfg.get("budgets", {})
+    key = f"{window}_usd"
+    if scope == "global":
+        return (budgets.get("global") or {}).get(key)
+    node = budgets.get(scope) or {}
+    overrides = node.get("overrides") or {}
+    chosen = overrides.get(scope_id) or node.get("default") or {}
+    return chosen.get(key) if isinstance(chosen, dict) else None
+
+
+def api_budget_forecast(
+    scope: str = "global", window: str = "monthly", scope_id: str = "", tz_name: str | None = None
+):
+    """Project burn rate toward the configured limit.
+
+    Self-contained: reads the limit from budget.yaml and learns a daily spend
+    rate from the ``runs`` table, mirroring ``budget.burn_rate_projection``.
+    serve.py must not import the package (isolation contract), so the projection
+    is reimplemented here rather than delegated.
+    """
+    if scope not in _FORECAST_SCOPE_COLUMN or window not in ALLOWED_WINDOWS:
+        return {"error": "invalid scope or window"}
+
+    limit = _forecast_limit(scope, scope_id, window)
+    if not limit or limit <= 0:
+        return {"enabled": False, "scope": scope, "scope_id": scope_id, "window": window}
+
+    col = _FORECAST_SCOPE_COLUMN[scope]
+    scope_sql = f" AND {col} = ?" if col else ""
+    scope_params: tuple = (scope_id,) if col else ()
+
+    lookback_days = 14
+    now_utc = datetime.now(timezone.utc)
+    start = (now_utc - timedelta(days=lookback_days - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    series_rows = _rows(
+        f"SELECT substr(started_at, 1, 10) AS day, COALESCE(SUM(cost_usd), 0.0) AS cost_usd "
+        f"FROM runs WHERE started_at >= ?{scope_sql} GROUP BY day",
+        (start.isoformat(), *scope_params),
+    )
+    by_day = {r["day"]: float(r["cost_usd"] or 0.0) for r in series_rows}
+    total = sum(
+        by_day.get((start + timedelta(days=i)).strftime("%Y-%m-%d"), 0.0)
+        for i in range(lookback_days)
+    )
+    avg_daily = total / lookback_days
+
+    bounds = _budget_window_bounds_utc(window, tz_name, now_utc)
+    spend = _one(
+        f"SELECT COALESCE(SUM(cost_usd), 0.0) AS spent FROM runs WHERE started_at >= ?{scope_sql}",
+        (bounds["window_start_utc"], *scope_params),
+    )
+    spent_so_far = float(spend.get("spent", 0.0))
+
+    window_start = datetime.fromisoformat(bounds["window_start_utc"])
+    window_end = datetime.fromisoformat(bounds["window_end_utc"])
+    window_seconds = (window_end - window_start).total_seconds()
+    elapsed = (now_utc - window_start).total_seconds()
+    remaining_days = max(0.0, window_seconds - elapsed) / 86400.0
+
+    projected_remaining = avg_daily * remaining_days
+    projected_total = spent_so_far + projected_remaining
+    pct = projected_total / limit if limit > 0 else 0.0
+    status = "hard" if pct >= 1.00 else ("soft" if pct >= 0.80 else "ok")
+    usd_left = limit - spent_so_far
+    if avg_daily > 0:
+        est_days_to_breach = round(usd_left / avg_daily, 2) if usd_left > 0 else 0.0
+    else:
+        est_days_to_breach = None
+
+    return {
+        "enabled": True,
+        "scope": scope,
+        "scope_id": scope_id,
+        "window": window,
+        "limit_usd": float(limit),
+        "spent_so_far_usd": round(spent_so_far, 6),
+        "avg_daily_usd": round(avg_daily, 6),
+        "projected_remaining_usd": round(projected_remaining, 6),
+        "projected_total_usd": round(projected_total, 6),
+        "projected_pct": round(pct, 4),
+        "status": status,
+        "lookback_days": lookback_days,
+        "est_days_to_breach": est_days_to_breach,
+        **bounds,
+    }
+
+
+def _efficiency_score(tokens_in: int, tokens_out: int, api_calls: int, status: str) -> float:
+    """Efficiency score (0-100). Mirrors db.efficiency_runs; kept inline because
+    serve.py must not import the package. Only 'error'/'interrupted' are real
+    failure statuses (see ONBOARDING § Agent Intelligence)."""
+    output_ratio = tokens_out / tokens_in if tokens_in > 0 else 0.0
+    output_contribution = min(60.0, output_ratio * 40.0)
+    error_penalty = {"error": 30, "interrupted": 10}.get(status, 0)
+    turn_penalty = min(30.0, api_calls * 1.5)
+    return round(max(0.0, min(100.0, 40.0 + output_contribution - error_penalty - turn_penalty)), 1)
+
+
+def api_efficiency(window_hours=24, include_deleted=False):
+    """Per-session efficiency scores + aggregate. Self-contained (see isolation
+    contract); mirrors db.efficiency_runs."""
+    since = _since_clause(window_hours, "started_at")
+    visible_sql, visible_params = _visible_sessions_clause("session_id", include_deleted)
+    rows = _rows(
+        f"""
+        SELECT session_id,
+               COALESCE(cron_job_id, '')          AS cron_job_id,
+               COALESCE(status, 'running')        AS status,
+               COALESCE(tokens_in, 0)             AS tokens_in,
+               COALESCE(tokens_out, 0)            AS tokens_out,
+               COALESCE(api_calls, 0)             AS api_calls,
+               ROUND(COALESCE(cost_usd, 0.0), 6)  AS cost_usd,
+               started_at
+        FROM runs
+        WHERE {since} AND status != 'running' AND {visible_sql}
+        ORDER BY started_at DESC
+        LIMIT 100
+        """,
+        visible_params,
+    )
+    for r in rows:
+        r["efficiency_score"] = _efficiency_score(
+            r["tokens_in"], r["tokens_out"], r["api_calls"], r["status"]
+        )
+    rows.sort(key=lambda x: x["efficiency_score"], reverse=True)
+    avg = round(sum(r["efficiency_score"] for r in rows) / len(rows), 1) if rows else 0.0
+    return {
+        "window_hours": _coerce_window_hours(window_hours),
+        "sessions_scored": len(rows),
+        "average_score": avg,
+        "sessions": rows,
+    }
+
+
+def api_smells(window_hours=24, include_deleted=False):
+    """AI smell detection: anti-patterns over existing telemetry. Self-contained
+    (see isolation contract); mirrors smell_detector.detect_all."""
+    from collections import Counter
+
+    since = _since_clause(window_hours, "started_at")
+    tools_since = _since_clause(window_hours, "tc.ts")
+    visible_sql, visible_params = _visible_sessions_clause("session_id", include_deleted)
+    tools_visible_sql, tools_visible_params = _visible_sessions_clause(
+        "tc.session_id", include_deleted
+    )
+    smells: list[dict] = []
+
+    # context_rotation (high): input tokens dwarf output.
+    for r in _rows(
+        f"""SELECT session_id, COALESCE(cron_job_id,'') AS cron_job_id,
+                   COALESCE(tokens_in,0) AS tokens_in, COALESCE(tokens_out,0) AS tokens_out,
+                   COALESCE(api_calls,0) AS api_calls, COALESCE(status,'running') AS status, started_at
+            FROM runs
+            WHERE {since} AND status != 'running' AND {visible_sql}
+              AND tokens_in > 1000
+              AND CAST(tokens_out AS REAL) / CAST(tokens_in AS REAL) < 0.10
+            ORDER BY tokens_in DESC LIMIT 50""",
+        visible_params,
+    ):
+        ratio = r["tokens_out"] / max(r["tokens_in"], 1) * 100
+        smells.append(
+            {
+                "smell": "context_rotation",
+                "severity": "high",
+                "session_id": r["session_id"],
+                "cron_job_id": r["cron_job_id"],
+                "detail": f"{r['tokens_in']:,} tokens in vs {r['tokens_out']:,} out ({ratio:.1f}% output)",
+                "status": r["status"],
+                "started_at": r["started_at"],
+            }
+        )
+
+    # tool_thrashing (high): many tool calls with a high failure rate.
+    for r in _rows(
+        f"""SELECT tc.session_id, r.cron_job_id, r.status, r.started_at,
+                   COUNT(*) AS total_tools,
+                   SUM(CASE WHEN tc.ok = 0 THEN 1 ELSE 0 END) AS failed_tools
+            FROM tool_calls tc JOIN runs r ON tc.session_id = r.session_id
+            WHERE {tools_since} AND r.status != 'running' AND {tools_visible_sql}
+            GROUP BY tc.session_id
+            HAVING total_tools > 20
+               AND CAST(failed_tools AS REAL) / CAST(total_tools AS REAL) > 0.30
+            ORDER BY total_tools DESC LIMIT 50""",
+        tools_visible_params,
+    ):
+        rate = r["failed_tools"] / max(r["total_tools"], 1) * 100
+        smells.append(
+            {
+                "smell": "tool_thrashing",
+                "severity": "high",
+                "session_id": r["session_id"],
+                "cron_job_id": r["cron_job_id"] or "",
+                "detail": f"{r['failed_tools']}/{r['total_tools']} tool calls failed ({rate:.1f}%)",
+                "status": r["status"],
+                "started_at": r["started_at"],
+            }
+        )
+
+    # loop_trap (medium): a single tool dominates a busy session.
+    tool_rows = _rows(
+        f"""SELECT tc.session_id, tc.tool_name, r.cron_job_id, r.status, r.started_at
+            FROM tool_calls tc JOIN runs r ON tc.session_id = r.session_id
+            WHERE {tools_since} AND r.status != 'running' AND {tools_visible_sql}""",
+        tools_visible_params,
+    )
+    by_session: dict[str, Counter] = {}
+    meta: dict[str, dict] = {}
+    for r in tool_rows:
+        sid = r["session_id"]
+        by_session.setdefault(sid, Counter())[r["tool_name"]] += 1
+        meta.setdefault(
+            sid,
+            {
+                "cron_job_id": r["cron_job_id"] or "",
+                "status": r["status"],
+                "started_at": r["started_at"],
+            },
+        )
+    loop_traps = []
+    for sid, counter in by_session.items():
+        total = sum(counter.values())
+        if total <= 10:
+            continue
+        top_name, top_count = counter.most_common(1)[0]
+        if top_count / total > 0.80:
+            loop_traps.append(
+                {
+                    "smell": "loop_trap",
+                    "severity": "medium",
+                    "session_id": sid,
+                    "cron_job_id": meta[sid]["cron_job_id"],
+                    "detail": f"{top_count}/{total} tool calls were '{top_name}' ({top_count / total * 100:.0f}%)",
+                    "top_tool": top_name,
+                    "total_tools": total,
+                    "status": meta[sid]["status"],
+                    "started_at": meta[sid]["started_at"],
+                }
+            )
+    loop_traps.sort(key=lambda x: x["total_tools"], reverse=True)
+    smells.extend(loop_traps[:50])
+
+    # high_error_rate (warning|high): sessions that ended in 'error'.
+    agg = _one(
+        f"""SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors
+            FROM runs WHERE {since} AND status != 'running' AND {visible_sql}""",
+        visible_params,
+    )
+    total_runs = agg.get("total") or 0
+    error_runs = agg.get("errors") or 0
+    if error_runs:
+        overall = "high" if (total_runs and error_runs / total_runs > 0.30) else "warning"
+        for r in _rows(
+            f"""SELECT session_id, COALESCE(cron_job_id,'') AS cron_job_id, status,
+                       COALESCE(api_calls,0) AS api_calls, ROUND(COALESCE(cost_usd,0.0),6) AS cost_usd, started_at
+                FROM runs WHERE {since} AND status = 'error' AND {visible_sql}
+                ORDER BY started_at DESC LIMIT 50""",
+            visible_params,
+        ):
+            smells.append(
+                {
+                    "smell": "high_error_rate",
+                    "severity": overall,
+                    "session_id": r["session_id"],
+                    "cron_job_id": r["cron_job_id"],
+                    "detail": f"Session ended with status 'error' — {r['api_calls']} API calls, ${r['cost_usd']:.6f}",
+                    "status": r["status"],
+                    "started_at": r["started_at"],
+                }
+            )
+
+    # massive_session (warning): extreme token or API-call volume.
+    for r in _rows(
+        f"""SELECT session_id, COALESCE(cron_job_id,'') AS cron_job_id, COALESCE(status,'running') AS status,
+                   COALESCE(tokens_in,0) AS tokens_in, COALESCE(tokens_out,0) AS tokens_out,
+                   COALESCE(api_calls,0) AS api_calls, ROUND(COALESCE(cost_usd,0.0),6) AS cost_usd, started_at
+            FROM runs
+            WHERE {since} AND status != 'running' AND {visible_sql}
+              AND ((tokens_in + tokens_out) > 100000 OR api_calls > 50)
+            ORDER BY (tokens_in + tokens_out) DESC LIMIT 50""",
+        visible_params,
+    ):
+        smells.append(
+            {
+                "smell": "massive_session",
+                "severity": "warning",
+                "session_id": r["session_id"],
+                "cron_job_id": r["cron_job_id"],
+                "detail": f"{(r['tokens_in'] + r['tokens_out']):,} total tokens, {r['api_calls']} API calls, ${r['cost_usd']:.4f}",
+                "status": r["status"],
+                "started_at": r["started_at"],
+            }
+        )
+
+    severity_rank = {"high": 0, "medium": 1, "warning": 2}
+    smells.sort(key=lambda s: (severity_rank.get(s["severity"], 99), s["smell"]))
+    return {
+        "window_hours": _coerce_window_hours(window_hours),
+        "count": len(smells),
+        "smells": smells,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2754,7 +3077,20 @@ class Handler(SimpleHTTPRequestHandler):
                 scope = qs.get("scope", ["global"])[0]
                 window = qs.get("window", ["monthly"])[0]
                 scope_id = qs.get("scope_id", [""])[0]
-                return self._json(api_budget_forecast(scope, window, scope_id))
+                tz_name = qs.get("tz", [None])[0]
+                return self._json(api_budget_forecast(scope, window, scope_id, tz_name))
+
+            if path == "/api/efficiency":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_efficiency(_parse_window_hours(qs.get("hours", [24])[0], "hours"))
+                )
+
+            if path == "/api/smells":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_smells(_parse_window_hours(qs.get("hours", [24])[0], "hours"))
+                )
 
             if path == "/api/token-breakdown":
                 qs = parse_qs(parsed.query)

@@ -452,3 +452,116 @@ def test_summary_http_query_param_filters_by_profile(plugin_api):
 
     unfiltered = client.get("/summary").json()
     assert unfiltered["runs"]["total_runs"] == 2
+
+
+def test_efficiency_endpoint_penalizes_error(plugin_api):
+    """/efficiency scores completed sessions; 'error' carries the heavy penalty."""
+    from datetime import datetime, timezone
+
+    import db as runtime_db
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[
+            {"session_id": "e_ok", "model": "m", "platform": "cli"},
+            {"session_id": "e_err", "model": "m", "platform": "cli"},
+        ],
+        rows_llm=[
+            {
+                "session_id": "e_ok",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 100,
+                "tokens_out": 100,
+                "cost_usd": 0.001,
+                "latency_ms": 50,
+            },
+            {
+                "session_id": "e_err",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 100,
+                "tokens_out": 100,
+                "cost_usd": 0.001,
+                "latency_ms": 50,
+            },
+        ],
+    )
+    runtime_db.end_run("e_ok", "ok")
+    runtime_db.end_run("e_err", "error")
+
+    out = plugin_api.efficiency(window_hours=24)
+    by_sid = {s["session_id"]: s for s in out["sessions"]}
+    # ok:    40 + 40 - 0  - 1.5 = 78.5 ; error: 40 + 40 - 30 - 1.5 = 48.5
+    assert by_sid["e_ok"]["efficiency_score"] == 78.5
+    assert by_sid["e_err"]["efficiency_score"] == 48.5
+
+
+def test_smells_endpoint_detects_context_rotation(plugin_api):
+    """/smells surfaces anti-patterns over existing telemetry."""
+    from datetime import datetime, timezone
+
+    import db as runtime_db
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[{"session_id": "sr", "model": "m", "platform": "cli"}],
+        rows_llm=[
+            {
+                "session_id": "sr",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 10000,
+                "tokens_out": 500,
+                "cost_usd": 0.05,
+                "latency_ms": 100,
+            }
+        ],
+    )
+    runtime_db.end_run("sr", "ok")
+
+    out = plugin_api.smells(window_hours=24)
+    assert out["count"] >= 1
+    assert any(s["smell"] == "context_rotation" for s in out["smells"])
+
+
+def test_forecast_endpoint_reads_global_limit(plugin_api):
+    """/forecast projects burn rate against the configured global limit."""
+    import os
+    from datetime import datetime, timezone
+
+    import yaml
+
+    import db as runtime_db
+
+    budget_path = plugin_api._budget_path()
+    budget_path.parent.mkdir(parents=True, exist_ok=True)
+    budget_path.write_text(yaml.safe_dump({"budgets": {"global": {"daily_usd": 10.0}}}))
+    assert os.path.exists(budget_path)
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[{"session_id": "f1", "model": "m", "platform": "cli"}],
+        rows_llm=[
+            {
+                "session_id": "f1",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 10,
+                "tokens_out": 10,
+                "cost_usd": 2.0,
+                "latency_ms": 10,
+            }
+        ],
+    )
+    runtime_db.end_run("f1", "ok")
+
+    out = plugin_api.forecast(window="daily")
+    assert out["enabled"] is True
+    assert out["limit_usd"] == 10.0
+    assert out["spent_so_far_usd"] >= 2.0
+    assert out["status"] in ("ok", "soft", "hard")

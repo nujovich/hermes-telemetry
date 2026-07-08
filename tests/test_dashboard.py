@@ -932,3 +932,67 @@ def test_serve_db_path_honors_telemetry_home(tmp_path, monkeypatch):
     assert tmp_path / "shared" / "telemetry" / "telemetry.db" == module.DB_PATH
     assert tmp_path / "profile" / "state.db" == module.STATE_DB_PATH
     assert tmp_path / "profile" / "cron" / "jobs.json" == module.CRON_JOBS_PATH
+
+
+# ---------------------------------------------------------------------------
+# Agent intelligence surfaces (efficiency / smells / forecast)
+# ---------------------------------------------------------------------------
+
+
+def test_api_efficiency_surface(serve_module):
+    """api_efficiency returns aggregate + per-session scores; 'error' is penalized."""
+    now = db._utcnow()
+    db.start_run("s_ok", model="m", platform="cli")
+    db.record_llm_call("s_ok", now, "m", "openai", 100, 200, 0.001, 50)
+    db.end_run("s_ok", "ok")
+    db.start_run("s_err", model="m", platform="cli")
+    db.record_llm_call("s_err", now, "m", "openai", 100, 100, 0.001, 50)
+    db.end_run("s_err", "error")
+
+    out = serve_module.api_efficiency(window_hours=24, include_deleted=True)
+    assert out["sessions_scored"] == 2
+    by_sid = {s["session_id"]: s for s in out["sessions"]}
+    # ok:    40 + min(60, 2.0*40)=60 - 0  - (1 call * 1.5) = 98.5
+    # error: 40 + min(60, 1.0*40)=40 - 30 - (1 call * 1.5) = 48.5
+    assert by_sid["s_ok"]["efficiency_score"] == 98.5
+    assert by_sid["s_err"]["efficiency_score"] == 48.5
+    assert out["average_score"] == pytest.approx((98.5 + 48.5) / 2, abs=0.05)
+
+
+def test_api_smells_surface(serve_module):
+    """api_smells surfaces detected anti-patterns."""
+    now = db._utcnow()
+    db.start_run("s_rot", model="m", platform="cli")
+    db.record_llm_call("s_rot", now, "m", "openai", 10000, 500, 0.05, 100)
+    db.end_run("s_rot", "ok")
+
+    out = serve_module.api_smells(window_hours=24, include_deleted=True)
+    assert out["count"] >= 1
+    assert any(s["smell"] == "context_rotation" for s in out["smells"])
+
+
+def test_api_budget_forecast_rejects_unknown_scope(serve_module):
+    assert "error" in serve_module.api_budget_forecast(scope="bogus", window="daily")
+
+
+def test_api_budget_forecast_scoped_reads_per_cron_job_budget(serve_module):
+    """Regression: the standalone forecast must actually resolve a per_cron_job
+    limit and filter cron spend (the previous `from . import budget` version
+    threw ImportError under standalone load, and never mapped the scope)."""
+    import yaml
+
+    budget_path = serve_module.DB_PATH.parent / "budget.yaml"
+    budget_path.parent.mkdir(parents=True, exist_ok=True)
+    budget_path.write_text(
+        yaml.safe_dump({"budgets": {"per_cron_job": {"default": {"daily_usd": 10.0}}}})
+    )
+    now = db._utcnow()
+    db.start_run("cron-x", model="m", platform="cron", cron_job_id="job-x")
+    db.record_llm_call("cron-x", now, "m", "openai", 100, 100, 2.0, 50)
+    db.end_run("cron-x", "ok")
+
+    out = serve_module.api_budget_forecast(scope="per_cron_job", window="daily", scope_id="job-x")
+    assert out["enabled"] is True
+    assert out["limit_usd"] == 10.0
+    assert out["spent_so_far_usd"] >= 2.0
+    assert out["status"] in ("ok", "soft", "hard")
