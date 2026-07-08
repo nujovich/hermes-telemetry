@@ -32,7 +32,7 @@ import contextlib
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1005,6 +1005,57 @@ def recent_runs(
 # ---------------------------------------------------------------------------
 # Budget support (used by budget.py)
 # ---------------------------------------------------------------------------
+
+
+def daily_spend_series(
+    scope: str,
+    scope_id: str,
+    days: int,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Return total USD cost per calendar day for the last `days` days (UTC).
+
+    Used by the burn-rate forecast to learn a recent spend rate. Each day is
+    represented by exactly one row with key ``day`` (``YYYY-MM-DD``) and
+    ``cost_usd`` (float). Days with no recorded spend are included with
+    ``cost_usd == 0.0`` so the moving average is not biased by gaps in the
+    data. ``now`` is injectable for deterministic tests.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    conn = _get_conn()
+    where = []
+    params: list[Any] = []
+    if scope == "cron_job":
+        where.append("cron_job_id = ?")
+        params.append(scope_id)
+    elif scope == "sender":
+        where.append("sender_id = ?")
+        params.append(scope_id)
+    where_sql = (" AND " + " AND ".join(where)) if where else ""
+
+    # start = beginning (UTC midnight) of (days-1) days ago, i.e. inclusive window
+    start = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_iso = start.isoformat()
+    rows = conn.execute(
+        f"""
+        SELECT substr(started_at, 1, 10) AS day,
+               COALESCE(SUM(cost_usd), 0.0) AS cost_usd
+        FROM runs
+        WHERE started_at >= ?{where_sql}
+        GROUP BY day
+        """,
+        [start_iso, *params],
+    ).fetchall()
+
+    by_day = {r["day"]: float(r["cost_usd"] or 0.0) for r in rows}
+
+    series: list[dict[str, Any]] = []
+    for i in range(days):
+        d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+        series.append({"day": d, "cost_usd": by_day.get(d, 0.0)})
+    return series
 
 
 def spend_by_scope(scope: str, scope_id: str, since_iso: str) -> dict[str, Any]:

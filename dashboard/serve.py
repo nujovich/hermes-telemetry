@@ -2499,6 +2499,15 @@ def api_budget_detail(scope: str, window: str, tz_name: str | None = None):
     }
 
 
+def api_budget_forecast(scope: str = "global", window: str = "monthly", scope_id: str = ""):
+    """Forecast burn rate for a scope/window. Thin wrapper over budget.burn_rate_projection."""
+    if scope not in ALLOWED_SCOPES or window not in ALLOWED_WINDOWS:
+        return {"error": "invalid scope or window"}
+    from . import budget as _budget
+
+    return _budget.burn_rate_projection(scope, scope_id or "", window=window)
+
+
 # ---------------------------------------------------------------------------
 # HTTP Handler
 # ---------------------------------------------------------------------------
@@ -2739,6 +2748,13 @@ class Handler(SimpleHTTPRequestHandler):
                 window = qs.get("window", ["daily"])[0]
                 tz_name = qs.get("tz", [None])[0]
                 return self._json(api_budget_detail(scope, window, tz_name))
+
+            if path == "/api/budget/forecast":
+                qs = parse_qs(parsed.query)
+                scope = qs.get("scope", ["global"])[0]
+                window = qs.get("window", ["monthly"])[0]
+                scope_id = qs.get("scope_id", [""])[0]
+                return self._json(api_budget_forecast(scope, window, scope_id))
 
             if path == "/api/token-breakdown":
                 qs = parse_qs(parsed.query)

@@ -416,6 +416,103 @@ def enforce_cron_pause(verdicts: list[BudgetVerdict]) -> None:
             _pause_cron_job(v.scope_id, reason)
 
 
+def burn_rate_projection(
+    scope: str,
+    scope_id: str = "",
+    *,
+    window: str = "daily",
+    lookback_days: int = 14,
+    now=None,
+) -> dict:
+    """Project whether a scope is on track to breach its configured limit.
+
+    Learns a recent daily spend rate from the recorded telemetry (moving-window
+    average over the last ``lookback_days``), then projects the spend for the
+    remainder of the current ``window`` ("daily" or "monthly") at that rate.
+    Returns a serializable dict describing the projection.
+
+    A scope with no configured limit for the requested window returns
+    ``{"enabled": False}``. This is a forecast only — it makes no network calls
+    and does not mutate budget state.
+    """
+    if now is None:
+        now = _now_local()
+
+    limits = _resolve_limits(scope, scope_id)
+    limit_key = "monthly_usd" if window == "monthly" else "daily_usd"
+    limit = limits.get(limit_key)
+    if not limit or limit <= 0:
+        return {"enabled": False, "scope": scope, "scope_id": scope_id, "window": window}
+
+    series = db.daily_spend_series(scope, scope_id, lookback_days, now=now)
+    recent = [d["cost_usd"] for d in series]
+    avg_daily = sum(recent) / len(recent) if recent else 0.0
+
+    if window == "monthly":
+        window_start_dt = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        window_start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    window_start = window_start_dt.astimezone(timezone.utc).isoformat()
+
+    spend_now = db.spend_by_scope(scope, scope_id, window_start)
+    spent_so_far = float(spend_now["spent_usd"])
+
+    if window == "monthly":
+        days_in_window = _days_in_month(now)
+        start_dt = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        days_in_window = 1
+        start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    elapsed_seconds = (now - start_dt).total_seconds()
+    window_seconds = days_in_window * 86400.0
+
+    remaining_seconds = max(0.0, window_seconds - elapsed_seconds)
+    remaining_days = remaining_seconds / 86400.0
+
+    projected_remaining = avg_daily * remaining_days
+    projected_total = spent_so_far + projected_remaining
+
+    pct = projected_total / limit if limit > 0 else 0.0
+    status = "hard" if pct >= 1.00 else ("soft" if pct >= 0.80 else "ok")
+
+    if window == "monthly":
+        days_left_in_window = max(0, days_in_window - now.day)
+    else:
+        days_left_in_window = 1 if elapsed_seconds < window_seconds else 0
+    if avg_daily > 0:
+        usd_left = limit - spent_so_far
+        est_days_to_breach = usd_left / avg_daily if usd_left > 0 else 0.0
+    else:
+        est_days_to_breach = None
+
+    return {
+        "enabled": True,
+        "scope": scope,
+        "scope_id": scope_id,
+        "window": window,
+        "limit_usd": float(limit),
+        "spent_so_far_usd": round(spent_so_far, 6),
+        "avg_daily_usd": round(avg_daily, 6),
+        "remaining_days_in_window": days_left_in_window,
+        "projected_remaining_usd": round(projected_remaining, 6),
+        "projected_total_usd": round(projected_total, 6),
+        "projected_pct": round(pct, 4),
+        "status": status,
+        "lookback_days": lookback_days,
+        "est_days_to_breach": (
+            round(est_days_to_breach, 2) if est_days_to_breach is not None else None
+        ),
+    }
+
+
+def _days_in_month(now: datetime) -> int:
+    """Number of days in the month that ``now`` falls in."""
+    import calendar
+
+    return calendar.monthrange(now.year, now.month)[1]
+
+
 # ---------------------------------------------------------------------------
 # /budget slash command
 # ---------------------------------------------------------------------------
@@ -479,6 +576,38 @@ def _status_block() -> str:
     except Exception:
         pass
 
+    return "\n".join(lines)
+
+
+def _forecast_block(scope: str = "global", scope_id: str = "", window: str = "daily") -> str:
+    proj = burn_rate_projection(scope, scope_id, window=window)
+    if not proj.get("enabled"):
+        return (
+            "hermes-telemetry — burn-rate forecast\n"
+            + "=" * 60
+            + "\n"
+            + f"  No {window} budget configured for scope "
+            + (scope_id or scope)
+            + ".\n"
+            + "  Set one with: /budget set "
+            + scope
+            + " "
+            + window
+            + " <usd>"
+        )
+    flag = {"ok": " ", "soft": "!", "hard": "X"}[proj["status"]]
+    lines = ["hermes-telemetry — burn-rate forecast", "=" * 60]
+    lines.append(f"  Scope:    {scope_id or scope} ({proj['window']})")
+    lines.append(f"  Limit:    ${proj['limit_usd']:.2f}")
+    lines.append(f"  Spent:    ${proj['spent_so_far_usd']:.4f}")
+    lines.append(f"  Avg/day:  ${proj['avg_daily_usd']:.4f} (last {proj['lookback_days']}d)")
+    lines.append(
+        f"  Projected ${proj['projected_total_usd']:.4f} "
+        f"({proj['projected_pct'] * 100:.0f}%) by window end"
+    )
+    if proj["est_days_to_breach"] is not None:
+        lines.append(f"  At this rate: breach in ~{proj['est_days_to_breach']:.1f} days")
+    lines.append(f"  {flag} Projected status: {proj['status'].upper()}")
     return "\n".join(lines)
 
 
@@ -554,6 +683,20 @@ def handle(raw_args: str) -> str:
 
     if sub == "cron":
         return _cron_block()
+
+    if sub == "forecast":
+        window = "monthly"
+        if len(parts) >= 2 and parts[1].lower() in ("daily", "monthly"):
+            window = parts[1].lower()
+        scope = "global"
+        scope_id = ""
+        if len(parts) >= 3:
+            scope = parts[2].lower()
+            if scope not in ("global", "cron_job", "sender"):
+                return f"Unknown scope {scope!r}. Use: global | cron_job | sender"
+            if len(parts) >= 4:
+                scope_id = parts[3]
+        return _forecast_block(scope, scope_id, window)
 
     if sub == "set":
         if len(parts) != 4:
