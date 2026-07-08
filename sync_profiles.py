@@ -77,10 +77,11 @@ def read_env_var(env_path: Path, key: str) -> str | None:
 
 
 def upsert_env_var(env_path: Path, key: str, value: str) -> bool:
-    """Idempotently set KEY=value in a line-based .env, preserving every other
-    line and comment. Replaces the first assignment, drops later duplicates,
-    else appends. Returns True if the file changed. Atomic write (tmp +
-    os.replace); creates the file (and parents) if absent."""
+    """Idempotently set KEY=value in a line-based .env, keeping every other line
+    and comment (an existing `export ` prefix on the key is preserved). Replaces
+    the first assignment, drops later duplicates, else appends. Returns True if
+    the file changed. Atomic write (tmp + os.replace); creates the file (and
+    parents) if absent. Note: line endings are normalized to `\\n`."""
     new_line = f"{key}={value}"
     existing = env_path.read_text().splitlines() if env_path.is_file() else []
     out: list[str] = []
@@ -90,9 +91,11 @@ def upsert_env_var(env_path: Path, key: str, value: str) -> bool:
         if _is_assignment(line.strip(), key):
             if not replaced:
                 replaced = True
-                if line != new_line:
+                prefix = "export " if line.strip().startswith("export ") else ""
+                candidate = f"{prefix}{new_line}"
+                if line != candidate:
                     changed = True
-                out.append(new_line)
+                out.append(candidate)
             else:
                 changed = True  # dropping a later duplicate
             continue

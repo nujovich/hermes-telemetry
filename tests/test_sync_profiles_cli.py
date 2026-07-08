@@ -63,3 +63,27 @@ def test_parser_accepts_subcommand():
     assert args.command == "sync-profiles"
     assert args.names == ["coder"]
     assert args.apply is True and args.yes is True
+
+
+def test_handler_json_output(tmp_path, monkeypatch, capsys):
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "profiles" / "coder").mkdir(parents=True)
+    tcli._handle_sync_profiles(_args(json=True))
+    data = json.loads(capsys.readouterr().out)
+    assert data["target"] == str(tmp_path)
+    assert any(p["name"] == "coder" for p in data["profiles"])
+
+
+def test_handler_explicit_telemetry_home_writes_default_too(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "profiles" / "coder").mkdir(parents=True)
+    shared = tmp_path / "shared"
+    tcli._handle_sync_profiles(_args(apply=True, telemetry_home=str(shared)))
+    # With an external target, the default profile is no longer the target,
+    # so its own .env is written too.
+    assert (tmp_path / ".env").read_text() == f"HERMES_TELEMETRY_HOME={shared}\n"
+    assert (
+        tmp_path / "profiles" / "coder" / ".env"
+    ).read_text() == f"HERMES_TELEMETRY_HOME={shared}\n"

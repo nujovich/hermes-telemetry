@@ -1598,7 +1598,8 @@ hermes telemetry sync-profiles --apply    # RUN FROM THE DEFAULT PROFILE (shared
 ```
 
 - The ONLY file mutated is each profile's `.env` — a single `HERMES_TELEMETRY_HOME` line,
-  comment/format-preserving, written atomically (tmp + `os.replace`). Idempotent.
+  written atomically (tmp + `os.replace`). Idempotent; other lines and comments are kept and an
+  existing `export ` prefix on the key is preserved (line endings are normalized to `\n`).
 - `config.yaml` is **read-only**: the command warns when a profile has not enabled the plugin
   (`plugins.enabled`) but NEVER edits it. Auto-enable and plugin-symlinking were deliberately
   dropped — the repo has no comment-preserving YAML writer, and enabling is a one-line manual
@@ -1606,7 +1607,9 @@ hermes telemetry sync-profiles --apply    # RUN FROM THE DEFAULT PROFILE (shared
 - **Non-default guard:** enumeration is default `~/.hermes` + `~/.hermes/profiles/*/`; the target
   defaults to the current resolved home (`HERMES_TELEMETRY_HOME` > `HERMES_HOME` > `~/.hermes`).
   If run from a named profile, `--apply` refuses unless `--yes` is passed — review the dry-run
-  first. The profile that already *is* the shared home is skipped.
+  first. The profile that already *is* the shared home is skipped. (Enumeration is always rooted
+  at the invoking home, so running from a named profile only ever sees that profile's own
+  subtree — another reason to run from the default profile.)
 - Flags: `--telemetry-home PATH` overrides the shared home; `[names...]` limits to specific
   profiles; `--json` emits a machine-readable report.
 - Going-forward only: it does not backfill telemetry rows already siloed in a profile's own

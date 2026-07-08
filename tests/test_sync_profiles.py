@@ -237,3 +237,26 @@ def test_to_json_shape(tmp_path):
     coder = next(p for p in data["profiles"] if p["name"] == "coder")
     assert coder["env_state"] == "missing"
     assert coder["plugin_enabled"] == "no-config"
+
+
+# --- export-prefixed .env lines ---
+
+
+def test_read_env_var_reads_export_prefixed(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("export HERMES_TELEMETRY_HOME=/x\n")
+    assert sp.read_env_var(env, sp.ENV_KEY) == "/x"
+
+
+def test_upsert_preserves_export_prefix(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("export HERMES_TELEMETRY_HOME=/old\n")
+    changed = sp.upsert_env_var(env, sp.ENV_KEY, "/shared")
+    assert changed is True
+    assert env.read_text() == "export HERMES_TELEMETRY_HOME=/shared\n"
+
+
+def test_upsert_export_prefix_idempotent(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("export HERMES_TELEMETRY_HOME=/shared\n")
+    assert sp.upsert_env_var(env, sp.ENV_KEY, "/shared") is False
