@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-09
+
 ### Fixed — `/stats models` mislabeled known-free $0 rows as "no price entry"
 
 - A `$0.00` row resolved by the `:free` suffix rule (including the dated ids a
@@ -51,6 +53,30 @@ dashboards.
   `dashboard/vendor/chart.umd.min.js` and uses jsDelivr only as a fallback.
   This removes the main cause of `Chart is not defined` when the CDN is
   unreachable or filtered.
+
+### Added — Mixture-of-Agents (MoA) attribution (#55)
+
+Hermes added a `moa` virtual provider: selecting a MoA preset runs N reference
+models plus an aggregator. The aggregator is the acting model, but
+`post_api_request` reports `provider="moa"` and `model="<preset>"` — neither
+priceable — while the usage belongs to the aggregator.
+
+- **`moa.py`** (new): resolves a preset name to its aggregator's real
+  `provider`/`model` via `hermes_cli.moa_config.resolve_moa_preset`. Fully
+  defensive — never raises, falls back to raw hook values.
+- **`post_api_request`** re-attributes MoA calls to the aggregator's real
+  provider/model, fixing the spurious `provider_assumed` pricing fallback, and
+  tags the row with the preset name.
+- **Schema v10** (`_migrate_v10`): `llm_calls.moa_preset` + `runs.moa_calls`.
+- **`/stats summary`** and both dashboards surface `moa_calls` / `moa_preset`,
+  each noting that reference-model tokens are untracked (cost is a lower bound).
+- Reference-model cost is deliberately **not** estimated (no token counts
+  available), and the one-shot `/moa <prompt>` path runs through the auxiliary
+  (no-hook) client, so it is invisible to telemetry by Hermes' design — both
+  documented as Known Limitations.
+
+Verified against `NousResearch/hermes-agent@main`: `agent/moa_loop.py`,
+`agent/auxiliary_client.py`, `hermes_cli/moa_config.py`.
 
 ### Added — Attribute async/nested subagent cost to `per_cron_job` budgets (#49)
 
@@ -511,6 +537,7 @@ brings both surfaces up to date in lockstep. Verified against
 - MIT License
 - README with architecture, usage, screenshots
 
+[0.8.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.7.0...v0.8.0
 [0.5.1]: https://github.com/nujovich/hermes-telemetry/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/nujovich/hermes-telemetry/compare/v0.4.0...v0.4.1

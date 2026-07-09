@@ -1373,7 +1373,7 @@ the real `~/.hermes/telemetry`. Enforced by
   injection, and backfill tests; `test_db.py` and `test_pricing.py` gained
   corresponding unit tests.
 
-### Unreleased — Free→paid id-change handling (issue #32)
+### v0.5.1 — Free→paid id-change handling (issue #32)
 
 - **`is_free_tier_transition(model, provider)`** in `db.py`: reverse-looks-up a
   stored `<id>:free` row when a provider moves a model to paid under a *different*
@@ -1395,7 +1395,7 @@ the real `~/.hermes/telemetry`. Enforced by
   `test_pricing.py` gained the ultra paid-seed + `:free`-suffix → $0 (bare and
   OpenRouter-long-form), `super:free` regression, and explicit-override cases.
 
-### Unreleased — Mixture-of-Agents (MoA) attribution
+### v0.8.0 — Mixture-of-Agents (MoA) attribution
 
 - **`moa.py`** (new module): resolves the `provider="moa"` virtual-provider
   preset to its aggregator's real `provider`/`model` via
@@ -1413,7 +1413,7 @@ the real `~/.hermes/telemetry`. Enforced by
 
 ---
 
-### Unreleased — Agent intelligence (efficiency · smells · forecast, issue #8)
+### v0.8.0 — Agent intelligence (efficiency · smells · forecast, issue #8)
 
 - **`smell_detector.py`** (new module): five read-only anti-pattern heuristics
   over existing telemetry. See `§ Agent Intelligence`.
