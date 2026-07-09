@@ -565,3 +565,49 @@ def test_forecast_endpoint_reads_global_limit(plugin_api):
     assert out["limit_usd"] == 10.0
     assert out["spent_so_far_usd"] >= 2.0
     assert out["status"] in ("ok", "soft", "hard")
+
+
+def test_efficiency_filters_by_profile(plugin_api):
+    """/efficiency scopes scored sessions to a single profile when asked."""
+    from datetime import datetime, timezone
+
+    import db as runtime_db
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[
+            {"session_id": "c1", "model": "m", "platform": "cli", "profile": "coder"},
+            {"session_id": "o1", "model": "m", "platform": "cli", "profile": "ops"},
+        ],
+        rows_llm=[
+            {
+                "session_id": "c1",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 100,
+                "tokens_out": 100,
+                "cost_usd": 0.001,
+                "latency_ms": 50,
+            },
+            {
+                "session_id": "o1",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 100,
+                "tokens_out": 100,
+                "cost_usd": 0.001,
+                "latency_ms": 50,
+            },
+        ],
+    )
+    runtime_db.end_run("c1", "ok")
+    runtime_db.end_run("o1", "ok")
+
+    out = plugin_api.efficiency(window_hours=24, profile="coder")
+    assert [s["session_id"] for s in out["sessions"]] == ["c1"]
+    assert out["sessions_scored"] == 1
+
+    # No profile = both sessions (unchanged behavior).
+    assert plugin_api.efficiency(window_hours=24)["sessions_scored"] == 2

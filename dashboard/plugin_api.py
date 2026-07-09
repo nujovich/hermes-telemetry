@@ -499,9 +499,10 @@ def _compute_efficiency(tokens_in: int, tokens_out: int, api_calls: int, status:
 
 
 @router.get("/efficiency")
-def efficiency(window_hours: int = 24) -> dict:
+def efficiency(window_hours: int = 24, profile: str = "") -> dict:
     """Return per-session efficiency scores and aggregate stats."""
     sc = _since_clause(window_hours, "started_at")
+    pc, pc_params = _runs_profile_clause(profile)
     rows = _rows(
         f"""
         SELECT session_id,
@@ -514,10 +515,11 @@ def efficiency(window_hours: int = 24) -> dict:
                started_at
         FROM runs
         WHERE {sc}
-          AND status != 'running'
+          AND status != 'running'{pc}
         ORDER BY started_at DESC
         LIMIT 100
-    """
+    """,
+        pc_params,
     )
     scored = []
     for r in rows:
