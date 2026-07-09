@@ -98,6 +98,7 @@ LLM provider
   - [/budget](#budget)
 - [Configuration](#configuration)
   - [Shared telemetry home (HERMES_TELEMETRY_HOME)](#shared-telemetry-home-hermes_telemetry_home)
+  - [Consolidating multiple profiles (telemetry sync-profiles)](#consolidating-multiple-profiles-telemetry-sync-profiles)
   - [pricing.yaml](#pricingyaml)
   - [budget.yaml](#budgetyaml)
 - [Pricing Auto-Refresh](#pricing-auto-refresh)
@@ -848,6 +849,37 @@ export HERMES_TELEMETRY_HOME=~/.hermes-shared
 Telemetry paths resolve with precedence **`HERMES_TELEMETRY_HOME` › `HERMES_HOME` › `~/.hermes`**. When unset, nothing changes — each profile keeps its own (profile-tagged) telemetry dir.
 
 > This relocates **telemetry files only** (`telemetry.db`, `budget.yaml`, `pricing.yaml`). It never moves Hermes's own `state.db` or `cron/`, which stay on `HERMES_HOME`.
+
+### Consolidating multiple profiles (`telemetry sync-profiles`)
+
+Setting `HERMES_TELEMETRY_HOME` by hand in every profile's `.env` gets tedious and error-prone once you run more than a couple of profiles. The `telemetry sync-profiles` command automates it — it points every Hermes profile at one shared telemetry home so they all read the same `pricing.yaml` / `budget.yaml` and write to the same `telemetry.db`.
+
+Run it **from the default profile** (its home, `~/.hermes`, is the shared target):
+
+```bash
+# Dry-run (default) — prints the plan, changes nothing
+hermes telemetry sync-profiles
+
+# Apply — writes HERMES_TELEMETRY_HOME into each profile's .env
+hermes telemetry sync-profiles --apply
+
+# Limit to specific profiles, or point at a custom shared home:
+hermes telemetry sync-profiles coder writer --apply
+hermes telemetry sync-profiles --telemetry-home ~/.hermes-shared --apply
+
+# Machine-readable report (for scripting):
+hermes telemetry sync-profiles --json
+```
+
+What it does — and what it deliberately doesn't:
+
+- **Writes only** a single `HERMES_TELEMETRY_HOME` line into each profile's `.env` (atomic and idempotent; existing lines, comments, and an `export ` prefix are preserved). Hermes loads `<home>/.env` *before* it loads plugins, so the setting reaches each profile's process on its own — no manual `source` step.
+- Treats `config.yaml` as **read-only**: it *warns* when a profile hasn't enabled the plugin (`hermes plugins enable hermes-telemetry --profile <name>`) but never edits it.
+- Is **going-forward only** — it does not backfill rows already written to a profile's own pre-consolidation `telemetry.db`.
+
+> **Scope safety:** with no profile names, `--apply` targets **every** profile under `~/.hermes/profiles/*`. Pass explicit names to narrow it, and always read the dry-run first. Run from a named profile and `--apply` refuses unless you add `--yes`.
+
+**Multiplexed profiles.** Consolidation (one DB / pricing / budget) works no matter how your profiles run. Per-profile *attribution* — the `profile` tag that powers the dashboard's profile filter and `per_profile` budgets — is a separate concern: it is accurate only when each profile runs in its **own process** (a dedicated per-profile gateway or cron). A single multiplexed gateway serving several profiles from one process may tag some runs with the wrong profile (typically `default`), because the profile is derived from that process's `HERMES_HOME`.
 
 ### `pricing.yaml`
 
