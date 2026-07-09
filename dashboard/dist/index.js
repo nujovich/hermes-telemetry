@@ -234,11 +234,11 @@
     return h("div", { className: "grid gap-3" }, [...scopeCards, forecastCard]);
   }
 
-  function EfficiencyPanel() {
+  function EfficiencyPanel({ profile }) {
     const [data, setData] = useState(null);
     useEffect(() => {
-      api("/efficiency?window_hours=24").then(setData).catch(() => setData({ sessions: [] }));
-    }, []);
+      api(`/efficiency?window_hours=24${profileQS(profile)}`).then(setData).catch(() => setData({ sessions: [] }));
+    }, [profile]);
     if (!data) return h("p", { className: "text-sm" }, "Loading…");
     const rows = data.sessions || [];
     return h("div", { className: "flex flex-col gap-3" },
@@ -298,7 +298,7 @@
     }, []);
     const Panel = (TABS.find((t) => t.id === active) || TABS[0]).render;
     return h("div", { className: "flex flex-col gap-4" },
-      h(SmellsWidget, null),
+      h(SmellsWidget, { profile }),
       h(ModelUnavailableWidget, null),
       h(TierTransitionsWidget, null),
       h(Card, null,
@@ -517,14 +517,14 @@
     );
   }
 
-  function SmellsWidget() {
+  function SmellsWidget({ profile }) {
     // Surfaces AI anti-patterns detected in the last 24h. Same happy-path
     // contract as the sibling widgets: render nothing when no smells fire so
     // it stays invisible in normal operation.
     const [data, setData] = useState(null);
     useEffect(() => {
-      api("/smells?window_hours=24").then(setData).catch(() => setData({ smells: [] }));
-    }, []);
+      api(`/smells?window_hours=24${profileQS(profile)}`).then(setData).catch(() => setData({ smells: [] }));
+    }, [profile]);
     const smells = (data && data.smells) || [];
     if (!smells.length) return null;
     const hasHigh = smells.some((s) => s.severity === "high");
