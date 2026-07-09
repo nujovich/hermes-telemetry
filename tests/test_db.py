@@ -57,19 +57,14 @@ def test_migrate_v10_creates_rollup_tables():
     db._ensure_schema(conn)
 
     tables = {
-        r[0]
-        for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     }
     assert "daily_rollups" in tables
     assert "weekly_rollups" in tables
     assert "monthly_rollups" in tables
 
     # Verify schema version 10 marker exists
-    row = conn.execute(
-        "SELECT version FROM schema_version WHERE version = 10"
-    ).fetchone()
+    row = conn.execute("SELECT version FROM schema_version WHERE version = 10").fetchone()
     assert row is not None, "v10 migration must record schema_version = 10"
 
     # Verify expected columns on daily_rollups (same schema for all three)
@@ -87,20 +82,13 @@ def test_migrate_v10_creates_rollup_tables():
     for table_name in ("daily_rollups", "weekly_rollups", "monthly_rollups"):
         cols = {
             r[0]
-            for r in conn.execute(
-                f"SELECT name FROM pragma_table_info('{table_name}')"
-            ).fetchall()
+            for r in conn.execute(f"SELECT name FROM pragma_table_info('{table_name}')").fetchall()
         }
-        assert expected_cols.issubset(
-            cols
-        ), f"{table_name} missing columns: {expected_cols - cols}"
+        assert expected_cols.issubset(cols), f"{table_name} missing columns: {expected_cols - cols}"
 
     # Verify indexes exist
     indexes = {
-        r[0]
-        for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index'"
-        ).fetchall()
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
     }
     assert "idx_daily_period" in indexes
     assert "idx_weekly_period" in indexes
@@ -115,30 +103,58 @@ def test_migrate_v10_is_idempotent():
     # First run — tables created
     db._ensure_schema(conn)
     tables_before = {
-        r[0]
-        for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     }
 
     # Second run — must be a no-op
     db._ensure_schema(conn)
     tables_after = {
-        r[0]
-        for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     }
 
-    assert tables_before == tables_after, (
-        "second _ensure_schema must not alter table set"
-    )
+    assert tables_before == tables_after, "second _ensure_schema must not alter table set"
 
     # Schema version must still be 10 exactly once
-    rows = conn.execute(
-        "SELECT version FROM schema_version WHERE version = 10"
-    ).fetchall()
+    rows = conn.execute("SELECT version FROM schema_version WHERE version = 10").fetchall()
     assert len(rows) == 1, "schema_version 10 must appear exactly once"
+
+
+def test_migrate_v11_creates_rollup_contrib():
+    """Verify that v11 migration creates the rollup_contrib source-of-truth table
+    with the expected columns, index, and schema_version marker."""
+    conn = db._get_conn()
+    db._ensure_schema(conn)
+
+    tables = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    assert "rollup_contrib" in tables
+
+    expected_cols = {
+        "session_id",
+        "granularity",
+        "period_start",
+        "model",
+        "provider",
+        "tokens_in",
+        "tokens_out",
+        "cost_usd",
+        "api_calls",
+        "status",
+    }
+    cols = {
+        r[0]
+        for r in conn.execute("SELECT name FROM pragma_table_info('rollup_contrib')").fetchall()
+    }
+    assert expected_cols.issubset(cols), f"rollup_contrib missing: {expected_cols - cols}"
+
+    indexes = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+    }
+    assert "idx_rollup_contrib_period" in indexes
+
+    row = conn.execute("SELECT version FROM schema_version WHERE version = 11").fetchone()
+    assert row is not None, "v11 migration must record schema_version = 11"
 
 
 def test_migrate_v9_repairs_missing_column_from_wedged_v7(monkeypatch):
@@ -1204,3 +1220,174 @@ def test_model_unavailable_truncated_message_roundtrip():
     db.record_model_unavailable("m", "p", 404, long_msg)
     row = db.get_model_unavailable("m", "p")
     assert row["error_message"] == long_msg
+
+
+# ---------------------------------------------------------------------------
+# Tiered rollups (issue #157, M2)
+# ---------------------------------------------------------------------------
+
+
+def _seed_calls(session_id, calls):
+    """Helper: start a session and record llm_calls.
+
+    ``calls`` is a list of (ts, model, provider, tokens_in, tokens_out, cost_usd).
+    """
+    db.start_run(session_id, model=calls[0][1], platform="cli")
+    for ts, model, provider, tin, tout, cost in calls:
+        db.record_llm_call(session_id, ts, model, provider, tin, tout, cost, 100)
+
+
+def test_end_run_populates_daily_weekly_monthly_rollups():
+    """end_run must fold the session's llm_calls into all three rollup tables
+    keyed by (period_start, model, provider)."""
+    ts = "2026-06-10T10:00:00+00:00"
+    # Period starts for 2026-06-10 (a Wednesday): day=2026-06-10,
+    # week=Monday 2026-06-08, month=2026-06-01.
+    expected = {
+        "daily_rollups": "2026-06-10",
+        "weekly_rollups": "2026-06-08",
+        "monthly_rollups": "2026-06-01",
+    }
+    _seed_calls(
+        "roll-sess-1",
+        [(ts, "gpt-4o", "openai", 1000, 500, 0.03)],
+    )
+    db.end_run("roll-sess-1", status="ok")
+
+    conn = db._get_conn()
+    for table, period_start in expected.items():
+        rows = conn.execute(
+            f"SELECT * FROM {table} WHERE period_start=? AND model=? AND provider=?",
+            (period_start, "gpt-4o", "openai"),
+        ).fetchall()
+        assert len(rows) == 1, f"{table} should have one matching bucket"
+        row = rows[0]
+        assert row["tokens_in"] == 1000
+        assert row["tokens_out"] == 500
+        assert row["cost_usd"] == 0.03
+        assert row["api_calls"] == 1
+        assert row["session_count"] == 1
+
+
+def test_upsert_rollups_merges_across_sessions():
+    """Two sessions in the same day/model/provider bucket must accumulate."""
+    ts = "2026-06-10T11:00:00+00:00"
+    _seed_calls("roll-sess-a", [(ts, "gpt-4o", "openai", 1000, 500, 0.03)])
+    db.end_run("roll-sess-a", status="ok")
+    _seed_calls("roll-sess-b", [(ts, "gpt-4o", "openai", 2000, 250, 0.06)])
+    db.end_run("roll-sess-b", status="ok")
+
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT * FROM daily_rollups WHERE period_start=? AND model=? AND provider=?",
+        ("2026-06-10", "gpt-4o", "openai"),
+    ).fetchone()
+    assert row["tokens_in"] == 3000
+    assert row["tokens_out"] == 750
+    assert row["cost_usd"] == 0.09
+    assert row["api_calls"] == 2
+    # session_count counts distinct sessions, not calls
+    assert row["session_count"] == 2
+
+
+def test_upsert_rollups_idempotent_on_reend():
+    """Re-ending the same session must not double-count (UPSERT semantics)."""
+    ts = "2026-06-10T11:00:00+00:00"
+    _seed_calls("roll-replay", [(ts, "gpt-4o", "openai", 1000, 500, 0.03)])
+    db.end_run("roll-replay", status="ok")
+    db.end_run("roll-replay", status="ok")  # replay
+
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT * FROM daily_rollups WHERE period_start=? AND model=? AND provider=?",
+        ("2026-06-10", "gpt-4o", "openai"),
+    ).fetchone()
+    assert row["api_calls"] == 1
+    assert row["session_count"] == 1
+
+
+def test_upsert_rollups_splits_week_and_month_boundaries():
+    """A call late in June lands in June monthly but a different ISO week than
+    one early in June; both must bucket correctly by period_start."""
+    early = "2026-06-01T09:00:00+00:00"
+    late = "2026-06-30T09:00:00+00:00"
+    _seed_calls("roll-week-early", [(early, "claude", "anthropic", 10, 10, 0.01)])
+    db.end_run("roll-week-early", status="ok")
+    _seed_calls("roll-week-late", [(late, "claude", "anthropic", 20, 20, 0.02)])
+    db.end_run("roll-week-late", status="ok")
+
+    conn = db._get_conn()
+    # Both share the June monthly bucket.
+    month = conn.execute(
+        "SELECT * FROM monthly_rollups WHERE period_start=? AND model=? AND provider=?",
+        ("2026-06-01", "claude", "anthropic"),
+    ).fetchone()
+    assert month["api_calls"] == 2
+
+    # But the weekly buckets differ (June 1 2026 is a Monday; June 30 is a
+    # Tuesday, so its week starts Monday June 29).
+    weeks = {
+        (r["period_start"], r["api_calls"])
+        for r in conn.execute(
+            "SELECT period_start, api_calls FROM weekly_rollups WHERE model=? AND provider=?",
+            ("claude", "anthropic"),
+        ).fetchall()
+    }
+    assert ("2026-06-01", 1) in weeks
+    assert ("2026-06-29", 1) in weeks
+
+
+def test_compact_rollups_rebuilds_from_source():
+    """compact_rollups() recomputes the rollup tables from llm_calls and keeps
+    session_count consistent with COUNT(DISTINCT session_id)."""
+    ts = "2026-06-10T11:00:00+00:00"
+    _seed_calls("roll-compact-a", [(ts, "gpt-4o", "openai", 1000, 500, 0.03)])
+    db.end_run("roll-compact-a", status="ok")
+    _seed_calls("roll-compact-b", [(ts, "gpt-4o", "openai", 2000, 250, 0.06)])
+    db.end_run("roll-compact-b", status="ok")
+
+    written = db.compact_rollups()
+    assert written["daily"] == 1  # one (day, model, provider) group
+
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT * FROM daily_rollups WHERE period_start=? AND model=? AND provider=?",
+        ("2026-06-10", "gpt-4o", "openai"),
+    ).fetchone()
+    assert row["api_calls"] == 2
+    assert row["session_count"] == 2
+    assert row["cost_usd"] == 0.09
+
+
+def test_compact_rollups_partial_since_iso():
+    """compact_rollups(since_iso=...) rebuilds buckets touched by calls at or
+    after the cutoff from llm_calls; periods entirely before the cutoff keep
+    their pre-existing rollup rows (recomputed identically, not orphaned)."""
+    old = "2026-05-01T09:00:00+00:00"
+    new = "2026-06-10T09:00:00+00:00"
+    # Old session — May bucket.
+    _seed_calls("roll-old", [(old, "gpt-4o", "openai", 100, 100, 0.01)])
+    db.end_run("roll-old", status="ok")
+    # New session — June bucket.
+    _seed_calls("roll-new", [(new, "gpt-4o", "openai", 200, 200, 0.02)])
+    db.end_run("roll-new", status="ok")
+
+    written = db.compact_rollups(since_iso="2026-06-01T00:00:00+00:00")
+    # Both daily buckets still exist after compaction (May preserved, June
+    # rebuilt); the function reports how many rows it wrote for the day tier.
+    assert written["daily"] == 2
+
+    conn = db._get_conn()
+    may = conn.execute(
+        "SELECT * FROM daily_rollups WHERE period_start=?", ("2026-05-01",)
+    ).fetchone()
+    assert may is not None, "May bucket must survive a partial compaction"
+    assert may["api_calls"] == 1
+    assert may["session_count"] == 1
+
+    june = conn.execute(
+        "SELECT * FROM daily_rollups WHERE period_start=?", ("2026-06-10",)
+    ).fetchone()
+    assert june is not None
+    assert june["api_calls"] == 1
+    assert june["session_count"] == 1

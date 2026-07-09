@@ -34,12 +34,13 @@ import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from datetime import timedelta as _timedelta
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 10
+_SCHEMA_VERSION = 11
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -167,6 +168,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v8(conn)
     _migrate_v9(conn)
     _migrate_v10(conn)
+    _migrate_v11(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -459,6 +461,55 @@ def _migrate_v10(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v11(conn: sqlite3.Connection) -> None:
+    """Add v11 schema: rollup_contrib table — the per-session source of truth
+    for the tiered rollup tables.
+
+    The daily/weekly/monthly rollup tables are *derived* aggregates shared
+    across sessions. Re-folding a single session by re-scanning all of its
+    llm_calls would double-count on a re-``end_run``. Instead, ``upsert_rollups``
+    writes the session's per-(period, model, provider) contribution into
+    ``rollup_contrib`` first (``ON CONFLICT ... REPLACE`` wipes any prior
+    contribution from the same session), then ``_apply_session_rollups`` adds the
+    *current* contribution to the shared rollup tables. To re-derive the rollups
+    from scratch, ``compact_rollups`` recomputes both ``rollup_contrib`` and the
+    rollup tables from ``llm_calls``.
+
+    Only ``status = 'applied'`` rows count toward the rollups so a re-ended
+    session replaces rather than re-adds its contribution.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 11")
+    if cur.fetchone() is not None:
+        return
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rollup_contrib (
+            session_id   TEXT NOT NULL,
+            granularity  TEXT NOT NULL,
+            period_start TEXT NOT NULL,
+            model        TEXT NOT NULL DEFAULT '',
+            provider     TEXT NOT NULL DEFAULT '',
+            tokens_in    INTEGER DEFAULT 0,
+            tokens_out   INTEGER DEFAULT 0,
+            cost_usd     REAL DEFAULT 0.0,
+            api_calls    INTEGER DEFAULT 0,
+            status       TEXT NOT NULL DEFAULT 'applied',
+            PRIMARY KEY (session_id, granularity, period_start, model, provider)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rollup_contrib_period "
+        "ON rollup_contrib(granularity, period_start)"
+    )
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (11, ?)",
+        (_utcnow(),),
+    )
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -526,6 +577,354 @@ def end_run(session_id: str, status: str, ended_at: str | None = None) -> None:
         """,
         (now, status, now, session_id),
     )
+    # Roll the session up into the tiered daily/weekly/monthly rollup tables so
+    # later /stats --granularity queries can read pre-aggregated buckets instead
+    # of scanning llm_calls. Failure here must never break the session end
+    # itself, so swallow and log.
+    try:
+        upsert_rollups(session_id)
+    except Exception:  # pragma: no cover - defensive, rollups are best-effort
+        logger.exception("upsert_rollups failed for session %s", session_id)
+
+
+# ---------------------------------------------------------------------------
+# Tiered rollups (issue #157, M2)
+# ---------------------------------------------------------------------------
+
+_ROLLUP_TABLES = ("daily_rollups", "weekly_rollups", "monthly_rollups")
+_ROLLUP_GRANULARITIES = ("daily", "weekly", "monthly")
+
+
+def _period_starts(dt: datetime) -> tuple[str, str, str]:
+    """Return (day, week_start, month_start) ISO date strings for *dt*.
+
+    Week is Monday-based: ``week_start`` is the Monday of the ISO week containing
+    *dt*. All three are pure date strings ('YYYY-MM-DD') so they sort and group
+    lexically.
+    """
+    day = dt.strftime("%Y-%m-%d")
+    week_start = (dt - _timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
+    month_start = dt.strftime("%Y-%m-01")
+    return day, week_start, month_start
+
+
+def _compute_session_contrib(
+    session_id: str,
+) -> list[tuple[str, str, str, str, int, int, float, int]]:
+    """Aggregate one session's ``llm_calls`` into per-(granularity, period,
+    model, provider) contribution rows.
+
+    Returns a list of tuples ready to insert into ``rollup_contrib``:
+        (granularity, period_start, model, provider, tokens_in, tokens_out,
+         cost_usd, api_calls).
+    A session contributes at most once per (granularity, period, model, provider)
+    group, so ``session_count`` (derived in the rollup tables) stays correct even
+    when a single session makes multiple calls into the same bucket.
+    """
+    conn = _get_conn()
+    rows = conn.execute(
+        """
+        SELECT ts, model, provider, tokens_in, tokens_out, cost_usd
+        FROM llm_calls
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchall()
+    if not rows:
+        return []
+
+    # key -> [tokens_in, tokens_out, cost_usd, api_calls]
+    agg: dict[tuple[str, str, str, str], list[float]] = {}
+    for r in rows:
+        ts = r["ts"]
+        try:
+            dt = datetime.fromisoformat(ts)
+        except ValueError:
+            # Fall back to the date portion if the timestamp is malformed.
+            dt = datetime.fromisoformat(ts[:10])
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        day, week, month = _period_starts(dt)
+        model = r["model"] or ""
+        provider = r["provider"] or ""
+        for granularity, period_start in zip(_ROLLUP_GRANULARITIES, (day, week, month)):
+            key = (granularity, period_start, model, provider)
+            bucket = agg.get(key)
+            if bucket is None:
+                bucket = [0.0, 0.0, 0.0, 0]
+                agg[key] = bucket
+            bucket[0] += r["tokens_in"] or 0
+            bucket[1] += r["tokens_out"] or 0
+            bucket[2] += r["cost_usd"] or 0.0
+            bucket[3] += 1
+
+    return [
+        (g, p, m, pr, int(tin), int(tout), cost, int(calls))
+        for (g, p, m, pr), (tin, tout, cost, calls) in agg.items()
+    ]
+
+
+def upsert_rollups(session_id: str) -> None:
+    """Fold one finished session into the tiered rollup tables.
+
+    Called from ``end_run``. The session's prior contribution is *retracted*
+    from the shared rollup tables, then its freshly-computed contribution is
+    written to ``rollup_contrib`` (replacing any stale rows for this session)
+    and re-applied. This makes folding fully idempotent at the session level:
+    re-ending a session replaces rather than re-adds its numbers, and
+    ``session_count`` stays equal to the number of distinct sessions per bucket.
+    """
+    conn = _get_conn()
+    # Retract whatever this session previously contributed so a re-end does not
+    # double-count. Safe no-op the first time (no applied rows yet).
+    _retract_session_rollups(session_id)
+
+    contrib = _compute_session_contrib(session_id)
+    if not contrib:
+        # No calls: ensure the session holds no applied contribution.
+        conn.execute(
+            "UPDATE rollup_contrib SET status = 'stale' WHERE session_id = ?",
+            (session_id,),
+        )
+        return
+
+    # Replace the session's contribution wholesale.
+    conn.execute("DELETE FROM rollup_contrib WHERE session_id = ?", (session_id,))
+    conn.executemany(
+        """
+        INSERT INTO rollup_contrib
+            (session_id, granularity, period_start, model, provider,
+             tokens_in, tokens_out, cost_usd, api_calls, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied')
+        """,
+        [(session_id, *c) for c in contrib],
+    )
+    _apply_session_rollups(session_id)
+
+
+def _retract_session_rollups(session_id: str) -> None:
+    """Subtract a session's currently-applied contribution from the shared
+    rollup tables. Called before re-applying so a re-``end_run`` replaces rather
+    than re-adds. Rows that reach zero are deleted; ``session_count`` drops by 1.
+    """
+    conn = _get_conn()
+    rows = conn.execute(
+        """
+        SELECT granularity, period_start, model, provider,
+               tokens_in, tokens_out, cost_usd, api_calls
+        FROM rollup_contrib
+        WHERE session_id = ? AND status = 'applied'
+        """,
+        (session_id,),
+    ).fetchall()
+    for r in rows:
+        table = _ROLLUP_TABLES[_ROLLUP_GRANULARITIES.index(r["granularity"])]
+        # session_count guard: only assert removal when this session is the only
+        # contributor to the bucket.
+        conn.execute(
+            f"""
+            UPDATE {table}
+            SET tokens_in     = tokens_in     - ?,
+                tokens_out    = tokens_out    - ?,
+                cost_usd      = cost_usd      - ?,
+                api_calls     = api_calls     - ?,
+                session_count = session_count - 1
+            WHERE period_start = ? AND model = ? AND provider = ?
+            """,
+            (
+                r["tokens_in"],
+                r["tokens_out"],
+                r["cost_usd"],
+                r["api_calls"],
+                r["period_start"],
+                r["model"],
+                r["provider"],
+            ),
+        )
+        conn.execute(
+            f"""
+            DELETE FROM {table}
+            WHERE period_start = ? AND model = ? AND provider = ?
+              AND tokens_in <= 0 AND tokens_out <= 0 AND api_calls <= 0
+              AND session_count <= 0
+            """,
+            (r["period_start"], r["model"], r["provider"]),
+        )
+
+
+def _apply_session_rollups(session_id: str) -> None:
+    """Add a session's ``rollup_contrib`` rows to the shared rollup tables.
+
+    Only ``status = 'applied'`` contributions count. ``session_count`` is added
+    exactly once per (period, model, provider) bucket the session now touches
+    (``_retract_session_rollups`` already removed the previous +1, so this is
+    the only one).
+    """
+    conn = _get_conn()
+    rows = conn.execute(
+        """
+        SELECT granularity, period_start, model, provider,
+               tokens_in, tokens_out, cost_usd, api_calls
+        FROM rollup_contrib
+        WHERE session_id = ? AND status = 'applied'
+        """,
+        (session_id,),
+    ).fetchall()
+    if not rows:
+        return
+
+    for r in rows:
+        table = _ROLLUP_TABLES[_ROLLUP_GRANULARITIES.index(r["granularity"])]
+        conn.execute(
+            f"""
+            INSERT INTO {table}
+                (period_start, model, provider,
+                 tokens_in, tokens_out, cost_usd, api_calls, tool_calls, session_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1)
+            ON CONFLICT(period_start, model, provider) DO UPDATE SET
+                tokens_in     = {table}.tokens_in     + excluded.tokens_in,
+                tokens_out    = {table}.tokens_out    + excluded.tokens_out,
+                cost_usd      = {table}.cost_usd      + excluded.cost_usd,
+                api_calls     = {table}.api_calls     + excluded.api_calls,
+                session_count = {table}.session_count + 1
+            """,
+            (
+                r["period_start"],
+                r["model"],
+                r["provider"],
+                r["tokens_in"],
+                r["tokens_out"],
+                r["cost_usd"],
+                r["api_calls"],
+            ),
+        )
+
+
+def compact_rollups(since_iso: str | None = None) -> dict[str, int]:
+    """Periodic compaction: rebuild the rollup tables from the canonical
+    ``llm_calls`` source via ``rollup_contrib``.
+
+    Idempotent and safe to run on a schedule (e.g. a maintenance cron). When
+    *since_iso* is given, only calls with ``ts >= since_iso`` are rescanned;
+    otherwise the whole table is recomputed. ``session_count`` is derived from
+    the number of distinct sessions in each bucket, so re-running never
+    double-counts sessions.
+
+    Returns:
+        dict with keys ``daily``, ``weekly``, ``monthly`` (rows written).
+    """
+    conn = _get_conn()
+    call_where = "WHERE ts >= ?" if since_iso else ""
+    call_params = (since_iso,) if since_iso else ()
+
+    # 1) Recompute rollup_contrib for the affected calls from llm_calls.
+    contrib_rows: list[tuple] = []
+    for granularity, period_expr in (
+        ("daily", "substr(ts, 1, 10)"),
+        ("weekly", "date(ts, 'weekday 1', '-7 days')"),
+        ("monthly", "substr(ts, 1, 7) || '-01'"),
+    ):
+        data = conn.execute(
+            f"""
+            SELECT session_id,
+                   {period_expr}              AS period_start,
+                   COALESCE(model, '')        AS model,
+                   COALESCE(provider, '')     AS provider,
+                   COALESCE(SUM(tokens_in), 0)   AS tokens_in,
+                   COALESCE(SUM(tokens_out), 0)  AS tokens_out,
+                   ROUND(SUM(cost_usd), 6)       AS cost_usd,
+                   COUNT(*)                    AS api_calls
+            FROM llm_calls
+            {call_where}
+            GROUP BY session_id, period_start, model, provider
+            """,
+            call_params,
+        ).fetchall()
+        for r in data:
+            contrib_rows.append(
+                (
+                    r["session_id"],
+                    granularity,
+                    r["period_start"],
+                    r["model"],
+                    r["provider"],
+                    int(r["tokens_in"]),
+                    int(r["tokens_out"]),
+                    r["cost_usd"],
+                    int(r["api_calls"]),
+                )
+            )
+
+    if since_iso:
+        # Delete only the contrib keys we are about to rewrite (per session).
+        affected_sessions = {row[0] for row in contrib_rows}
+        for sid in affected_sessions:
+            conn.execute("DELETE FROM rollup_contrib WHERE session_id = ?", (sid,))
+    else:
+        conn.execute("DELETE FROM rollup_contrib")
+
+    conn.executemany(
+        """
+        INSERT INTO rollup_contrib
+            (session_id, granularity, period_start, model, provider,
+             tokens_in, tokens_out, cost_usd, api_calls, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied')
+        """,
+        contrib_rows,
+    )
+
+    # 2) Rebuild the rollup tables from the (now-correct) contributions.
+    written: dict[str, int] = {}
+    for table, granularity in zip(_ROLLUP_TABLES, _ROLLUP_GRANULARITIES):
+        data = conn.execute(
+            """
+            SELECT period_start, model, provider,
+                   SUM(tokens_in)            AS tokens_in,
+                   SUM(tokens_out)           AS tokens_out,
+                   ROUND(SUM(cost_usd), 6)   AS cost_usd,
+                   SUM(api_calls)            AS api_calls,
+                   COUNT(DISTINCT session_id) AS session_count
+            FROM rollup_contrib
+            WHERE granularity = ? AND status = 'applied'
+            GROUP BY period_start, model, provider
+            """,
+            (granularity,),
+        ).fetchall()
+
+        # Delete only the buckets touched by the rewritten contributions.
+        affected = {(r["period_start"], r["model"], r["provider"]) for r in data}
+        if since_iso:
+            for period_start, model, provider in affected:
+                conn.execute(
+                    f"DELETE FROM {table} WHERE period_start = ? AND model = ? AND provider = ?",
+                    (period_start, model, provider),
+                )
+        else:
+            conn.execute(f"DELETE FROM {table}")
+
+        conn.executemany(
+            f"""
+            INSERT INTO {table}
+                (period_start, model, provider,
+                 tokens_in, tokens_out, cost_usd, api_calls, tool_calls, session_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+            """,
+            [
+                (
+                    r["period_start"],
+                    r["model"],
+                    r["provider"],
+                    int(r["tokens_in"]),
+                    int(r["tokens_out"]),
+                    r["cost_usd"],
+                    int(r["api_calls"]),
+                    int(r["session_count"]),
+                )
+                for r in data
+            ],
+        )
+        written[granularity] = len(data)
+    return written
 
 
 def record_llm_call(
