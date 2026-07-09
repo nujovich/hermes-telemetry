@@ -71,6 +71,30 @@
     }, label);
   }
 
+  // Shared profile enumeration for the off-page slot widgets, which cannot see
+  // the Telemetry tab's selector (they render in separate shell pages).
+  function useProfiles() {
+    const [profiles, setProfiles] = useState([]);
+    useEffect(() => {
+      api("/profiles").then((d) => setProfiles((d && d.profiles) || [])).catch(() => setProfiles([]));
+    }, []);
+    return profiles;
+  }
+
+  function MiniProfileSelect({ profile, profiles, onChange }) {
+    if (!profiles.length) return null;
+    return h("select", {
+      className: "text-xs border border-border bg-transparent px-1 py-0.5 ml-auto",
+      value: profile,
+      onChange: (e) => onChange(e.target.value),
+      title: "Filter by Hermes profile",
+      "aria-label": "Filter by Hermes profile",
+    },
+      h("option", { value: "" }, "All profiles"),
+      profiles.map((p) => h("option", { key: p, value: p }, p)),
+    );
+  }
+
   function SummaryPanel({ profile }) {
     const [data, setData] = useState(null);
     const [err, setErr] = useState(null);
@@ -341,15 +365,16 @@
   function SessionsTopWidget() {
     // The shell renders sessions:top on /sessions; the active session id is
     // not yet exposed by the SDK, so we surface the most-recent run as a
-    // pinned "last session" card. When the SDK adds useActiveSession we
-    // swap this for a per-row card.
+    // pinned "last session" card. This widget renders on a different page than
+    // the Telemetry tab, so it carries its OWN profile selector.
     const [run, setRun] = useState(null);
+    const [loaded, setLoaded] = useState(false);
+    const [profile, setProfile] = useState("");
+    const profiles = useProfiles();
     useEffect(() => {
+      setLoaded(false);
       // Pull a handful of recent runs and pick the first one with real data.
-      // The literal last run in the table can be a session that died at
-      // init (no API key, agent never made a call), which shows as a noisy
-      // "Last run: $0.0000 · 0 in / 0 out" badge.
-      api("/runs?limit=10&window_hours=0")
+      api(`/runs?limit=10&window_hours=0${profileQS(profile)}`)
         .then((d) => {
           const rows = (d && d.rows) || [];
           const real = rows.find((r) =>
@@ -359,33 +384,47 @@
             || r.model,
           );
           setRun(real || null);
+          setLoaded(true);
         })
-        .catch(() => setRun(null));
-    }, []);
-    if (!run) return null;
+        .catch(() => { setRun(null); setLoaded(true); });
+    }, [profile]);
+    // Stay invisible on the happy path only when there is nothing to show AND
+    // no profile selector to offer.
+    if (!run && !profiles.length) return null;
     return h(Card, { className: "border-dashed" },
       h(CardContent, { className: "py-2 flex items-center gap-3 text-xs font-courier" },
         h(Badge, { variant: "outline" }, "Telemetry"),
-        h("span", null, "Last run: ", h("strong", null, fmtUsd(run.cost_usd))),
-        h("span", { className: "text-muted-foreground" },
-          `${fmtInt(run.tokens_in)} in / ${fmtInt(run.tokens_out)} out · ${run.model || "—"}`),
+        run
+          ? h("span", null, "Last run: ", h("strong", null, fmtUsd(run.cost_usd)))
+          : h("span", { className: "text-muted-foreground" }, loaded ? "No runs for this profile" : "Loading…"),
+        run
+          ? h("span", { className: "text-muted-foreground" },
+              `${fmtInt(run.tokens_in)} in / ${fmtInt(run.tokens_out)} out · ${run.model || "—"}`)
+          : null,
+        h(MiniProfileSelect, { profile, profiles, onChange: setProfile }),
       ),
     );
   }
 
   function CronTopWidget() {
+    // Renders on the shell's /cron page, so it carries its OWN profile selector
+    // (it cannot see the Telemetry tab's selector).
     const [data, setData] = useState(null);
+    const [profile, setProfile] = useState("");
+    const profiles = useProfiles();
     useEffect(() => {
-      api("/cron?window_hours=168").then(setData).catch(() => setData({ rows: [] }));
-    }, []);
-    if (!data) return null;
-    const total = (data.rows || []).reduce((acc, r) => acc + (r.cost_usd || 0), 0);
-    const failed = (data.rows || []).reduce((acc, r) => acc + (r.failed_runs || 0), 0);
+      api(`/cron?window_hours=168${profileQS(profile)}`).then(setData).catch(() => setData({ rows: [] }));
+    }, [profile]);
+    if (!data && !profiles.length) return null;
+    const rows = (data && data.rows) || [];
+    const total = rows.reduce((acc, r) => acc + (r.cost_usd || 0), 0);
+    const failed = rows.reduce((acc, r) => acc + (r.failed_runs || 0), 0);
     return h(Card, { className: "border-dashed" },
       h(CardContent, { className: "py-2 flex items-center gap-3 text-xs font-courier" },
         h(Badge, { variant: "outline" }, "Telemetry"),
         h("span", null, "Cron 7d: ", h("strong", null, fmtUsd(total))),
         failed ? h(Badge, { variant: "destructive" }, `${failed} failed`) : null,
+        h(MiniProfileSelect, { profile, profiles, onChange: setProfile }),
       ),
     );
   }
