@@ -52,35 +52,40 @@ LLM provider
 
 -----
 
-> ### ℹ️ Two models are free right now — declare them while the promo lasts
+> ### ℹ️ Two models are on a free tier right now
 >
-> Two gateway models currently bill at **$0** on a time-limited free tier:
+> Two models currently bill at **$0** on a time-limited free tier:
 >
-> | Model id | Free until |
-> |----------|------------|
-> | `tencent/hy3` | 2026-07-15 |
-> | `stepfun/step-3.7-flash` | 2026-07-23 |
+> | Model | Free until |
+> |-------|------------|
+> | Tencent Hy3 | 2026-07-15 |
+> | StepFun Step 3.7 Flash | 2026-07-23 |
 >
-> Both are served under **bare ids** (no `:free` suffix), so the automatic
-> free-tier suffix rule does not fire — left undeclared they'd be treated as
-> unknown and raise an estimated-price warning. Declare each with
-> `_subscription: true` in [`pricing.yaml`](#pricingyaml) so the `$0` is recorded
-> as intentional (not a lookup miss) and survives every OpenRouter refresh:
+> **What you need to do depends on the id your gateway sends** (check `/stats
+> models` to see the exact id recorded):
+>
+> - **Served with a `:free` suffix** (e.g. `tencent/hy3-20260706:free`) —
+>   **nothing to do.** Any id ending in `:free` resolves to `$0` automatically,
+>   is recorded as known-free (no estimated-price warning), shows as `free tier`
+>   in `/stats models`, and arms the free→paid alert for when the promo ends and
+>   the suffix is dropped.
+> - **Served under a bare native id** (no `:free` suffix) — the auto-$0 rule does
+>   not fire, so declare it with `_subscription: true` in
+>   [`pricing.yaml`](#pricingyaml) so the `$0` is recorded as intentional (not a
+>   lookup miss) and survives every OpenRouter refresh. Use the **exact id the
+>   gateway records** — a non-dated key will not match a dated id:
 >
 > ```yaml
 > models:
->   tencent/hy3:
+>   tencent/hy3:            # ← the exact bare id from `/stats models`
 >     input: 0.0
 >     output: 0.0
 >     _subscription: true   # free tier ends 2026-07-15
->   stepfun/step-3.7-flash:
->     input: 0.0
->     output: 0.0
->     _subscription: true   # free tier ends 2026-07-23
 > ```
 >
-> When a promo ends the model starts incurring cost. Remove its entry (or set the
-> real price) so hermes-telemetry bills it correctly again.
+> When a promo ends the model starts incurring cost. For a `:free` id the alert
+> fires on its own; for a declared entry, remove it (or set the real price) so
+> hermes-telemetry bills it correctly again.
 
 -----
 
@@ -625,11 +630,13 @@ hermes-telemetry — models (last 24 h)
   Provider             Model                                           Calls   Real   Est         Cost  Notes
   ----------------------------------------------------------------------------------------------------------
   nous                 deepseek/deepseek-v4-pro-20260423                 449    448     1    $2.318788
-  nous                 tencent/hy3                                       153    153     0    $0.000000  subscription/free-tier
+  nous                 tencent/hy3-20260706:free                         153    153     0    $0.000000  free tier
+  nous                 qwen3.7-plus                                       80     80     0    $0.000000  subscription/free-tier
   openrouter           some/unpriced-model                                12     12     0    $0.000000  no price entry
 
   Rows are grouped by provider, then by calls (desc).
   1 model(s) at $0.00 are subscription/free tier (declared in pricing.yaml via `_subscription: true`).
+  1 model(s) at $0.00 are free tier (`:free` suffix or built-in $0 price).
   1 model(s) at $0.00 have no price entry in pricing.yaml — run /setup pricing auto
   to refresh, or add them manually.
 ```
@@ -639,9 +646,10 @@ Breaks each provider's spend down to individual models. Rows are grouped by prov
 The `Notes` column disambiguates `$0.000000` rows so the user can tell intentional zeros from missing pricing:
 
 - **`subscription/free-tier`** — the model is declared with `_subscription: true` in `pricing.yaml`. The $0 is intentional (subscription plan or free tier), not a bug. Pricing refresh preserves these entries verbatim.
-- **`no price entry`** — there is no row for this model in `pricing.yaml`. The $0 means Hermes had nothing to multiply by; run `/setup pricing auto` to refresh, or add a manual entry.
+- **`free tier`** — the model resolves to an explicit $0 on its own, with no `pricing.yaml` entry needed: a `:free` suffix variant (any id ending in `:free`, including the dated ids a gateway sends, e.g. `tencent/hy3-20260706:free`) or a built-in $0 seed. Recorded as known-free, so it never triggers the estimated-price warning and arms the free→paid alert for when the suffix is later dropped.
+- **`no price entry`** — there is no row for this model in `pricing.yaml` and nothing resolves it to $0. The $0 means Hermes had nothing to multiply by; run `/setup pricing auto` to refresh, or add a manual entry.
 
-The footer reflects the same split: subscription rows are claimed as declared, no-entry rows keep the original `/setup pricing auto` hint, and a mixed window emits both lines.
+The footer reflects the same split: subscription rows are claimed as declared, free-tier rows are flagged as known-free, no-entry rows keep the original `/setup pricing auto` hint, and a mixed window emits every applicable line.
 
 **Example output (`/stats efficiency`):**
 
