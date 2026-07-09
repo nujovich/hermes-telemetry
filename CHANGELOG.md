@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `/stats models` mislabeled known-free $0 rows as "no price entry"
+
+- A `$0.00` row resolved by the `:free` suffix rule (including the dated ids a
+  gateway sends, e.g. `tencent/hy3-20260706:free`) or a built-in $0 seed was
+  bucketed as `no price entry`, wrongly implying a lookup miss and prompting the
+  user to run `/setup pricing auto`. The Notes column consulted only
+  `subscription_models` and ignored `is_explicitly_priced`, so it could not tell a
+  known-free model from a genuine unknown. `stats._models_block` now splits $0
+  rows three ways — `subscription/free-tier` > `free tier` (`:free` suffix or
+  built-in $0 seed) > `no price entry` — with a matching footer line. Documented
+  the `:free`-vs-`_subscription` distinction (and the exact-id requirement for a
+  `_subscription` declaration) in the README free-tier notice and ONBOARDING.
+
 ### Added — Agent intelligence: efficiency scoring, smell detection, burn-rate forecasting (#8)
 
 Three read-only analytical capabilities over existing telemetry (no new capture,
