@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from . import db, stats
 
@@ -156,6 +157,24 @@ def _build_parser_into(sub) -> None:
     bf.add_argument("scope_id", nargs="?", default="")
     bf.add_argument("--json", action="store_true", help="Output as JSON")
 
+    spp = sub.add_parser(
+        "sync-profiles",
+        help="Point all profiles at one shared telemetry home (pricing/budget/db)",
+    )
+    spp.add_argument("names", nargs="*", help="Limit to these profile names")
+    spp.add_argument("--apply", action="store_true", help="Write changes (default: dry-run)")
+    spp.add_argument("--yes", action="store_true", help="Confirm a non-default target home")
+    spp.add_argument(
+        "--telemetry-home",
+        dest="telemetry_home",
+        default=None,
+        help=(
+            "Shared home root to write into each profile's .env "
+            "(default: the current resolved home). Run from the default profile."
+        ),
+    )
+    spp.add_argument("--json", action="store_true", help="Output as JSON")
+
 
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
@@ -168,6 +187,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser | None =
         _handle_stats(args)
     elif args.command == "budget":
         _handle_budget(args)
+    elif args.command == "sync-profiles":
+        _handle_sync_profiles(args)
     else:
         if parser:
             parser.print_help()
@@ -299,6 +320,38 @@ def _budget_json(subcommand: str) -> None:
         result["senders"][sid] = _dc.asdict(v) if v is not None else None
 
     print(json.dumps(result, default=str))
+
+
+def _handle_sync_profiles(args: argparse.Namespace) -> None:
+    from . import sync_profiles as sp
+
+    base_home = sp.default_base_home()
+    if args.telemetry_home:
+        target = Path(args.telemetry_home).expanduser()
+    else:
+        target = sp.resolve_target_home()
+    only = args.names or None
+    statuses = sp.detect(base_home, target, only)
+
+    if not args.apply:
+        print(sp.to_json(statuses, target) if args.json else sp.render(statuses, target))
+        return
+
+    # Non-default guard: refuse to mutate when not run from the default profile,
+    # unless the user explicitly confirms with --yes.
+    if not sp.is_default_profile(base_home) and not args.yes:
+        print(sp.render(statuses, target))
+        print(
+            f"\nRefusing to apply: not running from the default profile "
+            f"(HERMES_HOME={base_home}).\n"
+            f"Re-run from the default profile, or pass --yes to confirm target {target}."
+        )
+        return
+
+    results = sp.apply(statuses, target)
+    print(
+        sp.to_json(statuses, target, results) if args.json else sp.render(statuses, target, results)
+    )
 
 
 if __name__ == "__main__":
