@@ -60,6 +60,17 @@
 
   const profileQS = (p) => (p ? `&profile=${encodeURIComponent(p)}` : "");
 
+  // Scope disclosure: on profile-scoped surfaces shows the active scope
+  // (profile name, or "All profiles"); on global-only surfaces shows "Global".
+  function ScopeBadge({ profile, global: isGlobal }) {
+    const label = isGlobal ? "Global" : (profile ? profile : "All profiles");
+    return h(Badge, {
+      variant: "outline",
+      className: "font-courier ml-auto",
+      title: isGlobal ? "Global — not filtered by profile" : `Scope: ${label}`,
+    }, label);
+  }
+
   function SummaryPanel({ profile }) {
     const [data, setData] = useState(null);
     const [err, setErr] = useState(null);
@@ -462,6 +473,7 @@
         h(CardTitle, { className: "text-sm flex items-center gap-2" },
           h(Badge, { variant: within24h ? "destructive" : "outline" }, "Tier change"),
           h("span", null, `${rows.length} model${rows.length === 1 ? "" : "s"} flipped free→paid (72h)`),
+          h(ScopeBadge, { global: true }),
         ),
       ),
       h(CardContent, { className: "py-2 space-y-1 text-xs font-courier" },
@@ -501,6 +513,7 @@
         h(CardTitle, { className: "text-sm flex items-center gap-2" },
           h(Badge, { variant: within24h ? "destructive" : "outline" }, "Model unavailable"),
           h("span", null, `${rows.length} model${rows.length === 1 ? "" : "s"} 404'd (72h)`),
+          h(ScopeBadge, { global: true }),
         ),
       ),
       h(CardContent, { className: "py-2 space-y-1 text-xs font-courier" },
@@ -533,6 +546,7 @@
         h(CardTitle, { className: "text-sm flex items-center gap-2" },
           h(Badge, { variant: hasHigh ? "destructive" : "outline" }, "AI smells"),
           h("span", null, `${smells.length} anti-pattern${smells.length === 1 ? "" : "s"} detected (24h)`),
+          h(ScopeBadge, { profile }),
         ),
       ),
       h(CardContent, { className: "py-2 space-y-1 text-xs font-courier" },
