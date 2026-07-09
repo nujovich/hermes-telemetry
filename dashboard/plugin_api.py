@@ -428,7 +428,9 @@ def budget() -> dict:
         )
         for prow in profile_rows:
             name = prow["profile"]
-            limits = pp_overrides.get(name, pp_default) or {}
+            # Empty/absent override falls back to default, matching the runtime
+            # engine's budget._resolve_limits (overrides.get(id) or default).
+            limits = (pp_overrides.get(name) or pp_default) or {}
             for window in ("daily", "monthly"):
                 limit = limits.get(f"{window}_usd")
                 if limit is None:

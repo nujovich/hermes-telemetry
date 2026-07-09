@@ -736,3 +736,47 @@ def test_budget_no_per_profile_block_stays_global(plugin_api):
     )
     out = plugin_api.budget()
     assert all(s["scope"].startswith("global/") for s in out["scopes"])
+
+
+def test_budget_empty_profile_override_falls_back_to_default(plugin_api):
+    """An empty per-profile override ({}) falls back to the default limit,
+    matching the runtime budget engine (budget._resolve_limits)."""
+    import os
+    from datetime import datetime, timezone
+
+    import db as runtime_db
+
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    (hermes_home / "telemetry").mkdir(parents=True, exist_ok=True)
+    (hermes_home / "telemetry" / "budget.yaml").write_text(
+        "budgets:\n"
+        "  global:\n"
+        "    daily_usd: 100.0\n"
+        "  per_profile:\n"
+        "    default:\n"
+        "      daily_usd: 5.0\n"
+        "    overrides:\n"
+        "      coder: {}\n",
+        encoding="utf-8",
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[{"session_id": "c1", "model": "m", "platform": "cli", "profile": "coder"}],
+        rows_llm=[
+            {
+                "session_id": "c1",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 10,
+                "tokens_out": 10,
+                "cost_usd": 1.0,
+                "latency_ms": 5,
+            },
+        ],
+    )
+    runtime_db.end_run("c1", "ok")
+
+    out = plugin_api.budget()
+    scopes = {s["scope"]: s for s in out["scopes"]}
+    assert scopes["profile:coder/daily"]["limit_usd"] == 5.0

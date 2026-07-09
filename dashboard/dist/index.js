@@ -399,7 +399,8 @@
         h(Badge, { variant: "outline" }, "Telemetry"),
         run
           ? h("span", null, "Last run: ", h("strong", null, fmtUsd(run.cost_usd)))
-          : h("span", { className: "text-muted-foreground" }, loaded ? "No runs for this profile" : "Loading…"),
+          : h("span", { className: "text-muted-foreground" },
+              loaded ? (profile ? "No runs for this profile" : "No runs recorded") : "Loading…"),
         run
           ? h("span", { className: "text-muted-foreground" },
               `${fmtInt(run.tokens_in)} in / ${fmtInt(run.tokens_out)} out · ${run.model || "—"}`)
