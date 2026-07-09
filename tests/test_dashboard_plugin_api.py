@@ -656,3 +656,83 @@ def test_smells_filters_by_profile(plugin_api):
 
     # No profile = smells from both profiles.
     assert {s["session_id"] for s in plugin_api.smells(window_hours=24)["smells"]} == {"c1", "o1"}
+
+
+def test_budget_includes_per_profile_scopes(plugin_api):
+    """/budget emits a scope per profile present in runs, using override-else-default limits."""
+    import os
+    from datetime import datetime, timezone
+
+    import db as runtime_db
+
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    (hermes_home / "telemetry").mkdir(parents=True, exist_ok=True)
+    (hermes_home / "telemetry" / "budget.yaml").write_text(
+        "budgets:\n"
+        "  global:\n"
+        "    daily_usd: 100.0\n"
+        "  per_profile:\n"
+        "    default:\n"
+        "      daily_usd: 2.0\n"
+        "    overrides:\n"
+        "      coder:\n"
+        "        daily_usd: 10.0\n"
+        "thresholds:\n"
+        "  soft_pct: 0.8\n"
+        "  hard_pct: 1.0\n",
+        encoding="utf-8",
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[
+            {"session_id": "c1", "model": "m", "platform": "cli", "profile": "coder"},
+            {"session_id": "o1", "model": "m", "platform": "cli", "profile": "ops"},
+        ],
+        rows_llm=[
+            {
+                "session_id": "c1",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 10,
+                "tokens_out": 10,
+                "cost_usd": 3.0,
+                "latency_ms": 5,
+            },
+            {
+                "session_id": "o1",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 10,
+                "tokens_out": 10,
+                "cost_usd": 1.0,
+                "latency_ms": 5,
+            },
+        ],
+    )
+    runtime_db.end_run("c1", "ok")
+    runtime_db.end_run("o1", "ok")
+
+    out = plugin_api.budget()
+    scopes = {s["scope"]: s for s in out["scopes"]}
+    assert "global/daily" in scopes
+    assert scopes["profile:coder/daily"]["scope_id"] == "coder"
+    assert scopes["profile:coder/daily"]["limit_usd"] == 10.0
+    assert scopes["profile:coder/daily"]["spent_usd"] == 3.0
+    assert scopes["profile:ops/daily"]["limit_usd"] == 2.0
+    assert scopes["profile:ops/daily"]["spent_usd"] == 1.0
+
+
+def test_budget_no_per_profile_block_stays_global(plugin_api):
+    """With no per_profile config, /budget emits only global scopes (unchanged)."""
+    import os
+
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    (hermes_home / "telemetry").mkdir(parents=True, exist_ok=True)
+    (hermes_home / "telemetry" / "budget.yaml").write_text(
+        "budgets:\n  global:\n    daily_usd: 1.0\n",
+        encoding="utf-8",
+    )
+    out = plugin_api.budget()
+    assert all(s["scope"].startswith("global/") for s in out["scopes"])

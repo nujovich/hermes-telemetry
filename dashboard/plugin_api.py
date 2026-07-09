@@ -415,6 +415,46 @@ def budget() -> dict:
             }
         )
 
+    # Per-profile scopes. The budget engine already models per_profile (default
+    # + overrides); this is display only — mirror the global loop for each
+    # profile present in runs, resolving override-else-default limits.
+    pp_cfg = (cfg.get("budgets", {}) or {}).get("per_profile", {}) or {}
+    if pp_cfg:
+        pp_default = pp_cfg.get("default", {}) or {}
+        pp_overrides = pp_cfg.get("overrides", {}) or {}
+        profile_rows = _rows(
+            "SELECT DISTINCT profile FROM runs "
+            "WHERE profile IS NOT NULL AND profile != '' ORDER BY profile"
+        )
+        for prow in profile_rows:
+            name = prow["profile"]
+            limits = pp_overrides.get(name, pp_default) or {}
+            for window in ("daily", "monthly"):
+                limit = limits.get(f"{window}_usd")
+                if limit is None:
+                    continue
+                start_utc = _window_start_utc(window)
+                spend = _one(
+                    "SELECT COALESCE(SUM(cost_usd), 0.0) AS spent FROM runs "
+                    "WHERE started_at >= ? AND profile = ?",
+                    (start_utc, name),
+                )
+                spent = float(spend.get("spent") or 0.0)
+                pct = spent / limit if limit > 0 else 0.0
+                level = "hard" if pct >= hard_pct else ("soft" if pct >= soft_pct else "ok")
+                scopes.append(
+                    {
+                        "scope": f"profile:{name}/{window}",
+                        "scope_id": name,
+                        "window": window,
+                        "limit_usd": float(limit),
+                        "spent_usd": round(spent, 6),
+                        "pct": round(pct * 100, 1),
+                        "level": level,
+                        "window_start_utc": start_utc,
+                    }
+                )
+
     return {
         "enabled": True,
         "scopes": scopes,
