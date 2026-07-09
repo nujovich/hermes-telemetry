@@ -228,6 +228,48 @@ def test_stats_models_zero_cost_mixed_emits_both_footers(tmp_path, monkeypatch):
     assert "/setup pricing auto" in out
 
 
+def test_stats_models_zero_cost_free_suffix_row_labeled_free_tier(tmp_path, monkeypatch):
+    """A $0.00 row served with a `:free` suffix is an intentional free tier: the
+    `:free` rule resolves it to $0 and records it as known-free. It must NOT be
+    tagged 'no price entry' even with NO pricing.yaml entry, and even for the dated
+    variant the gateway actually sends (e.g. tencent/hy3-20260706:free)."""
+    import hermes_telemetry.pricing as pricing
+
+    pricing.reload_custom_pricing()  # no pricing.yaml at all
+
+    now = db._utcnow()
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call("s1", now, "tencent/hy3-20260706:free", "nous", 100, 50, 0.0, 100)
+
+    out = stats_mod.handle("models")
+    assert "tencent/hy3-20260706:free" in out
+    assert "free tier" in out
+    assert "no price entry" not in out
+
+
+def test_stats_models_free_suffix_unaffected_by_nonmatching_subscription(tmp_path, monkeypatch):
+    """Regression for the dated-id gap: declaring a NON-dated `:free` id as
+    `_subscription` does not match the dated id the gateway sends, so the row is not
+    tagged subscription/free-tier — but it is still correctly shown as a free tier
+    (via the `:free` rule), never 'no price entry'."""
+    _seed_pricing_yaml(
+        tmp_path,
+        "models:\n  tencent/hy3:free:\n    input: 0.0\n    output: 0.0\n    _subscription: true\n",
+    )
+    import hermes_telemetry.pricing as pricing
+
+    pricing.reload_custom_pricing()
+
+    now = db._utcnow()
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call("s1", now, "tencent/hy3-20260706:free", "nous", 100, 50, 0.0, 100)
+
+    out = stats_mod.handle("models")
+    assert "tencent/hy3-20260706:free" in out
+    assert "free tier" in out
+    assert "no price entry" not in out
+
+
 # ---------------------------------------------------------------------------
 # date_from / date_to filtering (PR #35)
 # ---------------------------------------------------------------------------

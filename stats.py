@@ -298,6 +298,7 @@ def _models_block(
         "  " + "-" * 106,
     ]
     sub_zero_count = 0
+    free_zero_count = 0
     noentry_zero_count = 0
     for r in rows:
         prov = (r.get("provider") or "(unknown)")[:20]
@@ -311,9 +312,21 @@ def _models_block(
         cost = _fmt_cost(cost_v)
         note = ""
         if cost_v == 0.0:
-            if (r.get("model") or "").lower() in subscription_models:
+            # Three-way split of $0.00 rows so the footer never nags about a
+            # deliberate zero. `is_explicitly_priced` is the authority for
+            # "intentional $0" vs "unknown model": it is True for a `:free`
+            # suffix variant (resolved to $0 by rule, incl. the dated ids a
+            # gateway actually sends) and for built-in $0 seeds, but False for a
+            # genuine lookup miss. Subscription is checked first — a declared
+            # `_subscription` model is also explicitly priced, but earns the more
+            # specific label.
+            model_raw = r.get("model") or ""
+            if model_raw.lower() in subscription_models:
                 note = "subscription/free-tier"
                 sub_zero_count += 1
+            elif _pricing.is_explicitly_priced(model_raw, r.get("provider") or ""):
+                note = "free tier"
+                free_zero_count += 1
             else:
                 note = "no price entry"
                 noentry_zero_count += 1
@@ -325,6 +338,11 @@ def _models_block(
         lines.append(
             f"  {sub_zero_count} model(s) at $0.00 are subscription/free tier "
             "(declared in pricing.yaml via `_subscription: true`)."
+        )
+    if free_zero_count:
+        lines.append(
+            f"  {free_zero_count} model(s) at $0.00 are free tier "
+            "(`:free` suffix or built-in $0 price)."
         )
     if noentry_zero_count:
         lines.append(

@@ -633,6 +633,28 @@ only to make the assumption visible so the user can pin the rate.
 The bare id is never returned by OpenRouter, so it never collides with an
 auto-fetched entry and survives every refresh untouched.
 
+**`/stats models` $0 classification (three-way).** The Notes column disambiguates
+every `$0.00` row so the footer never nags about a deliberate zero.
+`stats._models_block` splits them, in order:
+
+1. `subscription/free-tier` — exact-id membership in `subscription_models` (a
+   declared `_subscription` entry).
+2. `free tier` — `pricing.is_explicitly_priced(model, provider)` is True but it is
+   not a declared subscription: a `:free` suffix id (resolved to $0 by the rule
+   above) or a built-in $0 seed. Known-free, not a lookup miss.
+3. `no price entry` — genuine unknown (`is_explicitly_priced` is False).
+
+**Gotcha — `_subscription` is the wrong tool for a `:free`-served model.** When the
+gateway serves the model with a `:free` suffix — and gateways send **dated** ids,
+e.g. `tencent/hy3-20260706:free` — the `:free` rule already resolves it to $0,
+records it known-free, and arms the free→paid alert, so **no `pricing.yaml` entry is
+needed** and the row shows as `free tier`. `_subscription` is only for a model served
+free under a **bare native id** (no `:free`), and the entry must match the **exact id
+the gateway records**: a non-dated key (`tencent/hy3:free`) never matches the dated
+id, so it neither prices nor labels the row. Both the cost lookup
+(`subscription_models` / custom exact match) and the stats label key on the exact
+recorded id — there is no prefix or date-stripping normalization for either.
+
 ### Google-symmetric normalization (added v0.4.0)
 
 **Problem:** The gateway reports model IDs differently depending on routing path:
