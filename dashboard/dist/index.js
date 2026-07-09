@@ -238,12 +238,14 @@
       return h(Card, null, h(CardContent, { className: "py-4 text-sm text-muted-foreground" },
         "Budget enabled but no global daily/monthly limit set."));
     }
+    const scopeTitle = (s) => (s.scope_id ? `Profile '${s.scope_id}' · ${s.window}` : s.scope);
     const scopeCards = data.scopes.map((s) =>
       h(Card, { key: s.scope },
         h(CardHeader, null,
           h("div", { className: "flex items-center gap-2" },
-            h(CardTitle, { className: "text-sm" }, s.scope),
+            h(CardTitle, { className: "text-sm" }, scopeTitle(s)),
             h(Badge, { variant: s.level === "ok" ? "outline" : "destructive" }, s.level),
+            (s.scope_id ? null : h(ScopeBadge, { global: true })),
           ),
         ),
         h(CardContent, { className: "text-sm font-courier" },
@@ -256,6 +258,7 @@
             h("div", { className: "flex items-center gap-2" },
               h(CardTitle, { className: "text-sm" }, `Burn-rate forecast (${forecast.window})`),
               h(Badge, { variant: forecast.status === "ok" ? "outline" : "destructive" }, forecast.status),
+              h(ScopeBadge, { global: true }),
             ),
           ),
           h(CardContent, { className: "text-sm font-courier" },
