@@ -1154,6 +1154,33 @@ Note: the standalone `/api/budget/forecast` maps the config-key scopes
 projecting — the previous `from . import budget` version raised `ImportError`
 under the standalone loader and never resolved a non-global limit.
 
+#### Per-profile scoping (plugin surface)
+
+The plugin dashboard is legible about scope: every surface either respects a
+selected profile or is explicitly labeled Global.
+
+- **Profile-scoped endpoints** accept an optional `?profile=<name>` query param
+  (empty = all profiles, unchanged): `/summary`, `/runs`, `/requests`,
+  `/providers`, `/cron`, `/token-breakdown`, and — added here — `/efficiency`
+  and `/smells`. All filter on `runs.profile` (`smells` qualifies it as
+  `r.profile` in its `tool_calls JOIN runs` queries).
+- **`/budget`** emits per-profile scope entries alongside the global ones when
+  `budgets.per_profile` is configured — one per profile present in `runs`, per
+  window, with `scope: "profile:<name>/<window>"` and a `scope_id` field.
+  Limits resolve override-else-default; this is **display only** (creating
+  per-profile limits stays a `budget.yaml`/CLI concern). The engine already
+  modeled `per_profile`; this wired it into the read endpoint.
+- **Frontend** (`dist/index.js`): in-page tabs (Efficiency, Smells, …) share the
+  Telemetry tab's single profile `<select>`. The two off-page slot widgets —
+  `sessions:top` (last-run) and `cron:top` (cron-7d) — cannot see that selector
+  (separate shell pages), so each carries its own `MiniProfileSelect` fed by
+  `/profiles`. A `ScopeBadge` labels each surface: the profile name /
+  "All profiles" on scoped surfaces, "Global" on genuinely-global ones.
+- **Stays Global** (labeled, not scoped): the burn-rate forecast (the plugin
+  `/forecast` has no scope param), tier-change and model-unavailable widgets.
+  `model_unavailable_alerts` has no profile/session column, so scoping it would
+  need a schema migration — out of scope.
+
 ---
 
 ## Cron Job Identification

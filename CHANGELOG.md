@@ -63,6 +63,32 @@ totals and was invisible to per-cron-job budgets.
 Phase 1 is reporting/aggregation correctness; in-path enforcement of a runaway
 async child mid-flight is deferred to Phase 2.
 
+### Added — Per-profile scoping and Global disclosures in the dashboard plugin (#66)
+
+The plugin dashboard is now legible about scope: every surface either respects
+the selected Hermes profile or is explicitly labeled **Global**. Previously the
+per-profile selector only scoped Summary/Runs/Requests/Providers/Cron, while
+Efficiency, AI smells, the last-run and cron-7d widgets, and the budget section
+silently stayed global.
+
+- **Profile-scoped endpoints** — `/efficiency` and `/smells` now accept an
+  optional `?profile=` (filtering on `runs.profile`; smells qualifies it as
+  `r.profile` across its `tool_calls`→`runs` join), joining the endpoints that
+  already supported it.
+- **Per-profile budget display** — `/budget` emits per-profile scope entries
+  (`profile:<name>/<window>` with a `scope_id`, override-else-default limits)
+  alongside the global ones when `budgets.per_profile` is configured. Display
+  only; the budget engine already modeled per-profile scopes.
+- **Scope disclosures** — a `ScopeBadge` on every surface shows the active scope
+  (the profile name, or "All profiles") or "Global" for surfaces that cannot be
+  scoped (burn-rate forecast, tier-change and model-unavailable widgets).
+- **Own selectors for off-page widgets** — the last-run (`sessions:top`) and
+  cron-7d (`cron:top`) slot widgets render on other shell pages and cannot see
+  the Telemetry tab's selector, so each carries its own profile selector.
+
+Plugin surface only (the standalone dashboard is a later effort); no schema
+change (`runs.profile` already exists).
+
 ## [0.7.0] - 2026-06-20
 
 ### Added — Dashboard widget for model-unavailable alerts

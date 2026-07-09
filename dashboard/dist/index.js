@@ -60,6 +60,41 @@
 
   const profileQS = (p) => (p ? `&profile=${encodeURIComponent(p)}` : "");
 
+  // Scope disclosure: on profile-scoped surfaces shows the active scope
+  // (profile name, or "All profiles"); on global-only surfaces shows "Global".
+  function ScopeBadge({ profile, global: isGlobal }) {
+    const label = isGlobal ? "Global" : (profile ? profile : "All profiles");
+    return h(Badge, {
+      variant: "outline",
+      className: "font-courier ml-auto",
+      title: isGlobal ? "Global — not filtered by profile" : `Scope: ${label}`,
+    }, label);
+  }
+
+  // Shared profile enumeration for the off-page slot widgets, which cannot see
+  // the Telemetry tab's selector (they render in separate shell pages).
+  function useProfiles() {
+    const [profiles, setProfiles] = useState([]);
+    useEffect(() => {
+      api("/profiles").then((d) => setProfiles((d && d.profiles) || [])).catch(() => setProfiles([]));
+    }, []);
+    return profiles;
+  }
+
+  function MiniProfileSelect({ profile, profiles, onChange }) {
+    if (!profiles.length) return null;
+    return h("select", {
+      className: "text-xs border border-border bg-transparent px-1 py-0.5 ml-auto",
+      value: profile,
+      onChange: (e) => onChange(e.target.value),
+      title: "Filter by Hermes profile",
+      "aria-label": "Filter by Hermes profile",
+    },
+      h("option", { value: "" }, "All profiles"),
+      profiles.map((p) => h("option", { key: p, value: p }, p)),
+    );
+  }
+
   function SummaryPanel({ profile }) {
     const [data, setData] = useState(null);
     const [err, setErr] = useState(null);
@@ -203,12 +238,14 @@
       return h(Card, null, h(CardContent, { className: "py-4 text-sm text-muted-foreground" },
         "Budget enabled but no global daily/monthly limit set."));
     }
+    const scopeTitle = (s) => (s.scope_id ? `Profile '${s.scope_id}' · ${s.window}` : s.scope);
     const scopeCards = data.scopes.map((s) =>
       h(Card, { key: s.scope },
         h(CardHeader, null,
           h("div", { className: "flex items-center gap-2" },
-            h(CardTitle, { className: "text-sm" }, s.scope),
+            h(CardTitle, { className: "text-sm" }, scopeTitle(s)),
             h(Badge, { variant: s.level === "ok" ? "outline" : "destructive" }, s.level),
+            (s.scope_id ? null : h(ScopeBadge, { global: true })),
           ),
         ),
         h(CardContent, { className: "text-sm font-courier" },
@@ -221,6 +258,7 @@
             h("div", { className: "flex items-center gap-2" },
               h(CardTitle, { className: "text-sm" }, `Burn-rate forecast (${forecast.window})`),
               h(Badge, { variant: forecast.status === "ok" ? "outline" : "destructive" }, forecast.status),
+              h(ScopeBadge, { global: true }),
             ),
           ),
           h(CardContent, { className: "text-sm font-courier" },
@@ -234,11 +272,11 @@
     return h("div", { className: "grid gap-3" }, [...scopeCards, forecastCard]);
   }
 
-  function EfficiencyPanel() {
+  function EfficiencyPanel({ profile }) {
     const [data, setData] = useState(null);
     useEffect(() => {
-      api("/efficiency?window_hours=24").then(setData).catch(() => setData({ sessions: [] }));
-    }, []);
+      api(`/efficiency?window_hours=24${profileQS(profile)}`).then(setData).catch(() => setData({ sessions: [] }));
+    }, [profile]);
     if (!data) return h("p", { className: "text-sm" }, "Loading…");
     const rows = data.sessions || [];
     return h("div", { className: "flex flex-col gap-3" },
@@ -298,7 +336,7 @@
     }, []);
     const Panel = (TABS.find((t) => t.id === active) || TABS[0]).render;
     return h("div", { className: "flex flex-col gap-4" },
-      h(SmellsWidget, null),
+      h(SmellsWidget, { profile }),
       h(ModelUnavailableWidget, null),
       h(TierTransitionsWidget, null),
       h(Card, null,
@@ -330,15 +368,16 @@
   function SessionsTopWidget() {
     // The shell renders sessions:top on /sessions; the active session id is
     // not yet exposed by the SDK, so we surface the most-recent run as a
-    // pinned "last session" card. When the SDK adds useActiveSession we
-    // swap this for a per-row card.
+    // pinned "last session" card. This widget renders on a different page than
+    // the Telemetry tab, so it carries its OWN profile selector.
     const [run, setRun] = useState(null);
+    const [loaded, setLoaded] = useState(false);
+    const [profile, setProfile] = useState("");
+    const profiles = useProfiles();
     useEffect(() => {
+      setLoaded(false);
       // Pull a handful of recent runs and pick the first one with real data.
-      // The literal last run in the table can be a session that died at
-      // init (no API key, agent never made a call), which shows as a noisy
-      // "Last run: $0.0000 · 0 in / 0 out" badge.
-      api("/runs?limit=10&window_hours=0")
+      api(`/runs?limit=10&window_hours=0${profileQS(profile)}`)
         .then((d) => {
           const rows = (d && d.rows) || [];
           const real = rows.find((r) =>
@@ -348,33 +387,48 @@
             || r.model,
           );
           setRun(real || null);
+          setLoaded(true);
         })
-        .catch(() => setRun(null));
-    }, []);
-    if (!run) return null;
+        .catch(() => { setRun(null); setLoaded(true); });
+    }, [profile]);
+    // Stay invisible on the happy path only when there is nothing to show AND
+    // no profile selector to offer.
+    if (!run && !profiles.length) return null;
     return h(Card, { className: "border-dashed" },
       h(CardContent, { className: "py-2 flex items-center gap-3 text-xs font-courier" },
         h(Badge, { variant: "outline" }, "Telemetry"),
-        h("span", null, "Last run: ", h("strong", null, fmtUsd(run.cost_usd))),
-        h("span", { className: "text-muted-foreground" },
-          `${fmtInt(run.tokens_in)} in / ${fmtInt(run.tokens_out)} out · ${run.model || "—"}`),
+        run
+          ? h("span", null, "Last run: ", h("strong", null, fmtUsd(run.cost_usd)))
+          : h("span", { className: "text-muted-foreground" },
+              loaded ? (profile ? "No runs for this profile" : "No runs recorded") : "Loading…"),
+        run
+          ? h("span", { className: "text-muted-foreground" },
+              `${fmtInt(run.tokens_in)} in / ${fmtInt(run.tokens_out)} out · ${run.model || "—"}`)
+          : null,
+        h(MiniProfileSelect, { profile, profiles, onChange: setProfile }),
       ),
     );
   }
 
   function CronTopWidget() {
+    // Renders on the shell's /cron page, so it carries its OWN profile selector
+    // (it cannot see the Telemetry tab's selector).
     const [data, setData] = useState(null);
+    const [profile, setProfile] = useState("");
+    const profiles = useProfiles();
     useEffect(() => {
-      api("/cron?window_hours=168").then(setData).catch(() => setData({ rows: [] }));
-    }, []);
-    if (!data) return null;
-    const total = (data.rows || []).reduce((acc, r) => acc + (r.cost_usd || 0), 0);
-    const failed = (data.rows || []).reduce((acc, r) => acc + (r.failed_runs || 0), 0);
+      api(`/cron?window_hours=168${profileQS(profile)}`).then(setData).catch(() => setData({ rows: [] }));
+    }, [profile]);
+    if (!data && !profiles.length) return null;
+    const rows = (data && data.rows) || [];
+    const total = rows.reduce((acc, r) => acc + (r.cost_usd || 0), 0);
+    const failed = rows.reduce((acc, r) => acc + (r.failed_runs || 0), 0);
     return h(Card, { className: "border-dashed" },
       h(CardContent, { className: "py-2 flex items-center gap-3 text-xs font-courier" },
         h(Badge, { variant: "outline" }, "Telemetry"),
         h("span", null, "Cron 7d: ", h("strong", null, fmtUsd(total))),
         failed ? h(Badge, { variant: "destructive" }, `${failed} failed`) : null,
+        h(MiniProfileSelect, { profile, profiles, onChange: setProfile }),
       ),
     );
   }
@@ -462,6 +516,7 @@
         h(CardTitle, { className: "text-sm flex items-center gap-2" },
           h(Badge, { variant: within24h ? "destructive" : "outline" }, "Tier change"),
           h("span", null, `${rows.length} model${rows.length === 1 ? "" : "s"} flipped free→paid (72h)`),
+          h(ScopeBadge, { global: true }),
         ),
       ),
       h(CardContent, { className: "py-2 space-y-1 text-xs font-courier" },
@@ -501,6 +556,7 @@
         h(CardTitle, { className: "text-sm flex items-center gap-2" },
           h(Badge, { variant: within24h ? "destructive" : "outline" }, "Model unavailable"),
           h("span", null, `${rows.length} model${rows.length === 1 ? "" : "s"} 404'd (72h)`),
+          h(ScopeBadge, { global: true }),
         ),
       ),
       h(CardContent, { className: "py-2 space-y-1 text-xs font-courier" },
@@ -517,14 +573,14 @@
     );
   }
 
-  function SmellsWidget() {
+  function SmellsWidget({ profile }) {
     // Surfaces AI anti-patterns detected in the last 24h. Same happy-path
     // contract as the sibling widgets: render nothing when no smells fire so
     // it stays invisible in normal operation.
     const [data, setData] = useState(null);
     useEffect(() => {
-      api("/smells?window_hours=24").then(setData).catch(() => setData({ smells: [] }));
-    }, []);
+      api(`/smells?window_hours=24${profileQS(profile)}`).then(setData).catch(() => setData({ smells: [] }));
+    }, [profile]);
     const smells = (data && data.smells) || [];
     if (!smells.length) return null;
     const hasHigh = smells.some((s) => s.severity === "high");
@@ -533,6 +589,7 @@
         h(CardTitle, { className: "text-sm flex items-center gap-2" },
           h(Badge, { variant: hasHigh ? "destructive" : "outline" }, "AI smells"),
           h("span", null, `${smells.length} anti-pattern${smells.length === 1 ? "" : "s"} detected (24h)`),
+          h(ScopeBadge, { profile }),
         ),
       ),
       h(CardContent, { className: "py-2 space-y-1 text-xs font-courier" },
