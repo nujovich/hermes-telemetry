@@ -555,23 +555,30 @@ def efficiency(window_hours: int = 24, profile: str = "") -> dict:
 # AI smell detection
 # ---------------------------------------------------------------------------
 @router.get("/smells")
-def smells(window_hours: int = 24) -> dict:
+def smells(window_hours: int = 24, profile: str = "") -> dict:
     """AI smell detection over existing telemetry. Inlined per the standalone
     loader constraint; mirrors smell_detector.detect_all."""
     from collections import Counter
 
     sc = _since_clause(window_hours, "started_at")
     tsc = _since_clause(window_hours, "tc.ts")
+    # Profile scoping: `pc` for queries on `runs` directly, `pcr` for queries
+    # that JOIN runs as `r` (column name must be qualified there). `pp` is the
+    # shared parameter tuple for whichever clause is used.
+    pc = " AND profile = ?" if profile else ""
+    pcr = " AND r.profile = ?" if profile else ""
+    pp: tuple = (profile,) if profile else ()
     found: list[dict] = []
 
     for r in _rows(
         f"""SELECT session_id, COALESCE(cron_job_id,'') AS cron_job_id,
                    COALESCE(tokens_in,0) AS tokens_in, COALESCE(tokens_out,0) AS tokens_out,
                    COALESCE(status,'running') AS status, started_at
-            FROM runs WHERE {sc} AND status != 'running'
+            FROM runs WHERE {sc} AND status != 'running'{pc}
               AND tokens_in > 1000
               AND CAST(tokens_out AS REAL) / CAST(tokens_in AS REAL) < 0.10
-            ORDER BY tokens_in DESC LIMIT 50"""
+            ORDER BY tokens_in DESC LIMIT 50""",
+        pp,
     ):
         ratio = r["tokens_out"] / max(r["tokens_in"], 1) * 100
         found.append(
@@ -591,11 +598,12 @@ def smells(window_hours: int = 24) -> dict:
                    COUNT(*) AS total_tools,
                    SUM(CASE WHEN tc.ok = 0 THEN 1 ELSE 0 END) AS failed_tools
             FROM tool_calls tc JOIN runs r ON tc.session_id = r.session_id
-            WHERE {tsc} AND r.status != 'running'
+            WHERE {tsc} AND r.status != 'running'{pcr}
             GROUP BY tc.session_id
             HAVING total_tools > 20
                AND CAST(failed_tools AS REAL) / CAST(total_tools AS REAL) > 0.30
-            ORDER BY total_tools DESC LIMIT 50"""
+            ORDER BY total_tools DESC LIMIT 50""",
+        pp,
     ):
         rate = r["failed_tools"] / max(r["total_tools"], 1) * 100
         found.append(
@@ -613,7 +621,8 @@ def smells(window_hours: int = 24) -> dict:
     tool_rows = _rows(
         f"""SELECT tc.session_id, tc.tool_name, r.cron_job_id, r.status, r.started_at
             FROM tool_calls tc JOIN runs r ON tc.session_id = r.session_id
-            WHERE {tsc} AND r.status != 'running'"""
+            WHERE {tsc} AND r.status != 'running'{pcr}""",
+        pp,
     )
     by_session: dict = {}
     meta: dict = {}
@@ -654,7 +663,8 @@ def smells(window_hours: int = 24) -> dict:
     agg = _one(
         f"""SELECT COUNT(*) AS total,
                    SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors
-            FROM runs WHERE {sc} AND status != 'running'"""
+            FROM runs WHERE {sc} AND status != 'running'{pc}""",
+        pp,
     )
     total_runs = agg.get("total") or 0
     error_runs = agg.get("errors") or 0
@@ -663,8 +673,9 @@ def smells(window_hours: int = 24) -> dict:
         for r in _rows(
             f"""SELECT session_id, COALESCE(cron_job_id,'') AS cron_job_id, status,
                        COALESCE(api_calls,0) AS api_calls, ROUND(COALESCE(cost_usd,0.0),6) AS cost_usd, started_at
-                FROM runs WHERE {sc} AND status = 'error'
-                ORDER BY started_at DESC LIMIT 50"""
+                FROM runs WHERE {sc} AND status = 'error'{pc}
+                ORDER BY started_at DESC LIMIT 50""",
+            pp,
         ):
             found.append(
                 {
@@ -682,9 +693,10 @@ def smells(window_hours: int = 24) -> dict:
         f"""SELECT session_id, COALESCE(cron_job_id,'') AS cron_job_id, COALESCE(status,'running') AS status,
                    COALESCE(tokens_in,0) AS tokens_in, COALESCE(tokens_out,0) AS tokens_out,
                    COALESCE(api_calls,0) AS api_calls, ROUND(COALESCE(cost_usd,0.0),6) AS cost_usd, started_at
-            FROM runs WHERE {sc} AND status != 'running'
+            FROM runs WHERE {sc} AND status != 'running'{pc}
               AND ((tokens_in + tokens_out) > 100000 OR api_calls > 50)
-            ORDER BY (tokens_in + tokens_out) DESC LIMIT 50"""
+            ORDER BY (tokens_in + tokens_out) DESC LIMIT 50""",
+        pp,
     ):
         found.append(
             {

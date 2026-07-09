@@ -611,3 +611,48 @@ def test_efficiency_filters_by_profile(plugin_api):
 
     # No profile = both sessions (unchanged behavior).
     assert plugin_api.efficiency(window_hours=24)["sessions_scored"] == 2
+
+
+def test_smells_filters_by_profile(plugin_api):
+    """/smells scopes detected anti-patterns to a single profile when asked."""
+    from datetime import datetime, timezone
+
+    import db as runtime_db
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[
+            {"session_id": "c1", "model": "m", "platform": "cli", "profile": "coder"},
+            {"session_id": "o1", "model": "m", "platform": "cli", "profile": "ops"},
+        ],
+        rows_llm=[
+            {
+                "session_id": "c1",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 10000,
+                "tokens_out": 500,
+                "cost_usd": 0.05,
+                "latency_ms": 100,
+            },
+            {
+                "session_id": "o1",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 10000,
+                "tokens_out": 500,
+                "cost_usd": 0.05,
+                "latency_ms": 100,
+            },
+        ],
+    )
+    runtime_db.end_run("c1", "ok")
+    runtime_db.end_run("o1", "ok")
+
+    out = plugin_api.smells(window_hours=24, profile="coder")
+    assert {s["session_id"] for s in out["smells"]} == {"c1"}
+
+    # No profile = smells from both profiles.
+    assert {s["session_id"] for s in plugin_api.smells(window_hours=24)["smells"]} == {"c1", "o1"}
