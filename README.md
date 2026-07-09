@@ -52,31 +52,35 @@ LLM provider
 
 -----
 
-> ### ℹ️ Free Nemotron Ultra before June 18, 2026 — no action needed
+> ### ℹ️ Two models are free right now — declare them while the promo lasts
 >
-> The `nvidia/nemotron-3-ultra:free` promo **ends June 18, 2026**, after which the
-> model bills as `nvidia/nemotron-3-ultra` (and the OpenRouter long form
-> `nvidia/nemotron-3-ultra-550b-a55b`). You no longer need to declare anything in
-> `pricing.yaml`: **any model id ending in `:free` resolves to `$0` automatically**
-> (the OpenRouter free-tier convention) and is recorded as known-free, with no
-> estimated-price warning. This covers every form the gateway might send —
-> `nvidia/nemotron-3-ultra:free` and `nvidia/nemotron-3-ultra-550b-a55b:free`
-> alike.
+> Two gateway models currently bill at **$0** on a time-limited free tier:
 >
-> When the promo ends and the `:free` suffix is dropped, the model starts
-> incurring cost and hermes-telemetry detects the free→paid jump — even though the
-> id changes — and warns you in-context. (Pricing details: [`pricing.yaml`](#pricingyaml).)
+> | Model id | Free until |
+> |----------|------------|
+> | `tencent/hy3` | 2026-07-15 |
+> | `stepfun/step-3.7-flash` | 2026-07-23 |
 >
-> You may still pin an explicit price for a `:free` id if you ever need to (an
-> explicit `pricing.yaml` entry overrides the automatic `$0`):
+> Both are served under **bare ids** (no `:free` suffix), so the automatic
+> free-tier suffix rule does not fire — left undeclared they'd be treated as
+> unknown and raise an estimated-price warning. Declare each with
+> `_subscription: true` in [`pricing.yaml`](#pricingyaml) so the `$0` is recorded
+> as intentional (not a lookup miss) and survives every OpenRouter refresh:
 >
 > ```yaml
 > models:
->   nvidia/nemotron-3-ultra:free:
+>   tencent/hy3:
 >     input: 0.0
 >     output: 0.0
->     _subscription: true
+>     _subscription: true   # free tier ends 2026-07-15
+>   stepfun/step-3.7-flash:
+>     input: 0.0
+>     output: 0.0
+>     _subscription: true   # free tier ends 2026-07-23
 > ```
+>
+> When a promo ends the model starts incurring cost. Remove its entry (or set the
+> real price) so hermes-telemetry bills it correctly again.
 
 -----
 
@@ -621,7 +625,7 @@ hermes-telemetry — models (last 24 h)
   Provider             Model                                           Calls   Real   Est         Cost  Notes
   ----------------------------------------------------------------------------------------------------------
   nous                 deepseek/deepseek-v4-pro-20260423                 449    448     1    $2.318788
-  nous                 nvidia/nemotron-3-ultra:free                      153    153     0    $0.000000  subscription/free-tier
+  nous                 tencent/hy3                                       153    153     0    $0.000000  subscription/free-tier
   openrouter           some/unpriced-model                                12     12     0    $0.000000  no price entry
 
   Rows are grouped by provider, then by calls (desc).
@@ -1005,7 +1009,7 @@ The plugin can automatically fetch model pricing from OpenRouter’s public API,
   - Previously auto-fetched models are updated when prices change
   - Models are tagged with `_auto: true` and `_source: openrouter` — the `_source` tag is load-bearing: it drives the provider-aware guard above
 
-> **NVIDIA NIM** (`build.nvidia.com`) is supported out of the box: the Nemotron lineup ships as built-in seed prices, so NIM-served calls cost correctly even though NIM has no auto-refresh source. The seeds are immune to OpenRouter syncs, and a NIM call never borrows OpenRouter's rate for a colliding model id. Any `…:free` id resolves to `$0.00` via the free-tier suffix rule (so a seeded model's `:free` variant is never mis-billed at its paid rate); the `nemotron-3-ultra:free` promo ends 2026-06-18 (see the notice above).
+> **NVIDIA NIM** (`build.nvidia.com`) is supported out of the box: the Nemotron lineup ships as built-in seed prices, so NIM-served calls cost correctly even though NIM has no auto-refresh source. The seeds are immune to OpenRouter syncs, and a NIM call never borrows OpenRouter's rate for a colliding model id. Any `…:free` id resolves to `$0.00` via the free-tier suffix rule (so a seeded model's `:free` variant is never mis-billed at its paid rate).
 
 ### Estimated-Price Models
 
