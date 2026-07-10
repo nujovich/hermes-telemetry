@@ -927,6 +927,96 @@ def compact_rollups(since_iso: str | None = None) -> dict[str, int]:
     return written
 
 
+# ---------------------------------------------------------------------------
+# Rollup retention + auto-prune (issue #157, M3)
+# ---------------------------------------------------------------------------
+
+# Default per-tier retention windows (days). A tier may be disabled by setting
+# its retention to 0 or a negative value in retention.yaml.
+_DEFAULT_RETENTION_DAYS = {"daily": 90, "weekly": 365, "monthly": 1825}
+
+
+def _retention_path() -> Path:
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    return hermes_home / "telemetry" / "retention.yaml"
+
+
+def _load_retention_config() -> dict[str, int]:
+    """Load per-tier ``retention_days`` from ``retention.yaml``.
+
+    Returns a mapping granularity -> retention window in days. Tiers missing
+    from the file fall back to ``_DEFAULT_RETENTION_DAYS``; a missing,
+    unreadable, or ill-formed file yields the defaults wholesale. A value <= 0
+    disables pruning for that tier (its buckets are kept forever).
+    """
+    defaults = dict(_DEFAULT_RETENTION_DAYS)
+    path = _retention_path()
+    if not path.exists():
+        return defaults
+    try:
+        import yaml
+    except ImportError:
+        return defaults
+    try:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:  # noqa: BLE001 - never let a bad config crash pruning
+        logger.error("Failed to load %s: %s", path, exc)
+        return defaults
+    raw = (cfg.get("retention_days", {}) or {}) if isinstance(cfg, dict) else {}
+    result = dict(defaults)
+    for granularity in _ROLLUP_GRANULARITIES:
+        # An explicit value in the file wins (including 0 / negative, which
+        # disables pruning for that tier). Only an ABSENT key falls back to the
+        # built-in default, so a deliberate "keep forever" (0) is honored.
+        if granularity in raw:
+            val = raw[granularity]
+            if isinstance(val, int):
+                result[granularity] = val
+    return result
+
+
+def auto_prune_rollups(retention: dict[str, int] | None = None) -> dict[str, int]:
+    """Delete rollup buckets (and their ``rollup_contrib`` source rows) older
+    than the per-tier retention window.
+
+    *retention* maps granularity -> retention days. When omitted it is loaded
+    from ``_load_retention_config()``. A tier with retention <= 0 is skipped
+    (kept forever). Only whole buckets whose ``period_start`` is strictly
+    older than ``today - retention_days`` are removed, so in-window data is
+    never touched. Pruning the matching ``rollup_contrib`` rows ensures a later
+    ``compact_rollups()`` rebuild cannot resurrect the dropped bucket.
+
+    Safe to run on a schedule (e.g. a maintenance cron) and idempotent.
+
+    Returns:
+        dict granularity -> number of bucket rows pruned from that tier's table.
+    """
+    if retention is None:
+        retention = _load_retention_config()
+    conn = _get_conn()
+    today = datetime.now(timezone.utc).date()
+    pruned: dict[str, int] = {}
+    for granularity, table in zip(_ROLLUP_GRANULARITIES, _ROLLUP_TABLES):
+        days = retention.get(granularity, 0)
+        if not isinstance(days, int) or days <= 0:
+            pruned[granularity] = 0
+            continue
+        cutoff = (today - _timedelta(days=days)).isoformat()
+        # Prune the shared, derived rollup table for this tier.
+        cur = conn.execute(
+            f"DELETE FROM {table} WHERE period_start < ?",
+            (cutoff,),
+        )
+        pruned[granularity] = cur.rowcount
+        # Prune the matching source-of-truth contribution rows so a later
+        # compact_rollups() rebuild cannot resurrect the deleted bucket.
+        conn.execute(
+            "DELETE FROM rollup_contrib WHERE granularity = ? AND period_start < ?",
+            (granularity, cutoff),
+        )
+    return pruned
+
+
 def record_llm_call(
     session_id: str,
     ts: str,

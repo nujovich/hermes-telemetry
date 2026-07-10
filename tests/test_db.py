@@ -1391,3 +1391,123 @@ def test_compact_rollups_partial_since_iso():
     assert june is not None
     assert june["api_calls"] == 1
     assert june["session_count"] == 1
+
+
+def test_load_retention_config_defaults_when_missing(tmp_path, monkeypatch):
+    """With no retention.yaml, _load_retention_config returns the built-in
+    defaults for all three tiers."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg = db._load_retention_config()
+    assert cfg == {"daily": 90, "weekly": 365, "monthly": 1825}
+
+
+def test_load_retention_config_overrides_and_disables(tmp_path, monkeypatch):
+    """retention.yaml overrides per-tier windows; a <=0 value disables a tier
+    (kept forever). Unknown tiers fall back to the default."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    (tmp_path / "telemetry" / "retention.yaml").write_text(
+        "retention_days:\n  daily: 30\n  weekly: 0\n  monthly: -1\n",
+        encoding="utf-8",
+    )
+    cfg = db._load_retention_config()
+    assert cfg["daily"] == 30
+    # 0 / negative => disabled (kept forever), not the default.
+    assert cfg["weekly"] == 0
+    assert cfg["monthly"] == -1
+
+
+def test_auto_prune_rollups_removes_expired_buckets(tmp_path, monkeypatch):
+    """auto_prune_rollups drops whole buckets strictly older than the retention
+    cutoff and keeps in-window buckets, per tier."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Build buckets across tiers at well-separated dates.
+    old = "2020-01-15T09:00:00+00:00"  # far outside any retention window
+    new = "2026-06-10T09:00:00+00:00"
+    _seed_calls("prune-old", [(old, "gpt-4o", "openai", 100, 100, 0.01)])
+    db.end_run("prune-old", status="ok")
+    _seed_calls("prune-new", [(new, "gpt-4o", "openai", 200, 200, 0.02)])
+    db.end_run("prune-new", status="ok")
+
+    # Daily retention = 90 days, weekly = 365, monthly = 1825. The 2020 data is
+    # older than all three cutoffs; the 2026 data is inside all three.
+    pruned = db.auto_prune_rollups(retention={"daily": 90, "weekly": 365, "monthly": 1825})
+    assert pruned["daily"] == 1
+    assert pruned["weekly"] == 1
+    assert pruned["monthly"] == 1
+
+    conn = db._get_conn()
+    # Old 2020 bucket gone from daily; new mid-2026 bucket remains.
+    assert (
+        conn.execute("SELECT 1 FROM daily_rollups WHERE period_start=?", ("2020-01-15",)).fetchone()
+        is None
+    )
+    assert (
+        conn.execute("SELECT 1 FROM daily_rollups WHERE period_start=?", ("2026-06-10",)).fetchone()
+        is not None
+    )
+
+
+def test_auto_prune_rollups_skips_disabled_tier(tmp_path, monkeypatch):
+    """A tier with retention <= 0 is never pruned, even when its buckets are
+    ancient."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    old = "2020-01-15T09:00:00+00:00"
+    _seed_calls("prune-disabled", [(old, "gpt-4o", "openai", 100, 100, 0.01)])
+    db.end_run("prune-disabled", status="ok")
+
+    # Disable daily pruning entirely.
+    pruned = db.auto_prune_rollups(retention={"daily": 0, "weekly": 1, "monthly": 1})
+    assert pruned["daily"] == 0  # skipped
+    conn = db._get_conn()
+    assert (
+        conn.execute("SELECT 1 FROM daily_rollups WHERE period_start=?", ("2020-01-15",)).fetchone()
+        is not None
+    )
+
+
+def test_auto_prune_rollups_also_clears_contrib(tmp_path, monkeypatch):
+    """Pruning must remove the matching rollup_contrib source rows so a later
+    compact_rollups() cannot resurrect the dropped bucket."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    old = "2020-01-15T09:00:00+00:00"
+    new = "2026-06-10T09:00:00+00:00"
+    _seed_calls("contrib-old", [(old, "gpt-4o", "openai", 100, 100, 0.01)])
+    db.end_run("contrib-old", status="ok")
+    _seed_calls("contrib-new", [(new, "gpt-4o", "openai", 200, 200, 0.02)])
+    db.end_run("contrib-new", status="ok")
+
+    db.auto_prune_rollups(retention={"daily": 90, "weekly": 365, "monthly": 1825})
+
+    conn = db._get_conn()
+    # The old contribution row is gone.
+    contrib_old = conn.execute(
+        "SELECT 1 FROM rollup_contrib WHERE session_id=? AND granularity=?",
+        ("contrib-old", "daily"),
+    ).fetchone()
+    assert contrib_old is None
+    # The new contribution row survives.
+    contrib_new = conn.execute(
+        "SELECT 1 FROM rollup_contrib WHERE session_id=? AND granularity=?",
+        ("contrib-new", "daily"),
+    ).fetchone()
+    assert contrib_new is not None
+
+    # The old daily bucket is gone from the derived table.
+    assert (
+        conn.execute("SELECT 1 FROM daily_rollups WHERE period_start=?", ("2020-01-15",)).fetchone()
+        is None
+    )
+    # The new daily bucket remains.
+    assert (
+        conn.execute("SELECT 1 FROM daily_rollups WHERE period_start=?", ("2026-06-10",)).fetchone()
+        is not None
+    )
+
+    # NOTE on design: the rollup tiers are a derived aggregate whose canonical
+    # source is llm_calls. auto_prune_rollups removes the expired bucket AND its
+    # rollup_contrib row, so the bucket stays gone until something rescans the
+    # raw calls. A full compact_rollups() (a repair/rebuild operation, not the
+    # day-to-day maintenance step) re-derives rollup_contrib from llm_calls and
+    # would re-create the bucket. Routine retention is therefore driven by
+    # auto_prune_rollups, scheduled on its own (without a full compact).
