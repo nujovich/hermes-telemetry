@@ -1622,3 +1622,50 @@ def test_spend_by_scope_profile_filters():
 
     result = db.spend_by_scope("profile", "coder", "2000-01-01T00:00:00+00:00")
     assert result["spent_usd"] == 1.50
+
+
+# ---------------------------------------------------------------------------
+# v14 — pricing_snapshots (core-sourced tariff history w/ provenance)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_v14_columns():
+    conn = db._get_conn()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pricing_snapshots)")}
+    assert {
+        "id",
+        "provider",
+        "model",
+        "input_cost_per_million",
+        "output_cost_per_million",
+        "cache_read_cost_per_million",
+        "cache_write_cost_per_million",
+        "request_cost",
+        "source",
+        "source_url",
+        "pricing_version",
+        "fetched_at",
+        "captured_at",
+        "base_url",
+        "api_mode",
+    } <= cols
+
+
+def test_schema_v14_recorded():
+    versions = {row[0] for row in db._get_conn().execute("SELECT version FROM schema_version")}
+    assert 14 in versions
+
+
+def test_migrate_v14_creates_table_from_wedged_v13():
+    """Upgrade path: a DB stuck in the pre-v14 shape (no pricing_snapshots, v14
+    marker absent) self-heals on the next connect."""
+    conn = db._get_conn()
+    conn.execute("DROP TABLE IF EXISTS pricing_snapshots")
+    conn.execute("DELETE FROM schema_version WHERE version >= 14")
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "pricing_snapshots" not in tables  # wedged state confirmed
+
+    db._ensure_schema(conn)
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "pricing_snapshots" in tables

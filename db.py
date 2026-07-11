@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 13
+_SCHEMA_VERSION = 14
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -171,6 +171,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v11(conn)
     _migrate_v12(conn)
     _migrate_v13(conn)
+    _migrate_v14(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -518,6 +519,46 @@ def _migrate_v13(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (13, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v14(conn: sqlite3.Connection) -> None:
+    """New table ``pricing_snapshots``: an append-per-change history of the
+    tariffs Hermes core resolves for each ``(provider, model)``, with provenance
+    (``source`` / ``source_url`` / ``pricing_version`` / ``fetched_at``). Captured
+    from ``agent.usage_pricing.get_pricing_entry`` in the ``post_api_request``
+    hook (see ``core_pricing.py``). New table only ⇒ ``CREATE TABLE IF NOT
+    EXISTS``, no ALTER. See ONBOARDING.md § Core-sourced pricing snapshots.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 14")
+    if cur.fetchone() is not None:
+        return
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS pricing_snapshots (
+            id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider                      TEXT NOT NULL,
+            model                         TEXT NOT NULL,
+            input_cost_per_million        REAL,
+            output_cost_per_million       REAL,
+            cache_read_cost_per_million   REAL,
+            cache_write_cost_per_million  REAL,
+            request_cost                  REAL,
+            source                        TEXT,
+            source_url                    TEXT,
+            pricing_version               TEXT,
+            fetched_at                    TEXT,
+            captured_at                   TEXT NOT NULL,
+            base_url                      TEXT,
+            api_mode                      TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_pricing_snapshots_model
+            ON pricing_snapshots(provider, model, id);
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (14, ?)",
         (_utcnow(),),
     )
 
