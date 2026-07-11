@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -163,7 +164,7 @@ def register(ctx) -> None:  # noqa: ANN001
     _setup_log_file()
     tele_log = logging.getLogger("hermes_telemetry")
 
-    from . import budget, db, moa, pricing, setup, stats
+    from . import budget, core_pricing, db, moa, pricing, setup, stats
 
     # ------------------------------------------------------------------
     # Start budget file watcher (hot-reload on budget.yaml changes)
@@ -245,6 +246,8 @@ def register(ctx) -> None:  # noqa: ANN001
         session_id: str = "",
         model: str = "",
         provider: str = "",
+        base_url: str = "",
+        api_mode: str = "",
         api_duration: float = 0.0,
         usage: dict | None = None,
         response_model: str | None = None,
@@ -381,6 +384,29 @@ def register(ctx) -> None:  # noqa: ANN001
                 provider_assumed=provider_assumed,
                 moa_preset=moa_preset,
             )
+
+            # Pricing snapshot (v14): capture the core-resolved tariff + provenance
+            # for this (provider, model), throttled to ~once per TTL per process.
+            # Own guard so a pricing failure never affects the call recorded above
+            # or the agent turn. See ONBOARDING.md § Core-sourced pricing snapshots.
+            if effective_model:
+                _snap_key = (provider, effective_model)
+                _snap_now = time.monotonic()
+                _do_snapshot = False
+                with _pricing_snapshot_lock:
+                    _last = _pricing_snapshot_seen.get(_snap_key)
+                    if _last is None or (_snap_now - _last) >= _PRICING_SNAPSHOT_TTL_S:
+                        _pricing_snapshot_seen[_snap_key] = _snap_now
+                        _do_snapshot = True
+                if _do_snapshot:
+                    try:
+                        _snap = core_pricing.resolve(effective_model, provider, base_url)
+                        if _snap:
+                            db.record_pricing_snapshot(
+                                provider, effective_model, _snap, base_url, api_mode
+                            )
+                    except Exception as _snap_exc:
+                        tele_log.debug("pricing snapshot capture failed: %s", _snap_exc)
         except Exception as exc:
             tele_log.error("post_api_request hook failed: %s", exc)
 
