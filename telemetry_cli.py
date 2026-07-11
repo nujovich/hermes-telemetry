@@ -4,8 +4,10 @@ import argparse
 import json
 import sys
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from . import db, stats
+from .stats import _date_range_label, _fmt_cost, _fmt_int
 
 _STATS_WINDOW_HOURS: dict[str, int] = {
     "today": 24,
@@ -123,6 +125,26 @@ def _build_parser_into(sub) -> None:
         help=f"One of: {', '.join(_STATS_CHOICES)} (default: today)",
     )
     sp.add_argument(
+        "--granularity",
+        dest="granularity",
+        choices=["day", "week", "month"],
+        default=None,
+        help="Bucket the rollup tables by day/week/month (reads pre-aggregated tiers). "
+        "Implies a rollup query instead of a session scan.",
+    )
+    sp.add_argument(
+        "--model",
+        dest="filter_model",
+        default=None,
+        help="Filter rollup buckets to an exact model name (use with --granularity).",
+    )
+    sp.add_argument(
+        "--provider",
+        dest="filter_provider",
+        default=None,
+        help="Filter rollup buckets to an exact provider (use with --granularity).",
+    )
+    sp.add_argument(
         "--from",
         dest="date_from",
         type=_parse_date,
@@ -181,10 +203,70 @@ def _resolve_date_range(args: argparse.Namespace) -> tuple[str | None, str | Non
 def _handle_stats(args: argparse.Namespace) -> None:
     date_from, date_to = _resolve_date_range(args)
 
+    # --granularity switches /stats onto the pre-aggregated rollup tiers
+    # (M4, #157) instead of scanning runs/llm_calls. When no explicit --from/
+    # --to is given, the rollup query spans the full stored history for the
+    # tier (the rollup tables are the long-term store; a 24h subcommand window
+    # would hide older buckets). Explicit date flags still bound the query.
+    if args.granularity is not None:
+        uses_explicit_range = args.date_from is not None or args.date_to is not None
+        rf = date_from if uses_explicit_range else None
+        rt = date_to if uses_explicit_range else None
+        rows = db.query_rollups(
+            args.granularity,
+            model=args.filter_model,
+            provider=args.filter_provider,
+            date_from=rf,
+            date_to=rt,
+        )
+        if args.json:
+            print(json.dumps(rows, default=str))
+        else:
+            print(_rollups_text(args.granularity, rows, rf, rt))
+        return
+
     if args.json:
         _stats_json(args.subcommand, date_from, date_to)
     else:
         _stats_text(args.subcommand, date_from, date_to)
+
+
+def _rollups_text(
+    granularity: str,
+    rows: list[dict[str, Any]],
+    date_from: str | None,
+    date_to: str | None,
+) -> str:
+    """Render a rollup-tier query (M4, #157) as a bucketed table."""
+    gran = granularity
+    label = _date_range_label(date_from, date_to) if (date_from or date_to) else "all time"
+    if not rows:
+        return (
+            f"hermes-telemetry — rollups ({gran}, {label})\n"
+            "No aggregated data in this window.\n"
+            "\n"
+            "Run a session (so end_run folds it into the rollup tiers) and retry."
+        )
+
+    lines = [
+        f"hermes-telemetry — rollups ({gran}, {label})",
+        "=" * 92,
+        f"  {'Period':<12} {'Provider':<18} {'Model':<34} "
+        f"{'Sess':>5} {'Calls':>6} {'Tok-in':>9} {'Cost':>12}",
+        "  " + "-" * 90,
+    ]
+    for r in rows:
+        period = (r.get("period_start") or "")[:12]
+        prov = (r.get("provider") or "(unknown)")[:18]
+        model = (r.get("model") or "(unknown)")[:34]
+        sess = _fmt_int(r.get("session_count"))
+        calls = _fmt_int(r.get("api_calls"))
+        tin = _fmt_int(r.get("tokens_in"))
+        cost = _fmt_cost(r.get("cost_usd"))
+        lines.append(
+            f"  {period:<12} {prov:<18} {model:<34} {sess:>5} {calls:>6} {tin:>9} {cost:>12}"
+        )
+    return "\n".join(lines)
 
 
 def _stats_text(subcommand: str, date_from: str | None, date_to: str | None) -> None:

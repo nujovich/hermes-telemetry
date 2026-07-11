@@ -1017,6 +1017,106 @@ def auto_prune_rollups(retention: dict[str, int] | None = None) -> dict[str, int
     return pruned
 
 
+# ---------------------------------------------------------------------------
+# Rollup queries for /stats --granularity (issue #157, M4)
+# ---------------------------------------------------------------------------
+
+_VALID_GRANULARITIES = ("day", "week", "month")
+
+
+def _normalize_granularity(granularity: str | None) -> str:
+    """Coerce a CLI granularity token to one of the rollup tiers.
+
+    Accepts 'day'/'daily', 'week'/'weekly', 'month'/'monthly' (case
+    insensitive). Returns the canonical rollup granularity key ('daily',
+    'weekly', 'monthly'). Raises ValueError on anything else so the CLI can
+    surface a clean usage error.
+    """
+    g = (granularity or "day").strip().lower()
+    if g in ("day", "daily"):
+        return "daily"
+    if g in ("week", "weekly"):
+        return "weekly"
+    if g in ("month", "monthly"):
+        return "monthly"
+    raise ValueError(f"invalid granularity: {granularity!r} (expected one of: day, week, month)")
+
+
+def query_rollups(
+    granularity: str = "daily",
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read the pre-aggregated tiered rollup tables for /stats --granularity.
+
+    This is the read path that Milestone 4 hangs off of: instead of scanning
+    ``llm_calls``, it reads the bucketed ``daily_rollups`` / ``weekly_rollups`` /
+    ``monthly_rollups`` tables produced by ``upsert_rollups`` / ``compact_rollups``.
+
+    Args:
+        granularity: one of 'day' | 'week' | 'month' (normalized via
+            ``_normalize_granularity``).
+        model: optional exact model filter (applied against the rollup's
+            ``model`` column, which stores the value verbatim from llm_calls).
+        provider: optional exact provider filter.
+        date_from / date_to: optional ISO-8601 bounds on ``period_start``.
+            ``date_from`` is inclusive, ``date_to`` is exclusive. When omitted
+            the full stored history for the tier is returned.
+
+    Returns:
+        A list of per-(period, model, provider) bucket rows ordered by
+        ``period_start`` ASC, then ``provider`` ASC, then ``model`` ASC:
+            period_start, model, provider, tokens_in, tokens_out, cost_usd,
+            api_calls, tool_calls, session_count
+    """
+    gran = _normalize_granularity(granularity)
+    table = _ROLLUP_TABLES[_ROLLUP_GRANULARITIES.index(gran)]
+    conn = _get_conn()
+
+    where = []
+    params: list[Any] = []
+    if model is not None:
+        where.append("model = ?")
+        params.append(model)
+    if provider is not None:
+        where.append("provider = ?")
+        params.append(provider)
+    if date_from is not None:
+        where.append("period_start >= ?")
+        params.append(date_from[:10])
+    if date_to is not None:
+        # period_start is a date string ('YYYY-MM-DD' / 'YYYY-MM-01'), so a
+        # strict string compare against the date portion of date_to is correct.
+        where.append("period_start < ?")
+        params.append(date_to[:10])
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            period_start,
+            model,
+            provider,
+            SUM(tokens_in)  AS tokens_in,
+            SUM(tokens_out) AS tokens_out,
+            ROUND(SUM(cost_usd), 6) AS cost_usd,
+            SUM(api_calls)  AS api_calls,
+            SUM(tool_calls) AS tool_calls,
+            SUM(session_count) AS session_count
+        FROM {table}
+        {where_sql}
+        GROUP BY period_start, model, provider
+        ORDER BY period_start ASC, provider ASC, model ASC
+        """,
+        params,
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def record_llm_call(
     session_id: str,
     ts: str,

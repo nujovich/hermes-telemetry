@@ -1393,6 +1393,100 @@ def test_compact_rollups_partial_since_iso():
     assert june["session_count"] == 1
 
 
+def test_query_rollups_day_week_month_tiers():
+    """query_rollups reads the right pre-aggregated tier per granularity."""
+    ts = "2026-06-10T11:00:00+00:00"
+    _seed_calls("qr-sess", [(ts, "gpt-4o", "openai", 1000, 500, 0.03)])
+    db.end_run("qr-sess", status="ok")
+
+    daily = db.query_rollups("day")
+    assert len(daily) == 1
+    assert daily[0]["period_start"] == "2026-06-10"
+    assert daily[0]["api_calls"] == 1
+
+    weekly = db.query_rollups("week")
+    assert len(weekly) == 1
+    assert weekly[0]["period_start"] == "2026-06-08"  # Monday of that week
+
+    monthly = db.query_rollups("month")
+    assert len(monthly) == 1
+    assert monthly[0]["period_start"] == "2026-06-01"
+
+
+def test_query_rollups_accepts_daily_weekly_monthly_aliases():
+    """_normalize_granularity accepts the plural aliases used by the CLI."""
+    ts = "2026-06-10T11:00:00+00:00"
+    _seed_calls("qr-alias", [(ts, "gpt-4o", "openai", 1000, 500, 0.03)])
+    db.end_run("qr-alias", status="ok")
+
+    for alias in ("day", "daily", "week", "weekly", "month", "monthly"):
+        rows = db.query_rollups(alias)
+        assert len(rows) == 1, alias
+    # Unknown granularity must raise cleanly for the CLI to catch.
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        db.query_rollups("quarter")
+
+
+def test_query_rollups_model_and_provider_filters():
+    """model/provider filters narrow the rollup buckets exactly."""
+    ts = "2026-06-10T11:00:00+00:00"
+    _seed_calls("qr-a", [(ts, "gpt-4o", "openai", 1000, 500, 0.03)])
+    db.end_run("qr-a", status="ok")
+    _seed_calls("qr-b", [(ts, "claude", "anthropic", 200, 200, 0.02)])
+    db.end_run("qr-b", status="ok")
+
+    all_rows = db.query_rollups("day")
+    assert len(all_rows) == 2
+
+    only_gpt = db.query_rollups("day", model="gpt-4o")
+    assert len(only_gpt) == 1
+    assert only_gpt[0]["provider"] == "openai"
+    assert only_gpt[0]["tokens_in"] == 1000
+
+    only_anthropic = db.query_rollups("day", provider="anthropic")
+    assert len(only_anthropic) == 1
+    assert only_anthropic[0]["model"] == "claude"
+
+    none = db.query_rollups("day", model="does-not-exist")
+    assert none == []
+
+
+def test_query_rollups_date_range_filter():
+    """date_from/date_to bound the rollup query on period_start (inclusive/exclusive)."""
+    old = "2026-05-01T09:00:00+00:00"
+    new = "2026-06-10T09:00:00+00:00"
+    _seed_calls("qr-old", [(old, "gpt-4o", "openai", 100, 100, 0.01)])
+    db.end_run("qr-old", status="ok")
+    _seed_calls("qr-new", [(new, "gpt-4o", "openai", 200, 200, 0.02)])
+    db.end_run("qr-new", status="ok")
+
+    # Only June onward.
+    june_on = db.query_rollups("day", date_from="2026-06-01")
+    assert len(june_on) == 1
+    assert june_on[0]["period_start"] == "2026-06-10"
+
+    # Exclusive upper bound: up to (not including) June 1.
+    before_june = db.query_rollups("day", date_to="2026-06-01")
+    assert len(before_june) == 1
+    assert before_june[0]["period_start"] == "2026-05-01"
+
+
+def test_query_rollups_orders_by_period():
+    """Buckets are returned ordered by period_start ASC."""
+    a = "2026-06-10T09:00:00+00:00"
+    b = "2026-06-11T09:00:00+00:00"
+    _seed_calls("qr-order-a", [(a, "gpt-4o", "openai", 1, 1, 0.01)])
+    db.end_run("qr-order-a", status="ok")
+    _seed_calls("qr-order-b", [(b, "gpt-4o", "openai", 1, 1, 0.01)])
+    db.end_run("qr-order-b", status="ok")
+
+    rows = db.query_rollups("day")
+    periods = [r["period_start"] for r in rows]
+    assert periods == sorted(periods)
+
+
 def test_load_retention_config_defaults_when_missing(tmp_path, monkeypatch):
     """With no retention.yaml, _load_retention_config returns the built-in
     defaults for all three tiers."""
