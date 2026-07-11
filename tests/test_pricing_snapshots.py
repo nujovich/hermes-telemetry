@@ -57,16 +57,13 @@ def isolated_db():
 def test_core_pricing_resolve_normalizes(monkeypatch):
     import hermes_telemetry.core_pricing as core_pricing
 
-    class _Source:
-        value = "official_docs_snapshot"
-
     class _Entry:
         input_cost_per_million = Decimal("3.00")
         output_cost_per_million = Decimal("15.00")
         cache_read_cost_per_million = None
         cache_write_cost_per_million = Decimal("3.75")
         request_cost = None
-        source = _Source()
+        source = "official_docs_snapshot"
         source_url = "https://example/pricing"
         pricing_version = "2026-07-01"
         fetched_at = datetime(2026, 7, 1, tzinfo=timezone.utc)

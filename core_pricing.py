@@ -12,7 +12,8 @@ error) and never raises, so a telemetry capture can never break an agent turn.
 Verified against NousResearch/hermes-agent ``agent/usage_pricing.py`` (2026-07-11):
 ``get_pricing_entry(model_name, provider=None, base_url=None, api_key=None)``
 returns a ``PricingEntry`` whose cost fields are ``Decimal | None`` per million
-tokens, ``source`` is a ``CostSource`` enum, and ``fetched_at`` is a ``datetime``.
+tokens, ``source`` is a plain string (``CostSource`` is a ``Literal[...]`` string
+type alias — verified in agent/usage_pricing.py:19), and ``fetched_at`` a datetime.
 """
 
 from __future__ import annotations
@@ -65,13 +66,11 @@ def resolve(model: str, provider: str = "", base_url: str = "") -> dict | None:
 
         snap: dict = {field: _to_float(getattr(entry, field, None)) for field in _RATE_FIELDS}
 
+        # source is a plain string (CostSource = Literal[...]), verified against
+        # agent/usage_pricing.py. str() coerces defensively but is a no-op for the
+        # real string value.
         source = getattr(entry, "source", None)
-        if source is None:
-            snap["source"] = None
-        elif hasattr(source, "value"):
-            snap["source"] = str(source.value)
-        else:
-            snap["source"] = str(source)
+        snap["source"] = str(source) if source is not None else None
 
         snap["source_url"] = getattr(entry, "source_url", None)
         snap["pricing_version"] = getattr(entry, "pricing_version", None)
