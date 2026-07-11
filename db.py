@@ -1702,3 +1702,94 @@ def backfill_known_free_models(models: list) -> int:
         )
         inserted += cur.rowcount
     return inserted
+
+
+# ---------------------------------------------------------------------------
+# Pricing snapshots (v14): auditable per-(provider, model) tariff history
+# captured from Hermes core (agent.usage_pricing) via the post_api_request hook.
+# Append-per-change: a new row lands only when the tariff/version/source changed.
+# ---------------------------------------------------------------------------
+_PRICING_SNAPSHOT_RATE_FIELDS = (
+    "input_cost_per_million",
+    "output_cost_per_million",
+    "cache_read_cost_per_million",
+    "cache_write_cost_per_million",
+    "request_cost",
+)
+
+
+def get_latest_pricing_snapshot(provider: str, model: str) -> dict | None:
+    """Return the most recent pricing snapshot row for (provider, model), or None."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT id, provider, model,"
+        " input_cost_per_million, output_cost_per_million,"
+        " cache_read_cost_per_million, cache_write_cost_per_million, request_cost,"
+        " source, source_url, pricing_version, fetched_at, captured_at, base_url, api_mode"
+        " FROM pricing_snapshots"
+        " WHERE provider = ? AND model = ?"
+        " ORDER BY id DESC LIMIT 1",
+        (provider, model),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _pricing_snapshot_changed(latest: dict | None, snap: dict) -> bool:
+    """True if `snap` is a tariff change vs the latest stored row.
+
+    Change = any rate field flips None↔value or differs by > 1e-9, OR
+    ``pricing_version`` differs (including a None↔value flip), OR ``source``
+    differs. Context-only fields (``base_url``, ``api_mode``, ``source_url``,
+    ``fetched_at``) never trigger a new row.
+    """
+    if latest is None:
+        return True
+    for field in _PRICING_SNAPSHOT_RATE_FIELDS:
+        old = latest.get(field)
+        new = snap.get(field)
+        if (old is None) != (new is None):
+            return True
+        if old is not None and new is not None and abs(float(old) - float(new)) > 1e-9:
+            return True
+    if latest.get("pricing_version") != snap.get("pricing_version"):
+        return True
+    return latest.get("source") != snap.get("source")
+
+
+def record_pricing_snapshot(
+    provider: str, model: str, snap: dict, base_url: str = "", api_mode: str = ""
+) -> bool:
+    """Append a pricing snapshot row for (provider, model) if it differs from the
+    latest stored row (or none exists). Returns True iff a row was written.
+
+    `snap` is the dict from ``core_pricing.resolve()``: the five rate floats plus
+    ``source`` / ``source_url`` / ``pricing_version`` / ``fetched_at`` (any None).
+    """
+    latest = get_latest_pricing_snapshot(provider, model)
+    if not _pricing_snapshot_changed(latest, snap):
+        return False
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO pricing_snapshots"
+        " (provider, model, input_cost_per_million, output_cost_per_million,"
+        "  cache_read_cost_per_million, cache_write_cost_per_million, request_cost,"
+        "  source, source_url, pricing_version, fetched_at, captured_at, base_url, api_mode)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            provider,
+            model,
+            snap.get("input_cost_per_million"),
+            snap.get("output_cost_per_million"),
+            snap.get("cache_read_cost_per_million"),
+            snap.get("cache_write_cost_per_million"),
+            snap.get("request_cost"),
+            snap.get("source"),
+            snap.get("source_url"),
+            snap.get("pricing_version"),
+            snap.get("fetched_at"),
+            _utcnow(),
+            base_url,
+            api_mode,
+        ),
+    )
+    return True

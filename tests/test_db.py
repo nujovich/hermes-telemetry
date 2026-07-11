@@ -1673,3 +1673,82 @@ def test_migrate_v14_creates_table_from_wedged_v13():
     assert 14 in versions, "v14 marker must be restored after self-heal"
     indexes = {r[1] for r in conn.execute("PRAGMA index_list('pricing_snapshots')")}
     assert "idx_pricing_snapshots_model" in indexes
+
+
+def _snap(**over):
+    """Build a core_pricing-shaped snapshot dict; override any field via kwargs."""
+    base = {
+        "input_cost_per_million": 3.0,
+        "output_cost_per_million": 15.0,
+        "cache_read_cost_per_million": 0.3,
+        "cache_write_cost_per_million": 3.75,
+        "request_cost": None,
+        "source": "official_docs_snapshot",
+        "source_url": "https://example/pricing",
+        "pricing_version": "2026-07-01",
+        "fetched_at": "2026-07-01T00:00:00+00:00",
+    }
+    base.update(over)
+    return base
+
+
+def _snapshot_row_count(provider, model):
+    return (
+        db._get_conn()
+        .execute(
+            "SELECT COUNT(*) FROM pricing_snapshots WHERE provider = ? AND model = ?",
+            (provider, model),
+        )
+        .fetchone()[0]
+    )
+
+
+def test_record_pricing_snapshot_first_insert():
+    assert db.record_pricing_snapshot("anthropic", "m", _snap(), "https://u", "messages") is True
+    row = db.get_latest_pricing_snapshot("anthropic", "m")
+    assert row is not None
+    assert row["input_cost_per_million"] == 3.0
+    assert row["source"] == "official_docs_snapshot"
+    assert row["base_url"] == "https://u"
+    assert row["api_mode"] == "messages"
+    assert row["captured_at"]  # non-empty timestamp
+
+
+def test_get_latest_pricing_snapshot_missing_returns_none():
+    assert db.get_latest_pricing_snapshot("nope", "nope") is None
+
+
+def test_record_pricing_snapshot_noop_when_unchanged():
+    assert db.record_pricing_snapshot("p", "m", _snap()) is True
+    assert db.record_pricing_snapshot("p", "m", _snap()) is False
+    assert _snapshot_row_count("p", "m") == 1
+
+
+def test_record_pricing_snapshot_new_row_on_rate_change():
+    db.record_pricing_snapshot("p", "m", _snap(input_cost_per_million=3.0))
+    assert db.record_pricing_snapshot("p", "m", _snap(input_cost_per_million=4.0)) is True
+    assert _snapshot_row_count("p", "m") == 2
+    assert db.get_latest_pricing_snapshot("p", "m")["input_cost_per_million"] == 4.0
+
+
+def test_record_pricing_snapshot_new_row_on_version_change():
+    db.record_pricing_snapshot("p", "m", _snap(pricing_version="v1"))
+    assert db.record_pricing_snapshot("p", "m", _snap(pricing_version="v2")) is True
+    assert _snapshot_row_count("p", "m") == 2
+
+
+def test_record_pricing_snapshot_new_row_on_null_flip():
+    db.record_pricing_snapshot("p", "m", _snap(cache_read_cost_per_million=None))
+    assert db.record_pricing_snapshot("p", "m", _snap(cache_read_cost_per_million=0.3)) is True
+    assert _snapshot_row_count("p", "m") == 2
+
+
+def test_record_pricing_snapshot_ignores_context_only_change():
+    """A base_url / source_url / fetched_at change with identical tariff is NOT a
+    new row — those are context, not tariff."""
+    db.record_pricing_snapshot("p", "m", _snap(fetched_at="2026-07-01T00:00:00+00:00"), "urlA")
+    assert (
+        db.record_pricing_snapshot("p", "m", _snap(fetched_at="2026-07-09T00:00:00+00:00"), "urlB")
+        is False
+    )
+    assert _snapshot_row_count("p", "m") == 1
