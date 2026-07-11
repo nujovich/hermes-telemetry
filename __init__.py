@@ -52,6 +52,16 @@ _pending_model_unavailable_lock = threading.Lock()
 _CHARS_PER_TOKEN = 4
 
 # ---------------------------------------------------------------------------
+# Pricing-snapshot capture throttle (v14). get_pricing_entry (Hermes core) can
+# do network I/O for custom endpoints, so we resolve+snapshot a given
+# (provider, model) at most once per _PRICING_SNAPSHOT_TTL_S per process. DB-side
+# change detection dedupes rows regardless; this just bounds the work.
+# ---------------------------------------------------------------------------
+_PRICING_SNAPSHOT_TTL_S = 6 * 60 * 60  # 6 hours
+_pricing_snapshot_seen: dict[tuple[str, str], float] = {}
+_pricing_snapshot_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
 # Cron session ID regex
 # ---------------------------------------------------------------------------
 CRON_SESSION_RE = re.compile(r"^cron_(?P<job_id>.+)_\d{8}_\d{6}$")
