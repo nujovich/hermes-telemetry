@@ -1765,6 +1765,16 @@ def record_pricing_snapshot(
     `snap` is the dict from ``core_pricing.resolve()``: the five rate floats plus
     ``source`` / ``source_url`` / ``pricing_version`` / ``fetched_at`` (any None).
     """
+    # Concurrency note (accepted tradeoff): this is a check-then-insert, not
+    # atomic. Under WAL with parallel cron processes two callers can both read
+    # the same latest row, both conclude "changed", and both insert — yielding
+    # duplicate *identical* consecutive rows. Benign for an append-only audit
+    # history: no change is ever lost and get_latest_pricing_snapshot still
+    # returns correct content. We deliberately do NOT wrap this in a
+    # BEGIN IMMEDIATE transaction — holding a write lock across the SELECT would
+    # add contention in exactly the cron-concurrency path we care about, a worse
+    # tradeoff than a rare duplicate row. The per-process capture throttle in
+    # post_api_request already makes same-process duplication a non-issue.
     latest = get_latest_pricing_snapshot(provider, model)
     if not _pricing_snapshot_changed(latest, snap):
         return False

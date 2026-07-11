@@ -1752,3 +1752,18 @@ def test_record_pricing_snapshot_ignores_context_only_change():
         is False
     )
     assert _snapshot_row_count("p", "m") == 1
+
+
+def test_record_pricing_snapshot_new_row_on_source_change():
+    db.record_pricing_snapshot("p", "m", _snap(source="official_docs_snapshot"))
+    assert db.record_pricing_snapshot("p", "m", _snap(source="endpoint_models_api")) is True
+    assert _snapshot_row_count("p", "m") == 2
+
+
+def test_record_pricing_snapshot_is_provider_model_scoped():
+    db.record_pricing_snapshot("p1", "m1", _snap(input_cost_per_million=1.0))
+    db.record_pricing_snapshot("p2", "m2", _snap(input_cost_per_million=2.0))
+    assert db.get_latest_pricing_snapshot("p1", "m1")["input_cost_per_million"] == 1.0
+    assert db.get_latest_pricing_snapshot("p2", "m2")["input_cost_per_million"] == 2.0
+    assert _snapshot_row_count("p1", "m1") == 1
+    assert _snapshot_row_count("p2", "m2") == 1
