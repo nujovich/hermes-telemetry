@@ -1669,3 +1669,7 @@ def test_migrate_v14_creates_table_from_wedged_v13():
 
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "pricing_snapshots" in tables
+    versions = {r[0] for r in conn.execute("SELECT version FROM schema_version")}
+    assert 14 in versions, "v14 marker must be restored after self-heal"
+    indexes = {r[1] for r in conn.execute("PRAGMA index_list('pricing_snapshots')")}
+    assert "idx_pricing_snapshots_model" in indexes
