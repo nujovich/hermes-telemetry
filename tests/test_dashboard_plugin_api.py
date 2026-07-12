@@ -290,3 +290,100 @@ def test_db_connection_is_read_only(plugin_api):
     conn = plugin_api._conn()
     with pytest.raises(sqlite3.OperationalError):
         conn.execute("INSERT INTO runs (session_id, started_at) VALUES ('x', 'y')")
+
+
+def test_rollups_endpoint_reads_tiered_tables(plugin_api):
+    """The /rollups endpoint returns bucketed history from the tiered tables.
+
+    Seeds a session through the runtime API, folds it into the rollup tables
+    via ``upsert_rollups``, then asserts /rollups surfaces the daily bucket
+    with the expected cost aggregation.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[{"session_id": "r1", "model": "gpt-4o", "platform": "cli"}],
+        rows_llm=[
+            {
+                "session_id": "r1",
+                "ts": now,
+                "model": "gpt-4o",
+                "provider": "openai",
+                "tokens_in": 200,
+                "tokens_out": 100,
+                "cost_usd": 0.005,
+                "latency_ms": 200,
+            }
+        ],
+    )
+    import db as runtime_db
+
+    runtime_db.upsert_rollups("r1")
+
+    daily = plugin_api.rollups(granularity="day")
+    assert daily["granularity"] == "day"
+    assert daily["bucket_count"] == 1
+    bucket = daily["rows"][0]
+    assert bucket["model"] == "gpt-4o"
+    assert bucket["provider"] == "openai"
+    assert bucket["session_count"] == 1
+    assert abs(bucket["cost_usd"] - 0.005) < 1e-9
+    assert abs(daily["total_cost_usd"] - 0.005) < 1e-9
+
+
+def test_rollups_endpoint_tier_aware_filters(plugin_api):
+    """model/provider params narrow the rollup buckets (tier-aware query)."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[
+            {"session_id": "r1", "model": "gpt-4o", "platform": "cli"},
+            {"session_id": "r2", "model": "claude-sonnet-4-6", "platform": "cli"},
+        ],
+        rows_llm=[
+            {
+                "session_id": "r1",
+                "ts": now,
+                "model": "gpt-4o",
+                "provider": "openai",
+                "tokens_in": 200,
+                "tokens_out": 100,
+                "cost_usd": 0.005,
+                "latency_ms": 200,
+            },
+            {
+                "session_id": "r2",
+                "ts": now,
+                "model": "claude-sonnet-4-6",
+                "provider": "anthropic",
+                "tokens_in": 100,
+                "tokens_out": 50,
+                "cost_usd": 0.001,
+                "latency_ms": 150,
+            },
+        ],
+    )
+    import db as runtime_db
+
+    runtime_db.upsert_rollups("r1")
+    runtime_db.upsert_rollups("r2")
+
+    filtered = plugin_api.rollups(granularity="day", model="gpt-4o")
+    assert filtered["model"] == "gpt-4o"
+    assert filtered["bucket_count"] == 1
+    assert filtered["rows"][0]["provider"] == "openai"
+
+    by_provider = plugin_api.rollups(granularity="day", provider="anthropic")
+    assert by_provider["provider"] == "anthropic"
+    assert by_provider["bucket_count"] == 1
+    assert by_provider["rows"][0]["model"] == "claude-sonnet-4-6"
+
+
+def test_rollups_endpoint_unknown_granularity_defaults_to_day(plugin_api):
+    """An unrecognized granularity label must not crash and must default to day."""
+    out = plugin_api.rollups(granularity="yearly")
+    assert out["granularity"] == "day"
+    assert out["bucket_count"] == 0
+    assert out["rows"] == []

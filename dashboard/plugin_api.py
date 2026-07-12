@@ -353,6 +353,68 @@ def budget() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Tiered rollups (bucketed analytics history)
+# ---------------------------------------------------------------------------
+def _rollup_table(granularity: str) -> str:
+    """Map a granularity label to its tiered rollup table.
+
+    Falls back to the daily rollup table for any unrecognized value so a
+    stale client can never trigger a SQL parse error (table name is never
+    interpolated from raw user input without this allowlist).
+    """
+    return {
+        "day": "daily_rollups",
+        "week": "weekly_rollups",
+        "month": "monthly_rollups",
+    }.get(granularity, "daily_rollups")
+
+
+@router.get("/rollups")
+def rollups(granularity: str = "day", model: str = "", provider: str = "") -> dict:
+    """Bucketed cost/usage history from the tiered rollup tables.
+
+    Powers the dashboard's time-series analytics widget with pre-aggregated
+    day/week/month buckets, instead of scanning ``llm_calls`` on every
+    render. ``granularity`` selects the tier (``day`` | ``week`` | ``month``;
+    any other value defaults to ``day``). ``model`` / ``provider`` apply
+    tier-aware filters — pass ``''`` (the default) to include all rows.
+
+    The rollup tables are created by db.py schema v10/v11; a missing table is
+    treated as "no history yet" so the dashboard stays functional on older
+    installs.
+    """
+    table = _rollup_table(granularity)
+    clauses = []
+    params: list = []
+    if model:
+        clauses.append("model = ?")
+        params.append(model)
+    if provider:
+        clauses.append("provider = ?")
+        params.append(provider)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = (
+        f"SELECT period_start, model, provider, tokens_in, tokens_out,"
+        f" cost_usd, api_calls, tool_calls, session_count"
+        f" FROM {table}{where}"
+        f" ORDER BY period_start ASC"
+    )
+    try:
+        rows = _rows(sql, tuple(params))
+    except sqlite3.OperationalError:
+        rows = []
+    total_cost = round(sum(float(r.get("cost_usd") or 0.0) for r in rows), 6)
+    return {
+        "granularity": granularity if granularity in ("day", "week", "month") else "day",
+        "model": model,
+        "provider": provider,
+        "total_cost_usd": total_cost,
+        "bucket_count": len(rows),
+        "rows": rows,
+    }
+
+
 @router.get("/tier-transitions")
 def tier_transitions(window_hours: int = 72) -> dict:
     """Recent free→paid model transitions, newest first.
