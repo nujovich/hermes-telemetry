@@ -711,7 +711,7 @@ over-estimate is the motivating case) and to feed the manual pricing editor.
   and fail-open: `resolve()` returns `None` on any failure — core absent (the
   isolated test suite has no `agent.*`), unknown model, or endpoint fetch error —
   and never raises. It normalizes `PricingEntry` to a JSON-safe dict: `Decimal`
-  rates → `float`, the `CostSource` enum → `str`, `fetched_at` `datetime` → ISO.
+  rates → `float`, `CostSource` (a `Literal` string) → `str`, `fetched_at` `datetime` → ISO.
 - **Capture happens in `post_api_request`**, the only hook that carries `base_url`
   and `api_mode` (verified against `agent/conversation_loop.py`). It is throttled
   in-memory to at most one resolve per `(provider, model)` per
