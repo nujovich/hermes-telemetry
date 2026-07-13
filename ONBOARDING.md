@@ -416,6 +416,7 @@ table before applying.
 | v11 | New table `subagent_edges` (parent→child delegation tree) + `idx_subagent_edges_parent`. Attributes async/nested subagent cost to `per_cron_job` via a recursive CTE at query time. (#49) |
 | v12 | Add `runs.profile` (per-profile cost attribution) + `idx_runs_profile`. Captured from `ctx.profile_name` at `on_session_start`, backfilled in `pre_llm_call` (first non-null wins). Adds the `per_profile` budget scope. |
 | v13 | Repair pass — re-creates `subagent_edges` (+ `idx_subagent_edges_parent`) via `CREATE TABLE IF NOT EXISTS`. Heals DBs upgraded from a build that numbered a *different* migration as v11: the per-profile branch shipped `runs.profile` as v11 before #56 settled `subagent_edges` on v11, so those DBs have `version=11` applied but no table, and v11's early-return skips creation forever. No-op on clean v11 DBs. |
+| v14 | New table: `pricing_snapshots` (append-per-change history of the tariffs Hermes core resolves per `(provider, model)`, with provenance: `source` / `source_url` / `pricing_version` / `fetched_at`). Captured from `agent.usage_pricing.get_pricing_entry` via `core_pricing.py` in the `post_api_request` hook; storage-only (no surface yet). + `idx_pricing_snapshots_model`. |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -697,6 +698,36 @@ Cache prices are derived from multipliers when not explicit:
 sets it back to `None`, forcing the next read to re-parse the YAML. This is
 called by the auto-refresh cycle and by the `/setup` command, so new prices
 take effect immediately without a gateway restart.
+
+### Core-sourced pricing snapshots
+
+`pricing.py` (above) computes *cost* from our own `pricing.yaml`. Separately, the
+plugin records the *tariffs Hermes core itself resolves*, so we have an auditable
+ground truth with provenance to diff against `pricing.yaml` (the Faro
+over-estimate is the motivating case) and to feed the manual pricing editor.
+
+- **`core_pricing.py` is the only module that imports the Hermes core**
+  (`agent.usage_pricing.get_pricing_entry`). The import is lazy (inside the call)
+  and fail-open: `resolve()` returns `None` on any failure — core absent (the
+  isolated test suite has no `agent.*`), unknown model, or endpoint fetch error —
+  and never raises. It normalizes `PricingEntry` to a JSON-safe dict: `Decimal`
+  rates → `float`, `CostSource` (a `Literal` string) → `str`, `fetched_at` `datetime` → ISO.
+- **Capture happens in `post_api_request`**, the only hook that carries `base_url`
+  and `api_mode` (verified against `agent/conversation_loop.py`). It is throttled
+  in-memory to at most one resolve per `(provider, model)` per
+  `_PRICING_SNAPSHOT_TTL_S` (6h) per process, because `get_pricing_entry` can do a
+  `/models` network fetch for custom endpoints.
+- **`pricing_snapshots` is append-per-change** (`db.record_pricing_snapshot`): a
+  new row lands only when a rate field, `pricing_version`, or `source` differs
+  from the latest stored row for that pair. Context-only fields (`base_url`,
+  `api_mode`, `source_url`, `fetched_at`) do not trigger a row.
+- **Caveat:** `post_api_request` carries no `api_key`, so a private
+  OpenAI-compatible endpoint with no cached `/models` metadata resolves to `None`
+  (no snapshot). Nous / OpenRouter / official-docs models resolve without a
+  per-call fetch.
+- **Storage-only for now.** Surfacing (stats, `hermes telemetry pricing`, a
+  dashboard tab rendered inside `TelemetryPage`) and drift-vs-`pricing.yaml`
+  computation are follow-ups.
 
 ---
 

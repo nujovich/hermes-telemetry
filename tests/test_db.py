@@ -1622,3 +1622,148 @@ def test_spend_by_scope_profile_filters():
 
     result = db.spend_by_scope("profile", "coder", "2000-01-01T00:00:00+00:00")
     assert result["spent_usd"] == 1.50
+
+
+# ---------------------------------------------------------------------------
+# v14 — pricing_snapshots (core-sourced tariff history w/ provenance)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_v14_columns():
+    conn = db._get_conn()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pricing_snapshots)")}
+    assert {
+        "id",
+        "provider",
+        "model",
+        "input_cost_per_million",
+        "output_cost_per_million",
+        "cache_read_cost_per_million",
+        "cache_write_cost_per_million",
+        "request_cost",
+        "source",
+        "source_url",
+        "pricing_version",
+        "fetched_at",
+        "captured_at",
+        "base_url",
+        "api_mode",
+    } <= cols
+
+
+def test_schema_v14_recorded():
+    versions = {row[0] for row in db._get_conn().execute("SELECT version FROM schema_version")}
+    assert 14 in versions
+
+
+def test_migrate_v14_creates_table_from_wedged_v13():
+    """Upgrade path: a DB stuck in the pre-v14 shape (no pricing_snapshots, v14
+    marker absent) self-heals on the next connect."""
+    conn = db._get_conn()
+    conn.execute("DROP TABLE IF EXISTS pricing_snapshots")
+    conn.execute("DELETE FROM schema_version WHERE version >= 14")
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "pricing_snapshots" not in tables  # wedged state confirmed
+
+    db._ensure_schema(conn)
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "pricing_snapshots" in tables
+    versions = {r[0] for r in conn.execute("SELECT version FROM schema_version")}
+    assert 14 in versions, "v14 marker must be restored after self-heal"
+    indexes = {r[1] for r in conn.execute("PRAGMA index_list('pricing_snapshots')")}
+    assert "idx_pricing_snapshots_model" in indexes
+
+
+def _snap(**over):
+    """Build a core_pricing-shaped snapshot dict; override any field via kwargs."""
+    base = {
+        "input_cost_per_million": 3.0,
+        "output_cost_per_million": 15.0,
+        "cache_read_cost_per_million": 0.3,
+        "cache_write_cost_per_million": 3.75,
+        "request_cost": None,
+        "source": "official_docs_snapshot",
+        "source_url": "https://example/pricing",
+        "pricing_version": "2026-07-01",
+        "fetched_at": "2026-07-01T00:00:00+00:00",
+    }
+    base.update(over)
+    return base
+
+
+def _snapshot_row_count(provider, model):
+    return (
+        db._get_conn()
+        .execute(
+            "SELECT COUNT(*) FROM pricing_snapshots WHERE provider = ? AND model = ?",
+            (provider, model),
+        )
+        .fetchone()[0]
+    )
+
+
+def test_record_pricing_snapshot_first_insert():
+    assert db.record_pricing_snapshot("anthropic", "m", _snap(), "https://u", "messages") is True
+    row = db.get_latest_pricing_snapshot("anthropic", "m")
+    assert row is not None
+    assert row["input_cost_per_million"] == 3.0
+    assert row["source"] == "official_docs_snapshot"
+    assert row["base_url"] == "https://u"
+    assert row["api_mode"] == "messages"
+    assert row["captured_at"]  # non-empty timestamp
+
+
+def test_get_latest_pricing_snapshot_missing_returns_none():
+    assert db.get_latest_pricing_snapshot("nope", "nope") is None
+
+
+def test_record_pricing_snapshot_noop_when_unchanged():
+    assert db.record_pricing_snapshot("p", "m", _snap()) is True
+    assert db.record_pricing_snapshot("p", "m", _snap()) is False
+    assert _snapshot_row_count("p", "m") == 1
+
+
+def test_record_pricing_snapshot_new_row_on_rate_change():
+    db.record_pricing_snapshot("p", "m", _snap(input_cost_per_million=3.0))
+    assert db.record_pricing_snapshot("p", "m", _snap(input_cost_per_million=4.0)) is True
+    assert _snapshot_row_count("p", "m") == 2
+    assert db.get_latest_pricing_snapshot("p", "m")["input_cost_per_million"] == 4.0
+
+
+def test_record_pricing_snapshot_new_row_on_version_change():
+    db.record_pricing_snapshot("p", "m", _snap(pricing_version="v1"))
+    assert db.record_pricing_snapshot("p", "m", _snap(pricing_version="v2")) is True
+    assert _snapshot_row_count("p", "m") == 2
+
+
+def test_record_pricing_snapshot_new_row_on_null_flip():
+    db.record_pricing_snapshot("p", "m", _snap(cache_read_cost_per_million=None))
+    assert db.record_pricing_snapshot("p", "m", _snap(cache_read_cost_per_million=0.3)) is True
+    assert _snapshot_row_count("p", "m") == 2
+
+
+def test_record_pricing_snapshot_ignores_context_only_change():
+    """A base_url / source_url / fetched_at change with identical tariff is NOT a
+    new row — those are context, not tariff."""
+    db.record_pricing_snapshot("p", "m", _snap(fetched_at="2026-07-01T00:00:00+00:00"), "urlA")
+    assert (
+        db.record_pricing_snapshot("p", "m", _snap(fetched_at="2026-07-09T00:00:00+00:00"), "urlB")
+        is False
+    )
+    assert _snapshot_row_count("p", "m") == 1
+
+
+def test_record_pricing_snapshot_new_row_on_source_change():
+    db.record_pricing_snapshot("p", "m", _snap(source="official_docs_snapshot"))
+    assert db.record_pricing_snapshot("p", "m", _snap(source="endpoint_models_api")) is True
+    assert _snapshot_row_count("p", "m") == 2
+
+
+def test_record_pricing_snapshot_is_provider_model_scoped():
+    db.record_pricing_snapshot("p1", "m1", _snap(input_cost_per_million=1.0))
+    db.record_pricing_snapshot("p2", "m2", _snap(input_cost_per_million=2.0))
+    assert db.get_latest_pricing_snapshot("p1", "m1")["input_cost_per_million"] == 1.0
+    assert db.get_latest_pricing_snapshot("p2", "m2")["input_cost_per_million"] == 2.0
+    assert _snapshot_row_count("p1", "m1") == 1
+    assert _snapshot_row_count("p2", "m2") == 1

@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 13
+_SCHEMA_VERSION = 14
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -171,6 +171,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v11(conn)
     _migrate_v12(conn)
     _migrate_v13(conn)
+    _migrate_v14(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -518,6 +519,46 @@ def _migrate_v13(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (13, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v14(conn: sqlite3.Connection) -> None:
+    """New table ``pricing_snapshots``: an append-per-change history of the
+    tariffs Hermes core resolves for each ``(provider, model)``, with provenance
+    (``source`` / ``source_url`` / ``pricing_version`` / ``fetched_at``). Captured
+    from ``agent.usage_pricing.get_pricing_entry`` in the ``post_api_request``
+    hook (see ``core_pricing.py``). New table only ⇒ ``CREATE TABLE IF NOT
+    EXISTS``, no ALTER. See ONBOARDING.md § Core-sourced pricing snapshots.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 14")
+    if cur.fetchone() is not None:
+        return
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS pricing_snapshots (
+            id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider                      TEXT NOT NULL,
+            model                         TEXT NOT NULL,
+            input_cost_per_million        REAL,
+            output_cost_per_million       REAL,
+            cache_read_cost_per_million   REAL,
+            cache_write_cost_per_million  REAL,
+            request_cost                  REAL,
+            source                        TEXT,
+            source_url                    TEXT,
+            pricing_version               TEXT,
+            fetched_at                    TEXT,
+            captured_at                   TEXT NOT NULL,
+            base_url                      TEXT,
+            api_mode                      TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_pricing_snapshots_model
+            ON pricing_snapshots(provider, model, id);
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (14, ?)",
         (_utcnow(),),
     )
 
@@ -1661,3 +1702,104 @@ def backfill_known_free_models(models: list) -> int:
         )
         inserted += cur.rowcount
     return inserted
+
+
+# ---------------------------------------------------------------------------
+# Pricing snapshots (v14): auditable per-(provider, model) tariff history
+# captured from Hermes core (agent.usage_pricing) via the post_api_request hook.
+# Append-per-change: a new row lands only when the tariff/version/source changed.
+# ---------------------------------------------------------------------------
+_PRICING_SNAPSHOT_RATE_FIELDS = (
+    "input_cost_per_million",
+    "output_cost_per_million",
+    "cache_read_cost_per_million",
+    "cache_write_cost_per_million",
+    "request_cost",
+)
+
+
+def get_latest_pricing_snapshot(provider: str, model: str) -> dict | None:
+    """Return the most recent pricing snapshot row for (provider, model), or None."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT id, provider, model,"
+        " input_cost_per_million, output_cost_per_million,"
+        " cache_read_cost_per_million, cache_write_cost_per_million, request_cost,"
+        " source, source_url, pricing_version, fetched_at, captured_at, base_url, api_mode"
+        " FROM pricing_snapshots"
+        " WHERE provider = ? AND model = ?"
+        " ORDER BY id DESC LIMIT 1",
+        (provider, model),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _pricing_snapshot_changed(latest: dict | None, snap: dict) -> bool:
+    """True if `snap` is a tariff change vs the latest stored row.
+
+    Change = any rate field flips None↔value or differs by > 1e-9, OR
+    ``pricing_version`` differs (including a None↔value flip), OR ``source``
+    differs. Context-only fields (``base_url``, ``api_mode``, ``source_url``,
+    ``fetched_at``) never trigger a new row.
+    """
+    if latest is None:
+        return True
+    for field in _PRICING_SNAPSHOT_RATE_FIELDS:
+        old = latest.get(field)
+        new = snap.get(field)
+        if (old is None) != (new is None):
+            return True
+        if old is not None and new is not None and abs(float(old) - float(new)) > 1e-9:
+            return True
+    if latest.get("pricing_version") != snap.get("pricing_version"):
+        return True
+    return latest.get("source") != snap.get("source")
+
+
+def record_pricing_snapshot(
+    provider: str, model: str, snap: dict, base_url: str = "", api_mode: str = ""
+) -> bool:
+    """Append a pricing snapshot row for (provider, model) if it differs from the
+    latest stored row (or none exists). Returns True iff a row was written.
+
+    `snap` is the dict from ``core_pricing.resolve()``: the five rate floats plus
+    ``source`` / ``source_url`` / ``pricing_version`` / ``fetched_at`` (any None).
+    """
+    # Concurrency note (accepted tradeoff): this is a check-then-insert, not
+    # atomic. Under WAL with parallel cron processes two callers can both read
+    # the same latest row, both conclude "changed", and both insert — yielding
+    # duplicate *identical* consecutive rows. Benign for an append-only audit
+    # history: no change is ever lost and get_latest_pricing_snapshot still
+    # returns correct content. We deliberately do NOT wrap this in a
+    # BEGIN IMMEDIATE transaction — holding a write lock across the SELECT would
+    # add contention in exactly the cron-concurrency path we care about, a worse
+    # tradeoff than a rare duplicate row. The per-process capture throttle in
+    # post_api_request already makes same-process duplication a non-issue.
+    latest = get_latest_pricing_snapshot(provider, model)
+    if not _pricing_snapshot_changed(latest, snap):
+        return False
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO pricing_snapshots"
+        " (provider, model, input_cost_per_million, output_cost_per_million,"
+        "  cache_read_cost_per_million, cache_write_cost_per_million, request_cost,"
+        "  source, source_url, pricing_version, fetched_at, captured_at, base_url, api_mode)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            provider,
+            model,
+            snap.get("input_cost_per_million"),
+            snap.get("output_cost_per_million"),
+            snap.get("cache_read_cost_per_million"),
+            snap.get("cache_write_cost_per_million"),
+            snap.get("request_cost"),
+            snap.get("source"),
+            snap.get("source_url"),
+            snap.get("pricing_version"),
+            snap.get("fetched_at"),
+            _utcnow(),
+            base_url,
+            api_mode,
+        ),
+    )
+    return True
