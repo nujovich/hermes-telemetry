@@ -1184,6 +1184,70 @@ def stats_by_model(
     return result
 
 
+def local_power_summary(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> dict[str, Any]:
+    """Aggregate llm_calls served by local (on-device) providers.
+
+    Local providers are those whose name contains 'ollama' or 'llama'
+    (see pricing._is_local_provider). This lets operators see how much
+    token volume ran locally versus via a paid API, and estimate the
+    electricity cost of that local inference.
+
+    Returns:
+      local_calls        — count of local llm_calls in the window
+      local_tokens_in    — sum of input tokens for local calls
+      local_tokens_out   — sum of output tokens for local calls
+      local_total_tokens — local_tokens_in + local_tokens_out
+      models             — per-(provider, model) breakdown:
+                            provider, model, calls, tokens_in, tokens_out,
+                            total_tokens
+    The cost estimate is intentionally NOT computed here; the stats layer
+    applies pricing._compute_local_cost so it respects MINT_LOCAL_WATTAGE /
+    chip detection at render time.
+    """
+    conn = _get_conn()
+    where_sql, params = _build_where_clause_ts(window_hours, date_from, date_to)
+    if where_sql:
+        where_sql = f"WHERE {where_sql} AND (provider LIKE '%ollama%' OR provider LIKE '%llama%')"
+    else:
+        where_sql = "WHERE (provider LIKE '%ollama%' OR provider LIKE '%llama%')"
+
+    row = conn.execute(
+        f"""
+        SELECT
+            COUNT(*)                                              AS local_calls,
+            COALESCE(SUM(tokens_in), 0)                           AS local_tokens_in,
+            COALESCE(SUM(tokens_out), 0)                          AS local_tokens_out,
+            COALESCE(SUM(tokens_in + tokens_out), 0)              AS local_total_tokens
+        FROM llm_calls
+        {where_sql}
+        """,
+        params,
+    ).fetchone()
+
+    model_rows = conn.execute(
+        f"""
+        SELECT
+            COALESCE(provider, '(unknown)') AS provider,
+            COALESCE(model, '(unknown)')    AS model,
+            COUNT(*)                        AS calls,
+            COALESCE(SUM(tokens_in), 0)     AS tokens_in,
+            COALESCE(SUM(tokens_out), 0)    AS tokens_out,
+            COALESCE(SUM(tokens_in + tokens_out), 0) AS total_tokens
+        FROM llm_calls
+        {where_sql}
+        GROUP BY COALESCE(provider, '(unknown)'), COALESCE(model, '(unknown)')
+        ORDER BY total_tokens DESC
+        """,
+        params,
+    ).fetchall()
+
+    result = dict(row)
+    result["models"] = [dict(r) for r in model_rows]
+    return result
+
+
 def close_thread_conn() -> None:
     """Close this thread's connection — call on clean thread exit if needed."""
     conn = getattr(_local, "conn", None)

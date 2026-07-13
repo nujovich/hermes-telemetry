@@ -333,6 +333,85 @@ def _models_block(
     return "\n".join(lines)
 
 
+def _local_power_block(
+    window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    """Render estimated local-model (on-device) inference cost.
+
+    Aggregates llm_calls served by local providers (ollama / llama.cpp) and
+    converts their token volume into an estimated electricity cost using the
+    chip-aware wattage from local_power (or MINT_LOCAL_WATTAGE override).
+    """
+    from . import local_power as _lp
+    from . import pricing as _pricing
+
+    summary = db.local_power_summary(
+        window_hours=window_hours, date_from=date_from, date_to=date_to
+    )
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
+
+    local_calls = int(summary.get("local_calls") or 0)
+    if local_calls == 0:
+        return f"No local (on-device) model calls recorded in {label}."
+
+    total_tokens = int(summary.get("local_total_tokens") or 0)
+
+    # Estimated electricity cost for the aggregated local token volume.
+    est_cost = _pricing._compute_local_cost(total_tokens)
+
+    # Machine power posture (for the footer).
+    power = _lp.detect()
+
+    lines = [
+        f"hermes-telemetry — local power ({label})",
+        "=" * 78,
+        f"  Local calls    : {_fmt_int(local_calls)}",
+        f"  Tokens in      : {_fmt_int(summary.get('local_tokens_in'))}",
+        f"  Tokens out     : {_fmt_int(summary.get('local_tokens_out'))}",
+        f"  Total tokens   : {_fmt_int(total_tokens)}",
+        f"  Est. cost      : {_fmt_cost(est_cost)}",
+    ]
+
+    models = summary.get("models") or []
+    if models:
+        lines.append("")
+        lines.append("  Per model:")
+        lines.append(f"    {'Model':<46} {'Calls':>6} {'Tokens':>10} {'Est. cost':>12}")
+        lines.append("    " + "-" * 78)
+        for m in models:
+            name = f"{m.get('provider') or '(unknown)'}/{m.get('model') or '(unknown)'}"
+            name = name[:46]
+            calls = _fmt_int(m.get("calls"))
+            toks = _fmt_int(m.get("total_tokens"))
+            cost = _fmt_cost(_pricing._compute_local_cost(int(m.get("total_tokens") or 0)))
+            lines.append(f"    {name:<46} {calls:>6} {toks:>10} {cost:>12}")
+
+    lines.append("")
+    if power.is_detected:
+        lines.append(
+            f"  Chip detected  : {power.chip} ({power.wattage} W TDP estimate) on {power.machine}"
+        )
+    elif power.machine:
+        lines.append(
+            f"  Chip           : undetected (machine {power.machine}); "
+            f"set MINT_LOCAL_WATTAGE to your chip's TDP in watts"
+        )
+    else:
+        lines.append(
+            "  Chip           : undetected (not on macOS or sysctl unavailable); "
+            "set MINT_LOCAL_WATTAGE to your chip's TDP in watts"
+        )
+    lines.append(
+        f"  Electricity    : ${_pricing._get_electricity_rate():.2f}/kWh, "
+        f"{_pricing._get_local_tokens_per_second():.0f} tok/s assumed"
+    )
+    lines.append(
+        "  Cost basis     : wattage_kW * rate * (tokens / tok_per_s / 3600). "
+        "Local cost is an electricity estimate, not a cloud bill."
+    )
+    return "\n".join(lines)
+
+
 def _raw_block(limit: int = 20, *, date_from: str | None = None, date_to: str | None = None) -> str:
     rows = db.recent_runs(limit, date_from=date_from, date_to=date_to)
     if not rows:
@@ -514,6 +593,17 @@ def handle(raw_args: str) -> str:
         if sub == "month":
             return _models_block(720)
 
+    if args.startswith("local-power"):
+        sub = args[len("local-power") :].strip()
+        if has_range and sub in ("", "today", "week", "month"):
+            return _local_power_block(date_from=date_from, date_to=date_to)
+        if sub in ("", "today"):
+            return _local_power_block(24)
+        if sub == "week":
+            return _local_power_block(168)
+        if sub == "month":
+            return _local_power_block(720)
+
     return (
         "Usage: /stats [today|week|month|cron|cron week|cron month|providers|models|raw [N]]\n"
         "             [--from YYYY-MM-DD[THH:MM:SS[Z]]] [--to YYYY-MM-DD[THH:MM:SS[Z]]]\n"
@@ -525,6 +615,8 @@ def handle(raw_args: str) -> str:
         "  /stats providers week — provider breakdown, last 7 days\n"
         "  /stats models        — per-model breakdown within each provider (24h)\n"
         "  /stats models week   — per-model breakdown, last 7 days\n"
+        "  /stats local-power   — estimated local (on-device) model cost, last 24h\n"
+        "  /stats local-power week — local model cost, last 7 days\n"
         "  /stats raw [N]       — last N raw run records (default 20)\n"
         "\n"
         "Date range examples (work the same way under the CLI):\n"

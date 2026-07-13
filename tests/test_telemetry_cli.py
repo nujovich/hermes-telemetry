@@ -232,6 +232,61 @@ def test_stats_models_json_windowed(argv, expected_from_substr, capsys):
     assert kwargs.get("date_to") is None
 
 
+@pytest.mark.parametrize(
+    "argv,expected_from_substr",
+    [
+        (["stats", "local-power"], "202"),
+        (["stats", "local-power-week"], "202"),
+        (["stats", "local-power-month"], "202"),
+    ],
+)
+def test_stats_local_power_text(argv, expected_from_substr, capsys):
+    with patch("hermes_telemetry.stats._local_power_block", return_value="LP") as m:
+        main(argv)
+    out, _ = capsys.readouterr()
+    assert out == "LP\n"
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert expected_from_substr in kwargs["date_from"]
+    assert kwargs.get("date_to") is None
+
+
+def test_stats_local_power_json(capsys):
+    fake = {
+        "local_calls": 2,
+        "local_tokens_in": 1500,
+        "local_tokens_out": 300,
+        "local_total_tokens": 1800,
+        "models": [],
+    }
+    with patch("hermes_telemetry.telemetry_cli.db.local_power_summary", return_value=fake) as m:
+        main(["stats", "local-power", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert data["local_calls"] == 2
+    assert data["local_total_tokens"] == 1800
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert kwargs.get("date_to") is None
+
+
+@pytest.mark.parametrize(
+    "argv,expected_from_substr",
+    [
+        (["stats", "local-power-week", "--json"], "202"),
+        (["stats", "local-power-month", "--json"], "202"),
+    ],
+)
+def test_stats_local_power_json_windowed(argv, expected_from_substr, capsys):
+    fake = {"local_calls": 0, "local_total_tokens": 0, "models": []}
+    with patch("hermes_telemetry.telemetry_cli.db.local_power_summary", return_value=fake) as m:
+        main(argv)
+    args, kwargs = m.call_args
+    assert kwargs.get("date_from") is not None
+    assert expected_from_substr in kwargs["date_from"]
+    assert kwargs.get("date_to") is None
+
+
 from hermes_telemetry.budget import BudgetVerdict  # noqa: E402
 
 

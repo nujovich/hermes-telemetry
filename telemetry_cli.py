@@ -22,6 +22,9 @@ _STATS_WINDOW_HOURS: dict[str, int] = {
     "models": 24,
     "models-week": 168,
     "models-month": 720,
+    "local-power": 24,
+    "local-power-week": 168,
+    "local-power-month": 720,
 }
 
 _STATS_CHOICES = list(_STATS_WINDOW_HOURS)
@@ -194,6 +197,8 @@ def _stats_text(subcommand: str, date_from: str | None, date_to: str | None) -> 
         print(stats._providers_block(date_from=date_from, date_to=date_to))
     elif subcommand.startswith("models"):
         print(stats._models_block(date_from=date_from, date_to=date_to))
+    elif subcommand.startswith("local-power"):
+        print(stats._local_power_block(date_from=date_from, date_to=date_to))
     else:
         # today, week, month, last-N-days
         print(stats._summary_block(date_from=date_from, date_to=date_to))
@@ -206,6 +211,8 @@ def _stats_json(subcommand: str, date_from: str | None, date_to: str | None) -> 
         data = db.stats_by_provider(date_from=date_from, date_to=date_to)
     elif subcommand.startswith("models"):
         data = db.stats_by_model(date_from=date_from, date_to=date_to)
+    elif subcommand.startswith("local-power"):
+        data = db.local_power_summary(date_from=date_from, date_to=date_to)
     else:
         # today, week, month, last-N-days
         data = db.stats_summary(date_from=date_from, date_to=date_to)

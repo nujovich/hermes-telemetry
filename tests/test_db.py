@@ -1565,3 +1565,47 @@ def test_spend_by_scope_profile_filters():
 
     result = db.spend_by_scope("profile", "coder", "2000-01-01T00:00:00+00:00")
     assert result["spent_usd"] == 1.50
+
+
+# ---------------------------------------------------------------------------
+# Local power summary (issue #164, Milestone 3)
+# ---------------------------------------------------------------------------
+
+
+def test_local_power_summary_aggregates_local_providers():
+    now = db._utcnow()
+    # Local provider calls (ollama / llama.cpp variants)
+    db.record_llm_call("s_local1", now, "llama3", "ollama", 1000, 200, 0.0, 100)
+    db.record_llm_call("s_local2", now, "mixtral", "llama.cpp", 500, 100, 0.0, 80)
+    # A non-local provider call that must NOT be counted
+    db.record_llm_call("s_api", now, "gpt-4o", "openai", 3000, 500, 0.05, 200)
+
+    s = db.local_power_summary()
+    assert s["local_calls"] == 2
+    assert s["local_tokens_in"] == 1500
+    assert s["local_tokens_out"] == 300
+    assert s["local_total_tokens"] == 1800
+    models = {m["provider"]: m for m in s["models"]}
+    assert "ollama" in models and "llama.cpp" in models
+    assert models["ollama"]["total_tokens"] == 1200
+    assert models["llama.cpp"]["total_tokens"] == 600
+
+
+def test_local_power_summary_empty_window():
+    s = db.local_power_summary()
+    assert s["local_calls"] == 0
+    assert s["local_total_tokens"] == 0
+    assert s["models"] == []
+
+
+def test_local_power_summary_date_filter():
+    now = db._utcnow()
+    db.record_llm_call("s_old", "2000-01-01T00:00:00+00:00", "llama3", "ollama", 100, 10, 0.0, 50)
+    db.record_llm_call("s_new", now, "llama3", "ollama", 200, 20, 0.0, 50)
+    s = db.local_power_summary(date_from="2099-01-01T00:00:00+00:00")
+    assert s["local_calls"] == 0
+    s2 = db.local_power_summary(
+        date_from="1999-01-01T00:00:00+00:00", date_to="2001-01-01T00:00:00+00:00"
+    )
+    assert s2["local_calls"] == 1
+    assert s2["local_total_tokens"] == 110
