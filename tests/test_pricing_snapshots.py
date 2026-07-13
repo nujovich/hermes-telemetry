@@ -118,6 +118,50 @@ def test_core_pricing_resolve_failopen(monkeypatch):
     assert core_pricing.resolve("m", provider="p") is None
 
 
+# --- canonical_model_name --------------------------------------------------
+
+
+def test_canonical_model_name_strips_trailing_date():
+    import hermes_telemetry.core_pricing as core_pricing
+
+    assert (
+        core_pricing.canonical_model_name("deepseek/deepseek-v4-pro-20260423")
+        == "deepseek/deepseek-v4-pro"
+    )
+
+
+def test_canonical_model_name_strips_date_before_free_suffix():
+    import hermes_telemetry.core_pricing as core_pricing
+
+    assert core_pricing.canonical_model_name("tencent/hy3-20260706:free") == "tencent/hy3:free"
+
+
+def test_canonical_model_name_unchanged_without_date():
+    import hermes_telemetry.core_pricing as core_pricing
+
+    assert (
+        core_pricing.canonical_model_name("deepseek/deepseek-v4-pro") == "deepseek/deepseek-v4-pro"
+    )
+    assert core_pricing.canonical_model_name("gpt-4o") == "gpt-4o"
+
+
+def test_canonical_model_name_ignores_non_date_digits():
+    import hermes_telemetry.core_pricing as core_pricing
+
+    # 7 digits (not 8) and a date not anchored to end/:free must NOT be stripped.
+    assert core_pricing.canonical_model_name("model-1234567") == "model-1234567"
+    assert core_pricing.canonical_model_name("foo-20260423-bar") == "foo-20260423-bar"
+
+
+def test_canonical_model_name_strips_any_trailing_8_digits():
+    import hermes_telemetry.core_pricing as core_pricing
+
+    # Accepted heuristic: any trailing 8-digit token is stripped, even if not a
+    # real date. Safe because canonicalization runs ONLY as a fallback after a
+    # direct resolve() miss — a resolvable id never reaches this path.
+    assert core_pricing.canonical_model_name("build-12345678") == "build"
+
+
 # --- post_api_request capture --------------------------------------------
 
 
