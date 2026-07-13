@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 14
+_SCHEMA_VERSION = 15
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -172,6 +172,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v12(conn)
     _migrate_v13(conn)
     _migrate_v14(conn)
+    _migrate_v15(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -559,6 +560,26 @@ def _migrate_v14(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (14, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v15(conn: sqlite3.Connection) -> None:
+    """Add ``pricing_snapshots.resolved_model``: the canonical model name that
+    actually produced the tariff when the raw (dated) name did not resolve against
+    the core ``/models`` catalog. NULL when the raw name resolved directly. Uses
+    ``_add_column_if_missing`` (idempotent; a transient SQLITE_LOCKED re-raises so
+    the version is NOT marked applied). See ONBOARDING.md § Core-sourced pricing
+    snapshots and § Schema evolution.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 15")
+    if cur.fetchone() is not None:
+        return
+
+    _add_column_if_missing(conn, "pricing_snapshots", "resolved_model", "TEXT")
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (15, ?)",
         (_utcnow(),),
     )
 

@@ -1675,6 +1675,53 @@ def test_migrate_v14_creates_table_from_wedged_v13():
     assert "idx_pricing_snapshots_model" in indexes
 
 
+def test_schema_v15_columns():
+    conn = db._get_conn()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pricing_snapshots)")}
+    assert "resolved_model" in cols
+
+
+def test_schema_v15_recorded():
+    versions = {row[0] for row in db._get_conn().execute("SELECT version FROM schema_version")}
+    assert 15 in versions
+
+
+def test_migrate_v15_adds_column_from_wedged_v14():
+    """Upgrade path: a v14-shaped pricing_snapshots (no resolved_model, v15 marker
+    absent) self-heals on the next connect."""
+    conn = db._get_conn()
+    conn.execute("DROP TABLE IF EXISTS pricing_snapshots")
+    conn.executescript("""
+        CREATE TABLE pricing_snapshots (
+            id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider                      TEXT NOT NULL,
+            model                         TEXT NOT NULL,
+            input_cost_per_million        REAL,
+            output_cost_per_million       REAL,
+            cache_read_cost_per_million   REAL,
+            cache_write_cost_per_million  REAL,
+            request_cost                  REAL,
+            source                        TEXT,
+            source_url                    TEXT,
+            pricing_version               TEXT,
+            fetched_at                    TEXT,
+            captured_at                   TEXT NOT NULL,
+            base_url                      TEXT,
+            api_mode                      TEXT
+        );
+    """)
+    conn.execute("DELETE FROM schema_version WHERE version >= 15")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pricing_snapshots)")}
+    assert "resolved_model" not in cols  # wedged state confirmed
+
+    db._ensure_schema(conn)
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pricing_snapshots)")}
+    assert "resolved_model" in cols
+    versions = {r[0] for r in conn.execute("SELECT version FROM schema_version")}
+    assert 15 in versions, "v15 marker must be restored after self-heal"
+
+
 def _snap(**over):
     """Build a core_pricing-shaped snapshot dict; override any field via kwargs."""
     base = {
