@@ -417,6 +417,7 @@ table before applying.
 | v12 | Add `runs.profile` (per-profile cost attribution) + `idx_runs_profile`. Captured from `ctx.profile_name` at `on_session_start`, backfilled in `pre_llm_call` (first non-null wins). Adds the `per_profile` budget scope. |
 | v13 | Repair pass — re-creates `subagent_edges` (+ `idx_subagent_edges_parent`) via `CREATE TABLE IF NOT EXISTS`. Heals DBs upgraded from a build that numbered a *different* migration as v11: the per-profile branch shipped `runs.profile` as v11 before #56 settled `subagent_edges` on v11, so those DBs have `version=11` applied but no table, and v11's early-return skips creation forever. No-op on clean v11 DBs. |
 | v14 | New table: `pricing_snapshots` (append-per-change history of the tariffs Hermes core resolves per `(provider, model)`, with provenance: `source` / `source_url` / `pricing_version` / `fetched_at`). Captured from `agent.usage_pricing.get_pricing_entry` via `core_pricing.py` in the `post_api_request` hook; storage-only (no surface yet). + `idx_pricing_snapshots_model`. |
+| v15 | `pricing_snapshots.resolved_model` — Canonical model name captured when a dated id was normalized to resolve against the core `/models` catalog; NULL when the raw name resolved directly. |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -721,6 +722,15 @@ over-estimate is the motivating case) and to feed the manual pricing editor.
   new row lands only when a rate field, `pricing_version`, or `source` differs
   from the latest stored row for that pair. Context-only fields (`base_url`,
   `api_mode`, `source_url`, `fetched_at`) do not trigger a row.
+- **Dated model names are canonicalized on miss.** The provider `/models` catalog lists
+  canonical (undated) ids, so a dated call like `deepseek/deepseek-v4-pro-20260423` resolves to
+  `None`. When the raw name misses, capture retries under
+  `core_pricing.canonical_model_name()` (strips a trailing `-YYYYMMDD`, incl. before `:free`).
+  The snapshot is stored under the **raw dated name** (`model`) with the canonical name in
+  `resolved_model` (NULL when the raw name resolved directly). Safe because `resolve()` is
+  fail-open: a wrong strip → `None` → no row. Verified on the VPS: the dominant
+  `deepseek/deepseek-v4-pro-20260423` is priced by the plugin via a family prefix (0.27/1.1)
+  while the core's real rate is 0.435/0.87 — the snapshot captures the authoritative rate.
 - **Caveat:** `post_api_request` carries no `api_key`, so a private
   OpenAI-compatible endpoint with no cached `/models` metadata resolves to `None`
   (no snapshot). Nous / OpenRouter / official-docs models resolve without a
