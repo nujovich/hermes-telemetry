@@ -1814,3 +1814,40 @@ def test_record_pricing_snapshot_is_provider_model_scoped():
     assert db.get_latest_pricing_snapshot("p2", "m2")["input_cost_per_million"] == 2.0
     assert _snapshot_row_count("p1", "m1") == 1
     assert _snapshot_row_count("p2", "m2") == 1
+
+
+def test_record_pricing_snapshot_persists_resolved_model():
+    assert (
+        db.record_pricing_snapshot(
+            "nous",
+            "deepseek/deepseek-v4-pro-20260423",
+            _snap(),
+            resolved_model="deepseek/deepseek-v4-pro",
+        )
+        is True
+    )
+    row = db.get_latest_pricing_snapshot("nous", "deepseek/deepseek-v4-pro-20260423")
+    assert row["resolved_model"] == "deepseek/deepseek-v4-pro"
+
+
+def test_record_pricing_snapshot_resolved_model_defaults_null():
+    db.record_pricing_snapshot("p", "m", _snap())
+    assert db.get_latest_pricing_snapshot("p", "m")["resolved_model"] is None
+
+
+def test_record_pricing_snapshot_new_row_on_resolved_model_change():
+    db.record_pricing_snapshot("p", "m", _snap(), resolved_model="canon-a")
+    assert db.record_pricing_snapshot("p", "m", _snap(), resolved_model="canon-b") is True
+    assert _snapshot_row_count("p", "m") == 2
+
+
+def test_record_pricing_snapshot_noop_when_resolved_model_unchanged():
+    db.record_pricing_snapshot("p", "m", _snap(), resolved_model="canon-a")
+    assert db.record_pricing_snapshot("p", "m", _snap(), resolved_model="canon-a") is False
+    assert _snapshot_row_count("p", "m") == 1
+
+
+def test_record_pricing_snapshot_new_row_on_resolved_model_null_flip():
+    db.record_pricing_snapshot("p", "m", _snap())  # resolved_model NULL
+    assert db.record_pricing_snapshot("p", "m", _snap(), resolved_model="canon-a") is True
+    assert _snapshot_row_count("p", "m") == 2

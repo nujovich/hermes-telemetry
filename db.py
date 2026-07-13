@@ -1746,7 +1746,8 @@ def get_latest_pricing_snapshot(provider: str, model: str) -> dict | None:
         "SELECT id, provider, model,"
         " input_cost_per_million, output_cost_per_million,"
         " cache_read_cost_per_million, cache_write_cost_per_million, request_cost,"
-        " source, source_url, pricing_version, fetched_at, captured_at, base_url, api_mode"
+        " source, source_url, pricing_version, fetched_at, captured_at, base_url, api_mode,"
+        " resolved_model"
         " FROM pricing_snapshots"
         " WHERE provider = ? AND model = ?"
         " ORDER BY id DESC LIMIT 1",
@@ -1755,13 +1756,16 @@ def get_latest_pricing_snapshot(provider: str, model: str) -> dict | None:
     return dict(row) if row else None
 
 
-def _pricing_snapshot_changed(latest: dict | None, snap: dict) -> bool:
+def _pricing_snapshot_changed(
+    latest: dict | None, snap: dict, resolved_model: str | None = None
+) -> bool:
     """True if `snap` is a tariff change vs the latest stored row.
 
     Change = any rate field flips None↔value or differs by > 1e-9, OR
-    ``pricing_version`` differs (including a None↔value flip), OR ``source``
-    differs. Context-only fields (``base_url``, ``api_mode``, ``source_url``,
-    ``fetched_at``) never trigger a new row.
+    ``pricing_version`` differs, OR ``source`` differs, OR ``resolved_model``
+    differs (the canonical name the tariff was resolved under; each including a
+    None↔value flip). Context-only fields (``base_url``, ``api_mode``,
+    ``source_url``, ``fetched_at``) never trigger a new row.
     """
     if latest is None:
         return True
@@ -1774,17 +1778,29 @@ def _pricing_snapshot_changed(latest: dict | None, snap: dict) -> bool:
             return True
     if latest.get("pricing_version") != snap.get("pricing_version"):
         return True
-    return latest.get("source") != snap.get("source")
+    if latest.get("source") != snap.get("source"):
+        return True
+    return latest.get("resolved_model") != resolved_model
 
 
 def record_pricing_snapshot(
-    provider: str, model: str, snap: dict, base_url: str = "", api_mode: str = ""
+    provider: str,
+    model: str,
+    snap: dict,
+    base_url: str = "",
+    api_mode: str = "",
+    resolved_model: str | None = None,
 ) -> bool:
     """Append a pricing snapshot row for (provider, model) if it differs from the
     latest stored row (or none exists). Returns True iff a row was written.
 
     `snap` is the dict from ``core_pricing.resolve()``: the five rate floats plus
     ``source`` / ``source_url`` / ``pricing_version`` / ``fetched_at`` (any None).
+
+    ``resolved_model`` is the canonical model name the tariff was resolved under
+    when the raw (dated) name did not resolve directly, or ``None`` when it
+    resolved directly. Unlike ``base_url`` / ``api_mode`` it participates in
+    change detection (a differing ``resolved_model`` writes a new row).
     """
     # Concurrency note (accepted tradeoff): this is a check-then-insert, not
     # atomic. Under WAL with parallel cron processes two callers can both read
@@ -1797,15 +1813,16 @@ def record_pricing_snapshot(
     # tradeoff than a rare duplicate row. The per-process capture throttle in
     # post_api_request already makes same-process duplication a non-issue.
     latest = get_latest_pricing_snapshot(provider, model)
-    if not _pricing_snapshot_changed(latest, snap):
+    if not _pricing_snapshot_changed(latest, snap, resolved_model):
         return False
     conn = _get_conn()
     conn.execute(
         "INSERT INTO pricing_snapshots"
         " (provider, model, input_cost_per_million, output_cost_per_million,"
         "  cache_read_cost_per_million, cache_write_cost_per_million, request_cost,"
-        "  source, source_url, pricing_version, fetched_at, captured_at, base_url, api_mode)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "  source, source_url, pricing_version, fetched_at, captured_at, base_url, api_mode,"
+        "  resolved_model)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             provider,
             model,
@@ -1821,6 +1838,7 @@ def record_pricing_snapshot(
             _utcnow(),
             base_url,
             api_mode,
+            resolved_model,
         ),
     )
     return True
