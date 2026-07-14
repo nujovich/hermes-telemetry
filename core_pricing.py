@@ -19,6 +19,7 @@ type alias — verified in agent/usage_pricing.py:19), and ``fetched_at`` a date
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger("hermes_telemetry")
@@ -40,6 +41,34 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+_DATED_SUFFIX = re.compile(r"-\d{8}(?=:|$)")
+
+
+def canonical_model_name(model: str) -> str:
+    """Strip a trailing dated-version suffix (``-YYYYMMDD``) from a model id.
+
+    Intended ONLY as a FALLBACK, called after ``resolve(raw)`` has already
+    returned ``None``. Hermes core's ``/models`` catalog lists canonical
+    (undated) names, but the gateway calls with dated ids like
+    ``deepseek/deepseek-v4-pro-20260423`` that miss the catalog
+    (``get_pricing_entry`` → ``None``). Removing the date recovers the name the
+    core knows. The lookahead matches the 8-digit token just before end-of-id OR
+    a ``:``-suffix (generic; the gateway uses ``:free`` in practice), so both
+    ``deepseek/deepseek-v4-pro-20260423`` → ``deepseek/deepseek-v4-pro`` and
+    ``tencent/hy3-20260706:free`` → ``tencent/hy3:free`` work. Returns the input
+    unchanged when there is no dated suffix. Pure; never raises for a str model
+    id (a non-str would raise ``TypeError``, but callers only pass the hook's
+    str model, and the capture block is itself fail-open).
+
+    A wrong strip is harmless: this runs only after a direct-resolve miss, so a
+    model id that legitimately ends in 8 digits and is resolvable would have
+    resolved directly and never reach here — no regression is possible. If the
+    stripped name is unknown to the core, ``resolve()`` fail-opens to ``None`` →
+    no capture (same as before). We capture only when the stripped name resolves.
+    """
+    return _DATED_SUFFIX.sub("", model)
 
 
 def resolve(model: str, provider: str = "", base_url: str = "") -> dict | None:

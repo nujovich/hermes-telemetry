@@ -118,6 +118,50 @@ def test_core_pricing_resolve_failopen(monkeypatch):
     assert core_pricing.resolve("m", provider="p") is None
 
 
+# --- canonical_model_name --------------------------------------------------
+
+
+def test_canonical_model_name_strips_trailing_date():
+    import hermes_telemetry.core_pricing as core_pricing
+
+    assert (
+        core_pricing.canonical_model_name("deepseek/deepseek-v4-pro-20260423")
+        == "deepseek/deepseek-v4-pro"
+    )
+
+
+def test_canonical_model_name_strips_date_before_free_suffix():
+    import hermes_telemetry.core_pricing as core_pricing
+
+    assert core_pricing.canonical_model_name("tencent/hy3-20260706:free") == "tencent/hy3:free"
+
+
+def test_canonical_model_name_unchanged_without_date():
+    import hermes_telemetry.core_pricing as core_pricing
+
+    assert (
+        core_pricing.canonical_model_name("deepseek/deepseek-v4-pro") == "deepseek/deepseek-v4-pro"
+    )
+    assert core_pricing.canonical_model_name("gpt-4o") == "gpt-4o"
+
+
+def test_canonical_model_name_ignores_non_date_digits():
+    import hermes_telemetry.core_pricing as core_pricing
+
+    # 7 digits (not 8) and a date not anchored to end/:free must NOT be stripped.
+    assert core_pricing.canonical_model_name("model-1234567") == "model-1234567"
+    assert core_pricing.canonical_model_name("foo-20260423-bar") == "foo-20260423-bar"
+
+
+def test_canonical_model_name_strips_any_trailing_8_digits():
+    import hermes_telemetry.core_pricing as core_pricing
+
+    # Accepted heuristic: any trailing 8-digit token is stripped, even if not a
+    # real date. Safe because canonicalization runs ONLY as a fallback after a
+    # direct resolve() miss — a resolvable id never reaches this path.
+    assert core_pricing.canonical_model_name("build-12345678") == "build"
+
+
 # --- post_api_request capture --------------------------------------------
 
 
@@ -224,3 +268,101 @@ def test_post_api_request_no_snapshot_when_resolve_none(monkeypatch):
         usage={"input_tokens": 1, "output_tokens": 1},
     )
     assert db.get_latest_pricing_snapshot("p", "m") is None
+
+
+def test_post_api_request_falls_back_to_canonical(monkeypatch):
+    import hermes_telemetry.core_pricing as core_pricing
+    import hermes_telemetry.db as db
+
+    calls = []
+
+    def _resolve(model, provider="", base_url=""):
+        calls.append(model)
+        if model == "deepseek/deepseek-v4-pro":  # canonical resolves
+            return {
+                "input_cost_per_million": 0.435,
+                "output_cost_per_million": 0.87,
+                "cache_read_cost_per_million": None,
+                "cache_write_cost_per_million": None,
+                "request_cost": None,
+                "source": "provider_models_api",
+                "source_url": None,
+                "pricing_version": "openai-compatible-models-api",
+                "fetched_at": None,
+            }
+        return None  # dated name misses
+
+    monkeypatch.setattr(core_pricing, "resolve", _resolve)
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+    ctx.fire(
+        "post_api_request",
+        session_id="s",
+        model="deepseek/deepseek-v4-pro-20260423",
+        provider="nous",
+        usage={"input_tokens": 1, "output_tokens": 1},
+    )
+
+    row = db.get_latest_pricing_snapshot("nous", "deepseek/deepseek-v4-pro-20260423")
+    assert row is not None  # stored under the RAW dated name
+    assert row["input_cost_per_million"] == 0.435
+    assert row["resolved_model"] == "deepseek/deepseek-v4-pro"
+    assert calls == ["deepseek/deepseek-v4-pro-20260423", "deepseek/deepseek-v4-pro"]
+
+
+def test_post_api_request_direct_resolve_leaves_resolved_model_null(monkeypatch):
+    import hermes_telemetry.core_pricing as core_pricing
+    import hermes_telemetry.db as db
+
+    monkeypatch.setattr(core_pricing, "resolve", _fake_resolve_factory())
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+    ctx.fire(
+        "post_api_request",
+        session_id="s",
+        model="claude-sonnet-4-6",  # no date; resolves directly
+        provider="anthropic",
+        usage={"input_tokens": 1, "output_tokens": 1},
+    )
+    assert (
+        db.get_latest_pricing_snapshot("anthropic", "claude-sonnet-4-6")["resolved_model"] is None
+    )
+
+
+def test_post_api_request_no_snapshot_when_neither_resolves(monkeypatch):
+    import hermes_telemetry.core_pricing as core_pricing
+    import hermes_telemetry.db as db
+
+    monkeypatch.setattr(core_pricing, "resolve", lambda *a, **k: None)
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+    ctx.fire(
+        "post_api_request",
+        session_id="s",
+        model="unknown/model-20260101",
+        provider="p",
+        usage={"input_tokens": 1, "output_tokens": 1},
+    )
+    assert db.get_latest_pricing_snapshot("p", "unknown/model-20260101") is None
+
+
+def test_post_api_request_no_second_resolve_when_no_date_suffix(monkeypatch):
+    import hermes_telemetry.core_pricing as core_pricing
+
+    calls = []
+
+    def _resolve(model, provider="", base_url=""):
+        calls.append(model)
+        return None  # nothing resolves
+
+    monkeypatch.setattr(core_pricing, "resolve", _resolve)
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+    ctx.fire(
+        "post_api_request",
+        session_id="s",
+        model="gpt-4o",  # no date suffix -> canonical == raw -> no second resolve
+        provider="openai",
+        usage={"input_tokens": 1, "output_tokens": 1},
+    )
+    assert calls == ["gpt-4o"]  # second resolve skipped when canonical == raw
