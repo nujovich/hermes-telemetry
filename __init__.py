@@ -400,16 +400,9 @@ def register(ctx) -> None:  # noqa: ANN001
                         _do_snapshot = True
                 if _do_snapshot:
                     try:
-                        _snap = core_pricing.resolve(effective_model, provider, base_url)
-                        _resolved = None
-                        # Dated ids (e.g. ...-20260423) miss the core /models catalog;
-                        # retry under the canonical name. See core_pricing.canonical_model_name.
-                        if not _snap:
-                            _canon = core_pricing.canonical_model_name(effective_model)
-                            if _canon != effective_model:
-                                _snap = core_pricing.resolve(_canon, provider, base_url)
-                                if _snap:
-                                    _resolved = _canon
+                        _snap, _resolved = core_pricing.resolve_with_fallback(
+                            effective_model, provider, base_url
+                        )
                         if _snap:
                             db.record_pricing_snapshot(
                                 provider,
