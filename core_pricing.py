@@ -111,3 +111,28 @@ def resolve(model: str, provider: str = "", base_url: str = "") -> dict | None:
             "core_pricing.resolve failed for model=%r provider=%r: %s", model, provider, exc
         )
         return None
+
+
+def resolve_with_fallback(
+    model: str, provider: str = "", base_url: str = ""
+) -> tuple[dict | None, str | None]:
+    """Resolve pricing for ``model``, retrying under the canonical name when the
+    raw (dated) id misses the core /models catalog.
+
+    Returns ``(snapshot, resolved_model)``: ``snapshot`` is ``resolve()``'s dict or
+    ``None``; ``resolved_model`` is the canonical name the tariff was recovered
+    under when the dated-suffix fallback succeeded, else ``None`` (direct resolve
+    or total miss). Fail-open — delegates to ``resolve()``, which never raises.
+
+    Single source of truth for the capture path (``post_api_request``) and the
+    ``pricing_backfill`` command, so both treat dated ids identically.
+    """
+    snap = resolve(model, provider, base_url)
+    if snap:
+        return snap, None
+    canon = canonical_model_name(model)
+    if canon != model:
+        snap = resolve(canon, provider, base_url)
+        if snap:
+            return snap, canon
+    return None, None

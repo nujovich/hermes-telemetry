@@ -366,3 +366,62 @@ def test_post_api_request_no_second_resolve_when_no_date_suffix(monkeypatch):
         usage={"input_tokens": 1, "output_tokens": 1},
     )
     assert calls == ["gpt-4o"]  # second resolve skipped when canonical == raw
+
+
+# --- core_pricing.resolve_with_fallback -----------------------------------
+
+
+def test_resolve_with_fallback_direct(monkeypatch):
+    import hermes_telemetry.core_pricing as core_pricing
+
+    def _resolve(model, provider="", base_url=""):
+        if model == "claude-sonnet-4-6":
+            return {"input_cost_per_million": 3.0, "source": "official_docs_snapshot"}
+        return None
+
+    monkeypatch.setattr(core_pricing, "resolve", _resolve)
+    snap, resolved = core_pricing.resolve_with_fallback("claude-sonnet-4-6", "anthropic")
+    assert snap == {"input_cost_per_million": 3.0, "source": "official_docs_snapshot"}
+    assert resolved is None
+
+
+def test_resolve_with_fallback_dated(monkeypatch):
+    import hermes_telemetry.core_pricing as core_pricing
+
+    calls = []
+
+    def _resolve(model, provider="", base_url=""):
+        calls.append(model)
+        if model == "deepseek/deepseek-v4-pro":
+            return {"input_cost_per_million": 0.435, "source": "provider_models_api"}
+        return None
+
+    monkeypatch.setattr(core_pricing, "resolve", _resolve)
+    snap, resolved = core_pricing.resolve_with_fallback("deepseek/deepseek-v4-pro-20260423", "nous")
+    assert snap["input_cost_per_million"] == 0.435
+    assert resolved == "deepseek/deepseek-v4-pro"
+    assert calls == ["deepseek/deepseek-v4-pro-20260423", "deepseek/deepseek-v4-pro"]
+
+
+def test_resolve_with_fallback_miss(monkeypatch):
+    import hermes_telemetry.core_pricing as core_pricing
+
+    monkeypatch.setattr(core_pricing, "resolve", lambda *a, **k: None)
+    snap, resolved = core_pricing.resolve_with_fallback("unknown/model-20260101", "p")
+    assert snap is None
+    assert resolved is None
+
+
+def test_resolve_with_fallback_no_date_single_call(monkeypatch):
+    import hermes_telemetry.core_pricing as core_pricing
+
+    calls = []
+
+    def _resolve(model, provider="", base_url=""):
+        calls.append(model)
+        return None
+
+    monkeypatch.setattr(core_pricing, "resolve", _resolve)
+    snap, resolved = core_pricing.resolve_with_fallback("plain/model", "p")
+    assert (snap, resolved) == (None, None)
+    assert calls == ["plain/model"]  # no canonical retry when there is no date suffix

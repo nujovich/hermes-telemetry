@@ -735,9 +735,29 @@ over-estimate is the motivating case) and to feed the manual pricing editor.
   OpenAI-compatible endpoint with no cached `/models` metadata resolves to `None`
   (no snapshot). Nous / OpenRouter / official-docs models resolve without a
   per-call fetch.
-- **Storage-only for now.** Surfacing (stats, `hermes telemetry pricing`, a
-  dashboard tab rendered inside `TelemetryPage`) and drift-vs-`pricing.yaml`
-  computation are follow-ups.
+- **Storage-only for now.** Surfacing (stats, a dashboard tab rendered inside
+  `TelemetryPage`) and drift-vs-`pricing.yaml` computation are follow-ups.
+
+#### Backfill (`hermes telemetry pricing backfill`)
+
+Live capture only records a snapshot when a model is actually called, and it keys
+off `effective_model = response_model or model` — on nous the provider returns the
+**canonical** id, so historical **dated** ids (e.g. `deepseek/deepseek-v4-pro-20260423`)
+that dominate `llm_calls` get no live snapshot. `hermes telemetry pricing backfill`
+seeds coverage for them:
+
+- Enumerates distinct `(provider, model)` in `llm_calls` with no `pricing_snapshots`
+  row (`db.models_needing_pricing_snapshot`).
+- Resolves each via `core_pricing.resolve_with_fallback` (the shared helper the live
+  `post_api_request` capture also uses — dated ids retry under the canonical name).
+- **Dry-run by default**; `--apply` writes, `--json` for machine output.
+
+It is a **coverage seed, not historical reconstruction**: rows carry the tariff the
+core resolves *today* (`captured_at` = now, real provenance), stored under the raw
+model name plus `resolved_model` when the canonical fallback was used. Fail-open and
+idempotent — re-running skips already-covered keys; unresolvable models (no core
+price) are retried each run and captured automatically once the core can price them.
+No schema change; backfilled rows are indistinguishable from same-day live captures.
 
 ---
 

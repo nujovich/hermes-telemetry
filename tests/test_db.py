@@ -1851,3 +1851,38 @@ def test_record_pricing_snapshot_new_row_on_resolved_model_null_flip():
     db.record_pricing_snapshot("p", "m", _snap())  # resolved_model NULL
     assert db.record_pricing_snapshot("p", "m", _snap(), resolved_model="canon-a") is True
     assert _snapshot_row_count("p", "m") == 2
+
+
+# ---------------------------------------------------------------------------
+# models_needing_pricing_snapshot / count_distinct_llm_models
+# ---------------------------------------------------------------------------
+
+_BF_NOW = "2026-07-14T00:00:00+00:00"
+
+
+def test_models_needing_pricing_snapshot_excludes_covered_and_empty():
+    db.record_llm_call("s1", _BF_NOW, "deepseek/deepseek-v4-pro-20260423", "nous", 10, 2, 0.01, 100)
+    db.record_llm_call("s2", _BF_NOW, "deepseek/deepseek-v4-pro-20260423", "nous", 10, 2, 0.01, 100)
+    db.record_llm_call("s3", _BF_NOW, "tencent/hy3:free", "nous", 5, 1, 0.0, 50)
+    db.record_llm_call("s4", _BF_NOW, "", "nous", 1, 1, 0.0, 10)  # empty model — ignored
+    db.record_pricing_snapshot(
+        "nous",
+        "tencent/hy3:free",
+        {
+            "input_cost_per_million": 0.0,
+            "output_cost_per_million": 0.0,
+            "source": "provider_models_api",
+        },
+    )
+
+    needing = db.models_needing_pricing_snapshot()
+    assert needing == [("nous", "deepseek/deepseek-v4-pro-20260423")]
+
+
+def test_count_distinct_llm_models_ignores_empty():
+    db.record_llm_call("s1", _BF_NOW, "a/m", "nous", 1, 1, 0.0, 1)
+    db.record_llm_call("s2", _BF_NOW, "a/m", "nous", 1, 1, 0.0, 1)  # duplicate
+    db.record_llm_call("s3", _BF_NOW, "b/m", "openai", 1, 1, 0.0, 1)
+    db.record_llm_call("s4", _BF_NOW, "", "nous", 1, 1, 0.0, 1)  # empty — ignored
+
+    assert db.count_distinct_llm_models() == 2

@@ -175,6 +175,15 @@ def _build_parser_into(sub) -> None:
     )
     spp.add_argument("--json", action="store_true", help="Output as JSON")
 
+    pp = sub.add_parser("pricing", help="Pricing snapshot operations")
+    psub = pp.add_subparsers(dest="pricing_command", metavar="PRICING_COMMAND")
+    pb = psub.add_parser(
+        "backfill",
+        help="Seed pricing snapshots for historical models that have none",
+    )
+    pb.add_argument("--apply", action="store_true", help="Write changes (default: dry-run)")
+    pb.add_argument("--json", action="store_true", help="Output as JSON")
+
 
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
@@ -189,6 +198,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser | None =
         _handle_budget(args)
     elif args.command == "sync-profiles":
         _handle_sync_profiles(args)
+    elif args.command == "pricing":
+        _handle_pricing(args, parser)
     else:
         if parser:
             parser.print_help()
@@ -352,6 +363,20 @@ def _handle_sync_profiles(args: argparse.Namespace) -> None:
     print(
         sp.to_json(statuses, target, results) if args.json else sp.render(statuses, target, results)
     )
+
+
+def _handle_pricing(
+    args: argparse.Namespace, parser: argparse.ArgumentParser | None = None
+) -> None:
+    from . import pricing_backfill
+
+    if args.pricing_command == "backfill":
+        result = pricing_backfill.run(apply=args.apply)
+        print(pricing_backfill.to_json(result) if args.json else pricing_backfill.render(result))
+        return
+    if parser:
+        parser.print_help()
+    sys.exit(0)
 
 
 if __name__ == "__main__":

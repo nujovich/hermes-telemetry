@@ -1842,3 +1842,38 @@ def record_pricing_snapshot(
         ),
     )
     return True
+
+
+def count_distinct_llm_models() -> int:
+    """Number of distinct (provider, model) pairs in llm_calls with a non-empty model."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM ("
+        " SELECT DISTINCT provider, model FROM llm_calls"
+        " WHERE model IS NOT NULL AND model != ''"
+        ")"
+    ).fetchone()
+    return int(row[0])
+
+
+def models_needing_pricing_snapshot() -> list[tuple[str, str]]:
+    """Distinct (provider, model) pairs seen in llm_calls (non-empty model) that
+    have NO pricing_snapshots row yet, ordered by (provider, model).
+
+    Uses ``IS`` for the provider match so a NULL/'' provider compares NULL-safely.
+    Backfill idempotency (skipping already-captured pairs) is enforced HERE, at the
+    query layer — that is why the plain ``provider = ?`` reads in
+    ``get_latest_pricing_snapshot`` / ``record_pricing_snapshot`` are safe for the
+    backfill path.
+    """
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT DISTINCT lc.provider, lc.model FROM llm_calls lc"
+        " WHERE lc.model IS NOT NULL AND lc.model != ''"
+        " AND NOT EXISTS ("
+        "   SELECT 1 FROM pricing_snapshots ps"
+        "   WHERE ps.provider IS lc.provider AND ps.model = lc.model"
+        " )"
+        " ORDER BY lc.provider, lc.model"
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
