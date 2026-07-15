@@ -404,6 +404,16 @@ def test_budget_window_bounds_follow_viewer_timezone_monthly(serve_module):
     assert bounds["window_end_utc"] == "2027-01-31T18:00:00+00:00"
 
 
+def test_dashboard_viewer_tz_honors_utc_without_zoneinfo(serve_module, monkeypatch):
+    # UTC needs no timezone database, so an explicit "UTC" request must be honored
+    # even when zoneinfo is unavailable (e.g. Python 3.8, where ZoneInfo is None) —
+    # not silently replaced by the server's local timezone.
+    monkeypatch.setattr(serve_module, "ZoneInfo", None)
+    tzinfo, label = serve_module._dashboard_viewer_tz("UTC")
+    assert label == "UTC"
+    assert tzinfo == timezone.utc
+
+
 def test_budget_update_returns_viewer_timezone_metadata(serve_module, tmp_path):
     import sqlite3
 
