@@ -2264,6 +2264,10 @@ def _dashboard_viewer_tz(tz_name: str | None):
             return ZoneInfo(tz_name), tz_name
         except Exception:
             pass
+    # UTC needs no timezone database, so honor it even when zoneinfo is
+    # unavailable (Python 3.8) rather than falling back to the server's local tz.
+    if tz_name and tz_name.upper() == "UTC":
+        return timezone.utc, "UTC"
     local_tz = datetime.now().astimezone().tzinfo or timezone.utc
     label = getattr(local_tz, "key", None) or str(local_tz)
     return local_tz, label
