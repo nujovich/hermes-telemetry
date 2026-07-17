@@ -1756,6 +1756,30 @@ def get_latest_pricing_snapshot(provider: str, model: str) -> dict | None:
     return dict(row) if row else None
 
 
+def list_latest_pricing_snapshots() -> list[dict]:
+    """Return the most recent pricing_snapshots row for every (provider, model)
+    pair, ordered by (provider, model). Latest = highest id per pair.
+
+    Unlike get_latest_pricing_snapshot (single pair), this powers pricing-drift
+    which must diff every captured tariff against pricing.yaml at once.
+    """
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT ps.id, ps.provider, ps.model,"
+        " ps.input_cost_per_million, ps.output_cost_per_million,"
+        " ps.cache_read_cost_per_million, ps.cache_write_cost_per_million, ps.request_cost,"
+        " ps.source, ps.source_url, ps.pricing_version, ps.fetched_at, ps.captured_at,"
+        " ps.base_url, ps.api_mode, ps.resolved_model"
+        " FROM pricing_snapshots ps"
+        " JOIN ("
+        "   SELECT provider, model, MAX(id) AS max_id FROM pricing_snapshots"
+        "   GROUP BY provider, model"
+        " ) latest ON ps.id = latest.max_id"
+        " ORDER BY ps.provider, ps.model"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _pricing_snapshot_changed(
     latest: dict | None, snap: dict, resolved_model: str | None = None
 ) -> bool:
