@@ -166,7 +166,7 @@ def render(result: dict) -> str:
     if result["coverage_gap"] and result["model_filter"] is None:
         lines.append(
             f"  ! {result['coverage_gap']} model(s) in llm_calls have NO snapshot — "
-            "run `hermes telemetry pricing backfill --apply` for full coverage."
+            "run `hermes-telemetry pricing backfill --apply` for full coverage."
         )
     if result["drifted"]:
         lines.append(
