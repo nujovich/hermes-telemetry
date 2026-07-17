@@ -736,8 +736,8 @@ over-estimate is the motivating case) and to feed the manual pricing editor.
   OpenAI-compatible endpoint with no cached `/models` metadata resolves to `None`
   (no snapshot). Nous / OpenRouter / official-docs models resolve without a
   per-call fetch.
-- **Storage-only for now.** Surfacing (stats, a dashboard tab rendered inside
-  `TelemetryPage`) and drift-vs-`pricing.yaml` computation are follow-ups.
+- **Drift computation shipped** (see below). Surfacing snapshots in the dashboard
+  (a tab rendered inside `TelemetryPage`) remains a follow-up.
 
 #### Backfill (`hermes telemetry pricing backfill`)
 
@@ -759,6 +759,37 @@ model name plus `resolved_model` when the canonical fallback was used. Fail-open
 idempotent — re-running skips already-covered keys; unresolvable models (no core
 price) are retried each run and captured automatically once the core can price them.
 No schema change; backfilled rows are indistinguishable from same-day live captures.
+
+#### Drift detection (`hermes telemetry pricing drift`)
+
+`pricing.yaml` is the plugin's cost source; `pricing_snapshots` is the core's
+ground truth. Drift detection diffs them so an over-priced local entry (the Faro
+case) surfaces instead of silently inflating cost:
+
+- Reads the latest snapshot per `(provider, model)` via
+  `db.list_latest_pricing_snapshots`, collapsed to the canonical write-key
+  (`resolved_model or model`, latest-id wins on collision).
+- Resolves each model's local rate via `pricing._resolve_pricing` (provider-aware)
+  and flags **input/output** drift beyond `--threshold` (default 1%). Cache/
+  reasoning are derived and `request_cost` has no `pricing.yaml` analog, so they
+  are intentionally excluded. A zero snapshot rate vs. a non-zero local price is
+  always drift (the per-side percentage is reported as undefined).
+- `_subscription: true` entries are skipped (a declared $0 is intentional).
+  `_provider_assumed` best-effort guesses are treated as "no local price", not
+  drift, since they were never pinned for that provider.
+- **Coverage-gap aware:** reuses `db.models_needing_pricing_snapshot` — if models
+  in `llm_calls` have no snapshot, the report says so and points at
+  `pricing backfill`, so drift never gives a false all-clear. The gap count is
+  DB-wide; the human-facing nudge is suppressed when `--model` scopes the run.
+- **Dry-run by default**; `--apply` merges the snapshot input/output rates back
+  into `pricing.yaml` (never clobber), tags each repaired entry `_source:
+  core-snapshot`, and hot-reloads. Because `pricing.yaml` is keyed by model only,
+  a model that drifted under two providers is written once (first wins; a
+  conflicting second rate is logged and skipped). Routes through
+  `paths.get_pricing_path()` (not `HERMES_HOME`-direct like
+  `pricing_refresh.PRICING_FILE`, whose latent bug is a separate follow-up).
+  `--model` limits to one canonical model; `--json` for machine output. No schema
+  change.
 
 ---
 
