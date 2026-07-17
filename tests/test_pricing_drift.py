@@ -48,3 +48,16 @@ def test_list_latest_pricing_snapshots_returns_latest_per_pair():
     assert len(ms) == 1
     assert ms[0]["input_cost_per_million"] == 1.5
     assert ms[0]["output_cost_per_million"] == 2.5
+
+
+def test_list_latest_pricing_snapshots_returns_all_pairs():
+    db.record_pricing_snapshot("nous", "a", _snap(1.0, 2.0))
+    db.record_pricing_snapshot("nous", "b", _snap(3.0, 4.0))
+    rows = db.list_latest_pricing_snapshots()
+    pairs = {(r["provider"], r["model"]) for r in rows}
+    assert ("nous", "a") in pairs
+    assert ("nous", "b") in pairs
+
+
+def test_list_latest_pricing_snapshots_empty_returns_empty_list():
+    assert db.list_latest_pricing_snapshots() == []
