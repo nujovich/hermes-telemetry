@@ -12,8 +12,11 @@ lack any snapshot, so drift never gives a false all-clear.
 from __future__ import annotations
 
 import json
+import logging
 
-from . import db, pricing
+from . import db, paths, pricing
+
+logger = logging.getLogger(__name__)
 
 
 def _drift_pct(local: float, snap: float) -> float | None:
@@ -182,13 +185,16 @@ def _apply_drift(drifted: list[dict]) -> int:
     dump back with sort_keys=False (preserve insertion order). Routes through
     paths.get_pricing_path() at call time (honors HERMES_TELEMETRY_HOME), then
     hot-reloads pricing.py's cache. Returns the number of entries written.
+
+    pricing.yaml is keyed by model only, so if the same model drifted under two
+    providers (run() keys canonical by (provider, model)), only the first is
+    written; a conflicting second rate is logged and skipped rather than silently
+    overwriting.
     """
     if not drifted:
         return 0
 
     import yaml
-
-    from . import paths
 
     path = paths.get_pricing_path()
     data: dict = {}
@@ -196,12 +202,25 @@ def _apply_drift(drifted: list[dict]) -> int:
         with open(path) as f:
             data = yaml.safe_load(f) or {}
 
-    # New format nests models under "models:"; legacy is a flat model->entry map.
     models = data.setdefault("models", {}) if "models" in data or "defaults" in data else data
 
     written = 0
+    applied: dict[str, tuple] = {}
     for d in drifted:
         target = d["model"].lower()
+        rates = (d["snap_input"], d["snap_output"])
+        if target in applied:
+            if applied[target] != rates:
+                logger.warning(
+                    "hermes-telemetry: conflicting core rates for model %r across "
+                    "providers (%s vs %s) — keeping the first, skipping the rest. "
+                    "pricing.yaml is keyed by model only, so per-provider rates "
+                    "cannot both be pinned.",
+                    d["model"],
+                    applied[target],
+                    rates,
+                )
+            continue
         existing_key = next((k for k in models if str(k).lower() == target), None)
         if existing_key is not None:
             entry = models[existing_key]
@@ -214,6 +233,7 @@ def _apply_drift(drifted: list[dict]) -> int:
         entry["input"] = d["snap_input"]
         entry["output"] = d["snap_output"]
         entry["_source"] = "core-snapshot"
+        applied[target] = rates
         written += 1
 
     path.parent.mkdir(parents=True, exist_ok=True)

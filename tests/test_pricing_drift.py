@@ -268,3 +268,69 @@ def test_apply_does_not_write_subscription_entries():
     with open(paths.get_pricing_path()) as f:
         data = yaml.safe_load(f)
     assert data["models"]["sub/model"]["input"] == 0.0  # unchanged
+
+
+def test_apply_creates_new_entry_when_model_absent():
+    import yaml
+    from hermes_telemetry import paths
+
+    _write_pricing_yaml({})  # empty models map
+    written = pricing_drift._apply_drift(
+        [{"provider": "nous", "model": "brand/new", "snap_input": 0.4, "snap_output": 0.8}]
+    )
+    assert written == 1
+    with open(paths.get_pricing_path()) as f:
+        data = yaml.safe_load(f)
+    assert data["models"]["brand/new"]["input"] == 0.4
+    assert data["models"]["brand/new"]["output"] == 0.8
+    assert data["models"]["brand/new"]["_source"] == "core-snapshot"
+
+
+def test_apply_updates_legacy_flat_format_in_place():
+    import yaml
+    from hermes_telemetry import paths
+
+    path = paths.get_pricing_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump({"m": {"input": 1.6, "output": 3.2}}, f)  # legacy flat: no models/defaults
+    pricing.reload_custom_pricing()
+    written = pricing_drift._apply_drift(
+        [{"provider": "nous", "model": "m", "snap_input": 0.4, "snap_output": 0.8}]
+    )
+    assert written == 1
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    assert data["m"]["input"] == 0.4  # updated in the flat map
+    assert "models" not in data
+
+
+def test_apply_same_model_two_providers_writes_once():
+    written = pricing_drift._apply_drift(
+        [
+            {"provider": "nous", "model": "m", "snap_input": 0.4, "snap_output": 0.8},
+            {"provider": "openrouter", "model": "m", "snap_input": 0.4, "snap_output": 0.8},
+        ]
+    )
+    assert written == 1  # same model+rates → written once, not double-counted
+
+
+def test_apply_same_model_conflicting_rates_keeps_first(caplog):
+    import logging
+
+    import yaml
+    from hermes_telemetry import paths
+
+    _write_pricing_yaml({})
+    with caplog.at_level(logging.WARNING, logger="hermes_telemetry.pricing_drift"):
+        written = pricing_drift._apply_drift(
+            [
+                {"provider": "nous", "model": "m", "snap_input": 0.4, "snap_output": 0.8},
+                {"provider": "openrouter", "model": "m", "snap_input": 0.9, "snap_output": 1.8},
+            ]
+        )
+    assert written == 1
+    with open(paths.get_pricing_path()) as f:
+        data = yaml.safe_load(f)
+    assert data["models"]["m"]["input"] == 0.4  # first kept
+    assert "conflicting core rates" in caplog.text
