@@ -471,6 +471,42 @@ The `Notes` column (subscription/free-tier vs no price entry) and footer
 behaviour described in [`/stats models`](#stats) work the same way under a
 date filter — they're computed against whatever rows the filter selected.
 
+### Pricing snapshots (`pricing backfill` / `pricing drift`)
+
+Every real LLM call captures a pricing snapshot from the core (ground truth). Two
+subcommands work with that snapshot history:
+
+```bash
+# Seed snapshots for historical models that never got one (dry-run first)
+hermes-telemetry pricing backfill
+hermes-telemetry pricing backfill --apply    # write the resolvable ones
+hermes-telemetry pricing backfill --json     # machine-readable output
+
+# Compare pricing.yaml against the core snapshots (dry-run first)
+hermes-telemetry pricing drift
+hermes-telemetry pricing drift --apply               # rewrite drifted entries
+hermes-telemetry pricing drift --threshold 5          # flag drift > 5% (default: 1%)
+hermes-telemetry pricing drift --model deepseek/deepseek-v4-pro
+hermes-telemetry pricing drift --json
+```
+
+`pricing backfill` seeds a current snapshot for every historical `(provider, model)`
+in `llm_calls` that has none yet — mainly dated model ids that never matched a live
+capture. It's a coverage seed, not historical reconstruction: the tariff written is
+whatever the core resolves *today*. Dry-run by default; `--apply` writes; idempotent
+and safe to re-run.
+
+`pricing drift` diffs `pricing.yaml`'s input/output rates against the latest core
+snapshot per model (input/output only — cache/reasoning rates have no `pricing.yaml`
+analog). It skips `_subscription: true` entries (a declared $0 is intentional) and
+flags anything beyond `--threshold` percent (default `1.0`). If models in `llm_calls`
+still lack a snapshot, the report reminds you to run `pricing backfill` first so a
+clean drift run isn't a false all-clear. Dry-run by default; `--apply` merges the
+core rates back into `pricing.yaml` (never clobbers) and tags each repaired entry
+`_source: core-snapshot`.
+
+See `ONBOARDING.md § Core-sourced pricing snapshots` for the full design rationale.
+
 -----
 
 ## Setup Wizard
