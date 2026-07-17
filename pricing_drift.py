@@ -11,7 +11,7 @@ lack any snapshot, so drift never gives a false all-clear.
 
 from __future__ import annotations
 
-import json  # noqa: F401 -- used by later tasks in this plan (CLI --json output)
+import json
 
 from . import db, pricing
 
@@ -121,6 +121,57 @@ def run(*, apply: bool = False, threshold_pct: float = 1.0, model: str | None = 
         "coverage_gap": len(db.models_needing_pricing_snapshot()),
         "written": written,
     }
+
+
+def _fmt_pct(pct: float | None) -> str:
+    """Format a drift percentage. None means the snapshot rate was 0 (the model
+    was free / unpriced), so a ratio is undefined — show that instead of a number."""
+    return "was $0" if pct is None else f"{pct:+.1f}%"
+
+
+def render(result: dict) -> str:
+    """Human-readable report for a run() result."""
+    if result["applied"]:
+        return (
+            "Pricing drift (--apply)\n"
+            f"  Rewrote {result['written']} model(s) in pricing.yaml from core snapshots."
+        )
+    lines = [
+        f"Pricing drift (dry-run, threshold {result['threshold_pct']:.2f}%)",
+        f"  Compared (snapshot + local price): {result['compared']}",
+        f"  In sync:                           {result['in_sync']}",
+        f"  Drifted:                           {len(result['drifted'])}",
+    ]
+    for d in result["drifted"]:
+        lines.append(
+            f"    - {d['model']} ({d['provider']}): "
+            f"input {d['local_input']:.4f} vs {d['snap_input']:.4f} "
+            f"({_fmt_pct(d['input_drift_pct'])}), "
+            f"output {d['local_output']:.4f} vs {d['snap_output']:.4f} "
+            f"({_fmt_pct(d['output_drift_pct'])})"
+        )
+    if result["skipped_subscription"]:
+        lines.append(f"  Skipped (subscription): {len(result['skipped_subscription'])}")
+    if result["no_local_price"]:
+        lines.append(f"  Snapshot but no pricing.yaml entry: {len(result['no_local_price'])}")
+        for n in result["no_local_price"]:
+            lines.append(f"      - {n['model']} ({n['provider']})")
+    # Coverage-gap nudge is DB-wide; only surface it on an unfiltered run so a
+    # scoped --model check doesn't nag about unrelated uncovered models.
+    if result["coverage_gap"] and result["model_filter"] is None:
+        lines.append(
+            f"  ! {result['coverage_gap']} model(s) in llm_calls have NO snapshot — "
+            "run `hermes telemetry pricing backfill --apply` for full coverage."
+        )
+    if result["drifted"]:
+        lines.append(
+            f"  Run with --apply to rewrite {len(result['drifted'])} model(s) in pricing.yaml."
+        )
+    return "\n".join(lines)
+
+
+def to_json(result: dict) -> str:
+    return json.dumps(result, default=str)
 
 
 def _apply_drift(drifted: list[dict]) -> int:

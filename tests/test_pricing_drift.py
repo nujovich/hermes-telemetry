@@ -184,3 +184,45 @@ def test_run_provider_assumed_routed_to_no_local_price(monkeypatch):
     result = pricing_drift.run(apply=False)
     assert {"provider": "nous", "model": "x"} in result["no_local_price"]
     assert result["drifted"] == []
+
+
+def test_render_dry_run_lists_drift_and_coverage_hint():
+    db.record_pricing_snapshot("nous", "deepseek/deepseek-v4-pro", _snap(0.435, 0.87))
+    _write_pricing_yaml({"deepseek/deepseek-v4-pro": {"input": 1.6, "output": 3.2}})
+    db.record_llm_call("s1", _NOW, "uncovered/model", "nous", 10, 2, 0.01, 100)
+    text = pricing_drift.render(pricing_drift.run(apply=False))
+    assert "dry-run" in text
+    assert "deepseek/deepseek-v4-pro" in text
+    assert "backfill" in text  # coverage-gap hint present on unfiltered run
+    assert "--apply" in text
+
+
+def test_render_zero_snapshot_shows_was_0_not_crash():
+    db.record_pricing_snapshot("nous", "m", _snap(0.0, 0.0))
+    _write_pricing_yaml({"m": {"input": 1.0, "output": 2.0}})
+    text = pricing_drift.render(pricing_drift.run(apply=False))
+    assert "was $0" in text  # None pct rendered safely, no format crash
+
+
+def test_render_coverage_hint_suppressed_when_model_filtered():
+    db.record_pricing_snapshot("nous", "a", _snap(0.435, 0.87))
+    _write_pricing_yaml({"a": {"input": 1.6, "output": 3.2}})
+    db.record_llm_call("s1", _NOW, "uncovered/model", "nous", 10, 2, 0.01, 100)
+    text = pricing_drift.render(pricing_drift.run(apply=False, model="a"))
+    assert "backfill" not in text  # scoped run must not nag about unrelated models
+
+
+def test_render_apply_summary():
+    db.record_pricing_snapshot("nous", "m", _snap(0.435, 0.87))
+    _write_pricing_yaml({"m": {"input": 1.6, "output": 3.2}})
+    text = pricing_drift.render(pricing_drift.run(apply=True))
+    assert "--apply" in text
+    assert "pricing.yaml" in text
+
+
+def test_to_json_roundtrips():
+    db.record_pricing_snapshot("nous", "m", _snap(0.435, 0.87))
+    _write_pricing_yaml({"m": {"input": 1.6, "output": 3.2}})
+    payload = json.loads(pricing_drift.to_json(pricing_drift.run(apply=False)))
+    assert len(payload["drifted"]) == 1
+    assert payload["drifted"][0]["model"] == "m"
