@@ -284,6 +284,12 @@ def test_operator_followup_api_surfaces(serve_module):
     assert by_model["m2"]["cache_hit_share_pct"] == 50.0
     assert "efficiency_score" in by_model["m2"]
 
+    # Second call must read from the SQLite cache (rows_count > 0 in status).
+    status = serve_module.api_model_efficiency_cache_status()
+    assert any(e["window_hours"] == 24 and e["include_deleted"] for e in status["entries"]), status
+    cached = serve_module.api_model_efficiency(window_hours=24, include_deleted=True)
+    assert cached == efficiency
+
     heatmap = serve_module.api_tool_failure_heatmap(window_hours=24, include_deleted=True)
     terminal_rows = [row for row in heatmap if row["tool_name"] == "terminal"]
     assert terminal_rows
@@ -1006,3 +1012,305 @@ def test_api_budget_forecast_scoped_reads_per_cron_job_budget(serve_module):
     assert out["limit_usd"] == 10.0
     assert out["spent_so_far_usd"] >= 2.0
     assert out["status"] in ("ok", "soft", "hard")
+
+
+def test_daily_token_chart_cache_hits_on_repeat(serve_module, monkeypatch):
+    serve_module.DailyTokenChartCache.reset_for_tests()
+    calls = {"n": 0}
+    payload = [{"day": "2026-06-10", "total_tokens": 123, "api_calls": 1}]
+
+    def fake_compute(**kwargs):
+        calls["n"] += 1
+        return payload
+
+    monkeypatch.setattr(serve_module.DailyTokenChartCache, "start", lambda self: None)
+    monkeypatch.setattr(serve_module, "_compute_daily_token_chart_rows", fake_compute)
+    first = serve_module.api_daily_token_chart(
+        window_hours=24, limit_days=26, include_deleted=True, granularity="hour", tz_name=None
+    )
+    second = serve_module.api_daily_token_chart(
+        window_hours=24, limit_days=26, include_deleted=True, granularity="hour", tz_name=None
+    )
+    assert first == payload
+    assert second == payload
+    assert calls["n"] == 1
+    serve_module.DailyTokenChartCache.reset_for_tests()
+
+
+def test_providers_cache_hits_on_repeat(serve_module, monkeypatch):
+    serve_module.ProvidersCache.reset_for_tests()
+    calls = {"n": 0}
+    payload = [
+        {"provider": "openai-codex", "total_calls": 7, "cost_usd": 0.01, "total_tokens": 1000}
+    ]
+
+    def fake_compute(window_hours=24):
+        calls["n"] += 1
+        return payload
+
+    monkeypatch.setattr(serve_module.ProvidersCache, "start", lambda self: None)
+    monkeypatch.setattr(serve_module, "_compute_providers_rows", fake_compute)
+    first = serve_module.api_providers(window_hours=24)
+    second = serve_module.api_providers(window_hours=24)
+    assert first == payload
+    assert second == payload
+    assert calls["n"] == 1
+    serve_module.ProvidersCache.reset_for_tests()
+
+
+def test_provider_health_cache_hits_on_repeat(serve_module, monkeypatch):
+    serve_module.ProviderHealthCache.reset_for_tests()
+    calls = {"n": 0}
+    payload = {"window_hours": 24, "rows": [{"provider": "openai-codex", "health": "ok"}]}
+
+    def fake_compute(window_hours=24):
+        calls["n"] += 1
+        return payload
+
+    monkeypatch.setattr(serve_module.ProviderHealthCache, "start", lambda self: None)
+    monkeypatch.setattr(serve_module, "_compute_provider_health", fake_compute)
+    first = serve_module.api_provider_health(window_hours=24)
+    second = serve_module.api_provider_health(window_hours=24)
+    assert first == payload
+    assert second == payload
+    assert calls["n"] == 1
+    serve_module.ProviderHealthCache.reset_for_tests()
+
+
+def test_daily_model_chart_cache_hits_on_repeat(serve_module, monkeypatch):
+    serve_module.DailyModelChartCache.reset_for_tests()
+    calls = {"n": 0}
+    payload = {
+        "models": ["gpt-5.4"],
+        "rows": [{"day": "2026-06-10", "models": {"gpt-5.4": 123}, "other": 0}],
+    }
+
+    def fake_compute(**kwargs):
+        calls["n"] += 1
+        return payload
+
+    monkeypatch.setattr(serve_module.DailyModelChartCache, "start", lambda self: None)
+    monkeypatch.setattr(serve_module, "_compute_daily_model_chart", fake_compute)
+    first = serve_module.api_daily_model_chart(
+        window_hours=24, limit_days=26, top_n=5, include_deleted=True, tz_name=None
+    )
+    second = serve_module.api_daily_model_chart(
+        window_hours=24, limit_days=26, top_n=5, include_deleted=True, tz_name=None
+    )
+    assert first == payload
+    assert second == payload
+    assert calls["n"] == 1
+    serve_module.DailyModelChartCache.reset_for_tests()
+
+
+def test_dashboard_cache_refresh_concurrent_with_plugin_writes(serve_module, monkeypatch):
+    import datetime
+    import threading
+    import time
+
+    import hermes_telemetry.db as db_mod
+
+    for cls_name in (
+        "ProvidersCache",
+        "ProviderHealthCache",
+        "DailyTokenChartCache",
+        "DailyModelChartCache",
+        "ModelEfficiencyCache",
+    ):
+        cls = getattr(serve_module, cls_name)
+        cls.reset_for_tests()
+        monkeypatch.setattr(cls, "start", lambda self: None)
+
+    errors = []
+    n_threads = 4
+    writes_per_thread = 8
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    def writer(thread_idx: int):
+        db_mod._local.conn = None
+        try:
+            for j in range(writes_per_thread):
+                sid = f"cache-race-{thread_idx}-{j}"
+                db_mod.start_run(
+                    sid, model="gpt-5.4", platform="cron", cron_job_id=f"job-{thread_idx}"
+                )
+                db_mod.record_llm_call(sid, now, "gpt-5.4", "openai", 100, 25, 0.001, 120)
+                db_mod.record_tool_call(sid, now, "read_file", True, 10)
+                db_mod.end_run(sid, "ok")
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            db_mod.close_thread_conn()
+
+    def refresher():
+        try:
+            for _ in range(8):
+                serve_module.ProvidersCache.instance().refresh(window_hours=24)
+                serve_module.ProviderHealthCache.instance().refresh(window_hours=24)
+                serve_module.DailyTokenChartCache.instance().refresh(
+                    window_hours=24,
+                    limit_days=26,
+                    include_deleted=True,
+                    granularity="hour",
+                    tz_name=None,
+                )
+                serve_module.DailyModelChartCache.instance().refresh(
+                    window_hours=24,
+                    limit_days=26,
+                    top_n=5,
+                    include_deleted=True,
+                    tz_name=None,
+                )
+                serve_module.ModelEfficiencyCache.instance().refresh(
+                    window_hours=24, include_deleted=True
+                )
+                time.sleep(0.01)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(n_threads)]
+    refresh_thread = threading.Thread(target=refresher)
+    refresh_thread.start()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    refresh_thread.join()
+
+    assert errors == [], f"concurrent cache/plugin errors: {errors}"
+    db_mod._local.conn = None
+    conn = db_mod._get_conn()
+    expected = n_threads * writes_per_thread
+    assert (
+        conn.execute("SELECT COUNT(*) FROM runs WHERE session_id LIKE 'cache-race-%'").fetchone()[0]
+        == expected
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM llm_calls WHERE session_id LIKE 'cache-race-%'"
+        ).fetchone()[0]
+        == expected
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM tool_calls WHERE session_id LIKE 'cache-race-%'"
+        ).fetchone()[0]
+        == expected
+    )
+    db_mod.close_thread_conn()
+
+
+def test_model_efficiency_cache_hits_and_refresh(tmp_path, serve_module, monkeypatch):
+    """Cache-backed model efficiency: first call seeds cache, second hits cache,
+    and POST /api/model-efficiency/refresh rebuilds the cache."""
+    serve_module.ModelEfficiencyCache.reset_for_tests()
+    # Keep the background primer quiet so compute-call assertions stay deterministic.
+    monkeypatch.setattr(
+        serve_module.ModelEfficiencyCache,
+        "_refresh_all",
+        lambda self: {"skipped": "test"},
+    )
+
+    now = db._utcnow()
+    db.start_run("sess-cache-1", model="gpt-5.4", platform="cli")
+    db.record_llm_call("sess-cache-1", now, "gpt-5.4", "openai-codex", 1000, 200, 0.01, 120)
+    db.end_run("sess-cache-1", "ok")
+
+    compute_calls = {"n": 0}
+    original = serve_module._compute_model_efficiency_rows
+
+    def counting_compute(*args, **kwargs):
+        compute_calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(serve_module, "_compute_model_efficiency_rows", counting_compute)
+
+    # First call: live compute + seed cache (include_deleted=True because
+    # sess-cache-1 is not present in Hermes' sessions.json).
+    first = serve_module.api_model_efficiency(window_hours=24, include_deleted=True)
+    assert any(row["model"] == "gpt-5.4" for row in first), first
+    assert compute_calls["n"] == 1
+
+    # Second call: must hit fresh cache (no recompute).
+    second = serve_module.api_model_efficiency(window_hours=24, include_deleted=True)
+    assert second == first
+    assert compute_calls["n"] == 1, "fresh cache hit must not recompute"
+
+    # Status endpoint reports the cache entry.
+    status = serve_module.api_model_efficiency_cache_status()
+    assert any(e["window_hours"] == 24 and e["include_deleted"] is True for e in status["entries"])
+    assert status["refresh_interval_seconds"] == 300
+
+    # Force-refresh endpoint rebuilds the cache for the same window.
+    # Restore real refresh path for the force-refresh API.
+    monkeypatch.setattr(
+        serve_module.ModelEfficiencyCache,
+        "_refresh_all",
+        serve_module._BackgroundPayloadCache._refresh_all,
+    )
+    refreshed = serve_module.api_model_efficiency_refresh(window_hours=24, include_deleted=True)
+    assert refreshed["window_hours"] == 24
+    assert refreshed["elapsed_seconds"] >= 0
+    assert refreshed["refreshed_at"]
+    assert compute_calls["n"] >= 2
+
+    # All-windows refresh also works.
+    refreshed_all = serve_module.api_model_efficiency_refresh(include_deleted=False)
+    assert "refreshed_at" in refreshed_all
+    serve_module.ModelEfficiencyCache.reset_for_tests()
+
+
+def test_payload_cache_ttl_and_stale_refresh(tmp_path, serve_module, monkeypatch):
+    """Non-default windows must not freeze forever after the first seed."""
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    serve_module.ModelEfficiencyCache.reset_for_tests()
+    monkeypatch.setattr(
+        serve_module.ModelEfficiencyCache,
+        "_refresh_all",
+        lambda self: {"skipped": "test"},
+    )
+
+    now = db._utcnow()
+    db.start_run("sess-ttl-1", model="gpt-5.4", platform="cli")
+    db.record_llm_call("sess-ttl-1", now, "gpt-5.4", "openai-codex", 1000, 200, 0.01, 120)
+    db.end_run("sess-ttl-1", "ok")
+
+    cache = serve_module.ModelEfficiencyCache.instance()
+    monkeypatch.setattr(cache, "DEFAULT_REFRESH_SECONDS", 1)
+
+    compute_calls = {"n": 0}
+    original = serve_module._compute_model_efficiency_rows
+
+    def counting_compute(*args, **kwargs):
+        compute_calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(serve_module, "_compute_model_efficiency_rows", counting_compute)
+
+    first = cache.get_rows(window_hours=3, limit=50, include_deleted=True)
+    assert compute_calls["n"] == 1
+    assert any(row["model"] == "gpt-5.4" for row in first)
+
+    # Fresh hit: no recompute.
+    assert cache.get_rows(window_hours=3, limit=50, include_deleted=True) == first
+    assert compute_calls["n"] == 1
+
+    # Force the entry past TTL.
+    key = cache.cache_key(window_hours=3, include_deleted=True, limit=50)
+    stale_at = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    with cache._cond:
+        cache._conn.execute(
+            "UPDATE model_efficiency_cache SET built_at = ? WHERE cache_key = ?",
+            (stale_at, str(key)),
+        )
+
+    # Stale hit serves previous payload immediately, then async refresh recompute.
+    stale_served = cache.get_rows(window_hours=3, limit=50, include_deleted=True)
+    assert stale_served == first
+    deadline = time.time() + 2.0
+    while compute_calls["n"] < 2 and time.time() < deadline:
+        time.sleep(0.05)
+    assert compute_calls["n"] >= 2, "stale hit should kick async recompute"
+    serve_module.ModelEfficiencyCache.reset_for_tests()

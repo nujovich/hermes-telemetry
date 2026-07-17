@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 15
+_SCHEMA_VERSION = 16
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -70,11 +70,14 @@ def _get_conn() -> sqlite3.Connection:
         # 30s gives enough headroom for CI environments with slow or
         # network-backed filesystems where concurrent writes contend.
         conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        _local.conn = conn
+        # Keep WAL initialization in the same critical section as schema setup.
+        # `PRAGMA journal_mode=WAL` takes a database-level lock and can race with
+        # concurrent first connections before the per-process schema lock otherwise.
         with _schema_lock:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             _ensure_schema(conn)
+        _local.conn = conn
     return _local.conn
 
 
@@ -173,6 +176,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v13(conn)
     _migrate_v14(conn)
     _migrate_v15(conn)
+    _migrate_v16(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -580,6 +584,48 @@ def _migrate_v15(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (15, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v16(conn: sqlite3.Connection) -> None:
+    """Add standalone-dashboard cache tables.
+
+    Cache payloads live in the same WAL-backed telemetry database as runtime
+    writes. This is deliberately a new migration: v6 is already deployed for
+    free-paid transitions, so changing it would skip existing installations.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 16")
+    if cur.fetchone() is not None:
+        return
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS endpoint_payload_cache (
+            cache_name   TEXT NOT NULL,
+            cache_key    TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            rows_count   INTEGER NOT NULL,
+            built_at     TEXT NOT NULL,
+            PRIMARY KEY (cache_name, cache_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_endpoint_payload_cache_name
+            ON endpoint_payload_cache(cache_name, built_at);
+
+        CREATE TABLE IF NOT EXISTS model_efficiency_cache (
+            cache_key       TEXT PRIMARY KEY,
+            window_hours    INTEGER NOT NULL,
+            include_deleted INTEGER NOT NULL,
+            limit_n         INTEGER NOT NULL,
+            payload_json    TEXT NOT NULL,
+            rows_count      INTEGER NOT NULL,
+            built_at        TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_me_cache_window
+            ON model_efficiency_cache(window_hours, include_deleted);
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (16, ?)",
         (_utcnow(),),
     )
 
