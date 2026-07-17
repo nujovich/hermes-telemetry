@@ -51,6 +51,8 @@ def run(*, apply: bool = False, threshold_pct: float = 1.0, model: str | None = 
     Returns a result dict: applied, threshold_pct, model_filter, compared,
     drifted (list), in_sync, skipped_subscription (list), no_local_price (list),
     coverage_gap (int), written (int).
+
+    A threshold_pct of 0 flags any difference; a negative value flags everything.
     """
     snapshots = db.list_latest_pricing_snapshots()
 
@@ -197,10 +199,20 @@ def _apply_drift(drifted: list[dict]) -> int:
     import yaml
 
     path = paths.get_pricing_path()
-    data: dict = {}
     if path.exists():
-        with open(path) as f:
-            data = yaml.safe_load(f) or {}
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f) or {}
+        except yaml.YAMLError as exc:
+            logger.error(
+                "hermes-telemetry: could not parse %s (%s) — skipping drift apply "
+                "to avoid clobbering a malformed file. Fix the YAML and re-run.",
+                path,
+                exc,
+            )
+            return 0
+    else:
+        data = {"models": {}}
 
     models = data.setdefault("models", {}) if "models" in data or "defaults" in data else data
 

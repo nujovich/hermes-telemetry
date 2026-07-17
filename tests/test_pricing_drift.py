@@ -336,6 +336,41 @@ def test_apply_same_model_conflicting_rates_keeps_first(caplog):
     assert "conflicting core rates" in caplog.text
 
 
+def test_apply_skips_and_preserves_malformed_yaml(caplog):
+    import logging
+
+    from hermes_telemetry import paths
+
+    path = paths.get_pricing_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        f.write("models: {m: {input: 1.6, output: 3.2}")  # unclosed flow mapping
+    with caplog.at_level(logging.ERROR, logger="hermes_telemetry.pricing_drift"):
+        written = pricing_drift._apply_drift(
+            [{"provider": "nous", "model": "m", "snap_input": 0.4, "snap_output": 0.8}]
+        )
+    assert written == 0
+    with open(path) as f:
+        assert "input: 1.6" in f.read()  # file left untouched, not clobbered
+
+
+def test_apply_bootstraps_modern_format_when_file_missing():
+    import yaml
+    from hermes_telemetry import paths
+
+    path = paths.get_pricing_path()
+    if path.exists():
+        path.unlink()
+    written = pricing_drift._apply_drift(
+        [{"provider": "nous", "model": "m", "snap_input": 0.4, "snap_output": 0.8}]
+    )
+    assert written == 1
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    assert "models" in data  # modern shape, not a flat map
+    assert data["models"]["m"]["input"] == 0.4
+
+
 def test_cli_pricing_drift_dry_run_default(monkeypatch, capsys):
     import hermes_telemetry.pricing_drift as pd
     import hermes_telemetry.telemetry_cli as cli
