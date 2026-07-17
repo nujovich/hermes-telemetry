@@ -23,7 +23,6 @@ unreachable from other hosts. To view it from another machine, either:
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import logging
 import os
@@ -1486,7 +1485,7 @@ class _BackgroundPayloadCache:
                 (self.CACHE_NAME, row["cache_key"]),
             )
 
-    def _write_cache(self, key, payload):
+    def _write_cache(self, key, payload, **_meta):
         with self._cond:
             self._conn.execute(
                 """
@@ -1518,7 +1517,7 @@ class _BackgroundPayloadCache:
             return cached["payload"]
         rows = self.compute_rows(**kwargs)
         try:
-            self._write_cache(key, rows)
+            self._write_cache(key, rows, **kwargs)
         except Exception:
             logger.exception("failed to seed %s cache", self.CACHE_NAME)
         return rows
@@ -1534,9 +1533,7 @@ class _BackgroundPayloadCache:
             try:
                 self.refresh(**kwargs)
             except Exception:
-                logger.exception(
-                    "async stale refresh failed for %s key=%s", self.CACHE_NAME, key
-                )
+                logger.exception("async stale refresh failed for %s key=%s", self.CACHE_NAME, key)
             finally:
                 with self._cond:
                     self._inflight_keys.discard(key)
@@ -1547,7 +1544,7 @@ class _BackgroundPayloadCache:
 
     def refresh(self, **kwargs):
         rows = self.compute_rows(**kwargs)
-        self._write_cache(self.cache_key(**kwargs), rows)
+        self._write_cache(self.cache_key(**kwargs), rows, **kwargs)
         return rows
 
     def _refresh_all(self):
@@ -3813,18 +3810,24 @@ class ModelEfficiencyCache(_BackgroundPayloadCache):
                 (row["cache_key"],),
             )
 
-    def _write_cache(self, key, payload, window_hours=None, include_deleted=None, limit=None):
-        if window_hours is None or include_deleted is None or limit is None:
-            try:
-                parsed = ast.literal_eval(str(key))
-                if isinstance(parsed, tuple) and len(parsed) == 3:
-                    window_hours, include_deleted, limit = parsed
-                else:
-                    raise ValueError("unexpected key shape")
-            except Exception:
-                window_hours = 0 if window_hours is None else window_hours
-                include_deleted = False if include_deleted is None else include_deleted
-                limit = 50 if limit is None else limit
+    def _write_cache(self, key, payload, **meta):
+        """Persist payload with explicit metadata columns.
+
+        Callers must pass window_hours/include_deleted/limit. We intentionally do
+        not recover those fields from the string form of ``cache_key`` — that
+        would couple row metadata to key encoding and silently mislabel rows if
+        the key shape ever changes.
+        """
+        try:
+            window_hours = meta["window_hours"]
+            include_deleted = meta["include_deleted"]
+            limit = meta["limit"]
+        except KeyError as exc:
+            raise ValueError(
+                "ModelEfficiencyCache._write_cache requires window_hours, "
+                "include_deleted, and limit kwargs from the seed/refresh path"
+            ) from exc
+        limit = max(1, min(int(limit), 500))
         with self._cond:
             now_iso = datetime.now(timezone.utc).isoformat()
             self._conn.execute(
