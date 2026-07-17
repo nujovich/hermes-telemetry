@@ -334,3 +334,61 @@ def test_apply_same_model_conflicting_rates_keeps_first(caplog):
         data = yaml.safe_load(f)
     assert data["models"]["m"]["input"] == 0.4  # first kept
     assert "conflicting core rates" in caplog.text
+
+
+def test_cli_pricing_drift_dry_run_default(monkeypatch, capsys):
+    import hermes_telemetry.pricing_drift as pd
+    import hermes_telemetry.telemetry_cli as cli
+
+    captured = {}
+
+    def _fake_run(*, apply, threshold_pct, model):
+        captured.update(apply=apply, threshold_pct=threshold_pct, model=model)
+        return {
+            "applied": apply,
+            "threshold_pct": threshold_pct,
+            "model_filter": model,
+            "compared": 0,
+            "drifted": [],
+            "in_sync": 0,
+            "skipped_subscription": [],
+            "no_local_price": [],
+            "coverage_gap": 0,
+            "written": 0,
+        }
+
+    monkeypatch.setattr(pd, "run", _fake_run)
+    cli.main(["pricing", "drift"])
+    assert captured["apply"] is False
+    assert captured["threshold_pct"] == 1.0
+    assert captured["model"] is None
+    assert "dry-run" in capsys.readouterr().out
+
+
+def test_cli_pricing_drift_apply_json_with_flags(monkeypatch, capsys):
+    import hermes_telemetry.pricing_drift as pd
+    import hermes_telemetry.telemetry_cli as cli
+
+    captured = {}
+
+    def _fake_run(*, apply, threshold_pct, model):
+        captured.update(apply=apply, threshold_pct=threshold_pct, model=model)
+        return {
+            "applied": apply,
+            "threshold_pct": threshold_pct,
+            "model_filter": model,
+            "compared": 1,
+            "drifted": [],
+            "in_sync": 1,
+            "skipped_subscription": [],
+            "no_local_price": [],
+            "coverage_gap": 0,
+            "written": 1,
+        }
+
+    monkeypatch.setattr(pd, "run", _fake_run)
+    cli.main(["pricing", "drift", "--apply", "--threshold", "5", "--model", "m", "--json"])
+    assert captured["apply"] is True
+    assert captured["threshold_pct"] == 5.0
+    assert captured["model"] == "m"
+    assert json.loads(capsys.readouterr().out)["written"] == 1

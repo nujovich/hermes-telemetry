@@ -184,6 +184,17 @@ def _build_parser_into(sub) -> None:
     pb.add_argument("--apply", action="store_true", help="Write changes (default: dry-run)")
     pb.add_argument("--json", action="store_true", help="Output as JSON")
 
+    pd = psub.add_parser(
+        "drift",
+        help="Compare pricing.yaml against core pricing snapshots",
+    )
+    pd.add_argument("--apply", action="store_true", help="Rewrite pricing.yaml (default: dry-run)")
+    pd.add_argument(
+        "--threshold", type=float, default=1.0, help="Drift threshold in %% (default: 1.0)"
+    )
+    pd.add_argument("--model", default=None, help="Limit to a single canonical model name")
+    pd.add_argument("--json", action="store_true", help="Output as JSON")
+
 
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
@@ -373,6 +384,12 @@ def _handle_pricing(
     if args.pricing_command == "backfill":
         result = pricing_backfill.run(apply=args.apply)
         print(pricing_backfill.to_json(result) if args.json else pricing_backfill.render(result))
+        return
+    if args.pricing_command == "drift":
+        from . import pricing_drift
+
+        result = pricing_drift.run(apply=args.apply, threshold_pct=args.threshold, model=args.model)
+        print(pricing_drift.to_json(result) if args.json else pricing_drift.render(result))
         return
     if parser:
         parser.print_help()
