@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json  # noqa: F401 -- used by later tasks in this plan (CLI --json output)
+import json
 
 import pytest
 
@@ -118,6 +118,7 @@ def test_run_reports_snapshot_without_local_price():
 
 
 def test_run_flags_coverage_gap():
+    _write_pricing_yaml({})
     db.record_llm_call("s1", _NOW, "uncovered/model", "nous", 10, 2, 0.01, 100)
     result = pricing_drift.run(apply=False)
     assert result["coverage_gap"] >= 1
@@ -130,3 +131,56 @@ def test_run_model_filter():
     result = pricing_drift.run(apply=False, model="a")
     assert len(result["drifted"]) == 1
     assert result["drifted"][0]["model"] == "a"
+
+
+def test_drift_pct_none_for_zero_snapshot_and_numeric_otherwise():
+    from hermes_telemetry import pricing_drift as pd
+
+    assert pd._drift_pct(1.0, 0.0) is None
+    assert pd._drift_pct(0.0, 0.0) is None
+    assert pd._drift_pct(1.5, 1.0) == 50.0
+    assert pd._drift_pct(0.5, 1.0) == -50.0
+
+
+def test_is_drift_zero_snapshot_and_threshold_boundary():
+    from hermes_telemetry import pricing_drift as pd
+
+    assert pd._is_drift(1.0, 0.0, 1.0) is True
+    assert pd._is_drift(0.0, 0.0, 1.0) is False
+    assert pd._is_drift(1.01, 1.0, 1.0) is False  # exactly 1.0% is NOT > 1.0%
+    assert pd._is_drift(1.02, 1.0, 1.0) is True
+
+
+def test_run_zero_snapshot_drifts_with_none_pct_and_json_safe():
+    db.record_pricing_snapshot("nous", "m", _snap(0.0, 0.0))
+    _write_pricing_yaml({"m": {"input": 1.0, "output": 2.0}})
+    result = pricing_drift.run(apply=False)
+    assert len(result["drifted"]) == 1
+    d = result["drifted"][0]
+    assert d["input_drift_pct"] is None
+    assert d["output_drift_pct"] is None
+    # JSON-safe: no Infinity token
+    payload = json.loads(json.dumps(result, default=str))
+    assert payload["drifted"][0]["input_drift_pct"] is None
+
+
+def test_run_output_only_drift():
+    db.record_pricing_snapshot("nous", "m", _snap(1.0, 2.0))
+    _write_pricing_yaml({"m": {"input": 1.0, "output": 3.0}})  # input sync, output +50%
+    result = pricing_drift.run(apply=False)
+    assert len(result["drifted"]) == 1
+    assert result["drifted"][0]["output_drift_pct"] == 50.0
+    assert result["in_sync"] == 0
+
+
+def test_run_provider_assumed_routed_to_no_local_price(monkeypatch):
+    db.record_pricing_snapshot("nous", "x", _snap(0.5, 1.0))
+    _write_pricing_yaml({"x": {"input": 1.6, "output": 3.2}})
+    monkeypatch.setattr(
+        pricing,
+        "_resolve_pricing",
+        lambda m, p="": {"input": 1.6, "output": 3.2, "_provider_assumed": True},
+    )
+    result = pricing_drift.run(apply=False)
+    assert {"provider": "nous", "model": "x"} in result["no_local_price"]
+    assert result["drifted"] == []

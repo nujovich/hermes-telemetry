@@ -16,15 +16,30 @@ import json  # noqa: F401 -- used by later tasks in this plan (CLI --json output
 from . import db, pricing
 
 
-def _drift_pct(local: float, snap: float) -> float:
+def _drift_pct(local: float, snap: float) -> float | None:
     """Signed drift of local vs snapshot as a percentage: (local/snap - 1) * 100.
 
-    When snap is 0: 0.0 if local is also 0, else infinite (a real, unbounded
-    over-charge — treated as drift by any finite threshold).
+    Returns None when snap is 0 — the ratio is undefined (division by zero),
+    not an infinite drift. Callers that need a drift *decision* (not a display
+    percentage) for the zero-snapshot case should use `_is_drift` instead.
     """
     if snap == 0:
-        return 0.0 if local == 0 else float("inf")
+        return None
     return (local / snap - 1.0) * 100.0
+
+
+def _is_drift(local: float, snap: float, threshold_pct: float) -> bool:
+    """True if local drifts from snap beyond threshold. A zero snapshot with a
+    nonzero local price is always drift (was free / unpriced, now priced).
+
+    A tiny epsilon is added to the threshold to absorb binary floating-point
+    noise at the exact boundary (e.g. 1.01 / 1.0 evaluates to
+    1.0000000000000009, not 1.0, purely from float representation) so a value
+    at *exactly* the threshold percentage doesn't spuriously read as drift.
+    """
+    if snap == 0:
+        return local != 0
+    return abs((local / snap - 1.0) * 100.0) > threshold_pct + 1e-9
 
 
 def run(*, apply: bool = False, threshold_pct: float = 1.0, model: str | None = None) -> dict:
@@ -66,14 +81,14 @@ def run(*, apply: bool = False, threshold_pct: float = 1.0, model: str | None = 
             skipped_subscription.append({"provider": provider, "model": write_key})
             continue
         prices = pricing._resolve_pricing(write_key, provider)
-        if prices is None:
+        if prices is None or prices.get("_provider_assumed"):
             no_local_price.append({"provider": provider, "model": write_key})
             continue
         local_in = float(prices["input"])
         local_out = float(prices["output"])
-        in_pct = _drift_pct(local_in, float(snap_in))
-        out_pct = _drift_pct(local_out, float(snap_out))
-        if abs(in_pct) > threshold_pct or abs(out_pct) > threshold_pct:
+        in_drift = _is_drift(local_in, float(snap_in), threshold_pct)
+        out_drift = _is_drift(local_out, float(snap_out), threshold_pct)
+        if in_drift or out_drift:
             drifted.append(
                 {
                     "provider": provider,
@@ -82,8 +97,8 @@ def run(*, apply: bool = False, threshold_pct: float = 1.0, model: str | None = 
                     "local_output": local_out,
                     "snap_input": float(snap_in),
                     "snap_output": float(snap_out),
-                    "input_drift_pct": in_pct,
-                    "output_drift_pct": out_pct,
+                    "input_drift_pct": _drift_pct(local_in, float(snap_in)),
+                    "output_drift_pct": _drift_pct(local_out, float(snap_out)),
                 }
             )
         else:
@@ -100,6 +115,9 @@ def run(*, apply: bool = False, threshold_pct: float = 1.0, model: str | None = 
         "in_sync": in_sync,
         "skipped_subscription": skipped_subscription,
         "no_local_price": no_local_price,
+        # Global by design: a data-health signal about the whole snapshot store,
+        # independent of `model` — NOT scoped by the model filter above. A
+        # narrower drift run should still surface store-wide coverage gaps.
         "coverage_gap": len(db.models_needing_pricing_snapshot()),
         "written": written,
     }
