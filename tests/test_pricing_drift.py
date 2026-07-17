@@ -226,3 +226,45 @@ def test_to_json_roundtrips():
     payload = json.loads(pricing_drift.to_json(pricing_drift.run(apply=False)))
     assert len(payload["drifted"]) == 1
     assert payload["drifted"][0]["model"] == "m"
+
+
+def test_apply_rewrites_input_output_and_reloads():
+    db.record_pricing_snapshot("nous", "m", _snap(0.435, 0.87))
+    _write_pricing_yaml({"m": {"input": 1.6, "output": 3.2}})
+    result = pricing_drift.run(apply=True)
+    assert result["written"] == 1
+    # Cache was reloaded → new resolution reflects the snapshot rate.
+    prices = pricing._resolve_pricing("m", "nous")
+    assert prices["input"] == 0.435
+    assert prices["output"] == 0.87
+
+
+def test_apply_tags_source_and_preserves_other_entries():
+    import yaml
+    from hermes_telemetry import paths
+
+    db.record_pricing_snapshot("nous", "m", _snap(0.435, 0.87))
+    _write_pricing_yaml(
+        {"m": {"input": 1.6, "output": 3.2}, "keep/me": {"input": 9.0, "output": 9.0}}
+    )
+    pricing_drift.run(apply=True)
+    with open(paths.get_pricing_path()) as f:
+        data = yaml.safe_load(f)
+    assert data["models"]["m"]["input"] == 0.435
+    assert data["models"]["m"]["output"] == 0.87
+    assert data["models"]["m"]["_source"] == "core-snapshot"
+    # Untouched entry survives the merge.
+    assert data["models"]["keep/me"]["input"] == 9.0
+
+
+def test_apply_does_not_write_subscription_entries():
+    import yaml
+    from hermes_telemetry import paths
+
+    db.record_pricing_snapshot("nous", "sub/model", _snap(5.0, 10.0))
+    _write_pricing_yaml({"sub/model": {"input": 0.0, "output": 0.0, "_subscription": True}})
+    result = pricing_drift.run(apply=True)
+    assert result["written"] == 0
+    with open(paths.get_pricing_path()) as f:
+        data = yaml.safe_load(f)
+    assert data["models"]["sub/model"]["input"] == 0.0  # unchanged

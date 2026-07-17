@@ -175,5 +175,50 @@ def to_json(result: dict) -> str:
 
 
 def _apply_drift(drifted: list[dict]) -> int:
-    """Placeholder — implemented in Task 4."""
-    return 0
+    """Write each drifted model's snapshot input/output rates into pricing.yaml.
+
+    Merge (never clobber): load the existing file, update only input/output on the
+    matching (case-insensitive) model entry, tag it _source: core-snapshot, and
+    dump back with sort_keys=False (preserve insertion order). Routes through
+    paths.get_pricing_path() at call time (honors HERMES_TELEMETRY_HOME), then
+    hot-reloads pricing.py's cache. Returns the number of entries written.
+    """
+    if not drifted:
+        return 0
+
+    import yaml
+
+    from . import paths
+
+    path = paths.get_pricing_path()
+    data: dict = {}
+    if path.exists():
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+
+    # New format nests models under "models:"; legacy is a flat model->entry map.
+    models = data.setdefault("models", {}) if "models" in data or "defaults" in data else data
+
+    written = 0
+    for d in drifted:
+        target = d["model"].lower()
+        existing_key = next((k for k in models if str(k).lower() == target), None)
+        if existing_key is not None:
+            entry = models[existing_key]
+            if not isinstance(entry, dict):
+                entry = {}
+                models[existing_key] = entry
+        else:
+            entry = {}
+            models[target] = entry
+        entry["input"] = d["snap_input"]
+        entry["output"] = d["snap_output"]
+        entry["_source"] = "core-snapshot"
+        written += 1
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    pricing.reload_custom_pricing()
+    return written
