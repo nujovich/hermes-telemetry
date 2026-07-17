@@ -1200,27 +1200,41 @@ def test_dashboard_cache_refresh_concurrent_with_plugin_writes(serve_module, mon
     db_mod.close_thread_conn()
 
 
-def test_model_efficiency_cache_hits_and_refresh(tmp_path, serve_module):
+def test_model_efficiency_cache_hits_and_refresh(tmp_path, serve_module, monkeypatch):
     """Cache-backed model efficiency: first call seeds cache, second hits cache,
     and POST /api/model-efficiency/refresh rebuilds the cache."""
-    import time
+    serve_module.ModelEfficiencyCache.reset_for_tests()
+    # Keep the background primer quiet so compute-call assertions stay deterministic.
+    monkeypatch.setattr(
+        serve_module.ModelEfficiencyCache,
+        "_refresh_all",
+        lambda self: {"skipped": "test"},
+    )
 
     now = db._utcnow()
     db.start_run("sess-cache-1", model="gpt-5.4", platform="cli")
     db.record_llm_call("sess-cache-1", now, "gpt-5.4", "openai-codex", 1000, 200, 0.01, 120)
     db.end_run("sess-cache-1", "ok")
 
+    compute_calls = {"n": 0}
+    original = serve_module._compute_model_efficiency_rows
+
+    def counting_compute(*args, **kwargs):
+        compute_calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(serve_module, "_compute_model_efficiency_rows", counting_compute)
+
     # First call: live compute + seed cache (include_deleted=True because
     # sess-cache-1 is not present in Hermes' sessions.json).
     first = serve_module.api_model_efficiency(window_hours=24, include_deleted=True)
     assert any(row["model"] == "gpt-5.4" for row in first), first
+    assert compute_calls["n"] == 1
 
-    # Second call: must hit cache (same payload, served from SQLite cache).
-    started = time.monotonic()
+    # Second call: must hit fresh cache (no recompute).
     second = serve_module.api_model_efficiency(window_hours=24, include_deleted=True)
-    cache_elapsed = time.monotonic() - started
     assert second == first
-    assert cache_elapsed < 0.5, f"cache hit too slow: {cache_elapsed:.3f}s"
+    assert compute_calls["n"] == 1, "fresh cache hit must not recompute"
 
     # Status endpoint reports the cache entry.
     status = serve_module.api_model_efficiency_cache_status()
@@ -1228,11 +1242,75 @@ def test_model_efficiency_cache_hits_and_refresh(tmp_path, serve_module):
     assert status["refresh_interval_seconds"] == 300
 
     # Force-refresh endpoint rebuilds the cache for the same window.
+    # Restore real refresh path for the force-refresh API.
+    monkeypatch.setattr(
+        serve_module.ModelEfficiencyCache,
+        "_refresh_all",
+        serve_module._BackgroundPayloadCache._refresh_all,
+    )
     refreshed = serve_module.api_model_efficiency_refresh(window_hours=24, include_deleted=True)
     assert refreshed["window_hours"] == 24
     assert refreshed["elapsed_seconds"] >= 0
     assert refreshed["refreshed_at"]
+    assert compute_calls["n"] >= 2
 
     # All-windows refresh also works.
     refreshed_all = serve_module.api_model_efficiency_refresh(include_deleted=False)
     assert "refreshed_at" in refreshed_all
+    serve_module.ModelEfficiencyCache.reset_for_tests()
+
+
+def test_payload_cache_ttl_and_stale_refresh(tmp_path, serve_module, monkeypatch):
+    """Non-default windows must not freeze forever after the first seed."""
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    serve_module.ModelEfficiencyCache.reset_for_tests()
+    monkeypatch.setattr(
+        serve_module.ModelEfficiencyCache,
+        "_refresh_all",
+        lambda self: {"skipped": "test"},
+    )
+
+    now = db._utcnow()
+    db.start_run("sess-ttl-1", model="gpt-5.4", platform="cli")
+    db.record_llm_call("sess-ttl-1", now, "gpt-5.4", "openai-codex", 1000, 200, 0.01, 120)
+    db.end_run("sess-ttl-1", "ok")
+
+    cache = serve_module.ModelEfficiencyCache.instance()
+    monkeypatch.setattr(cache, "DEFAULT_REFRESH_SECONDS", 1)
+
+    compute_calls = {"n": 0}
+    original = serve_module._compute_model_efficiency_rows
+
+    def counting_compute(*args, **kwargs):
+        compute_calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(serve_module, "_compute_model_efficiency_rows", counting_compute)
+
+    first = cache.get_rows(window_hours=3, limit=50, include_deleted=True)
+    assert compute_calls["n"] == 1
+    assert any(row["model"] == "gpt-5.4" for row in first)
+
+    # Fresh hit: no recompute.
+    assert cache.get_rows(window_hours=3, limit=50, include_deleted=True) == first
+    assert compute_calls["n"] == 1
+
+    # Force the entry past TTL.
+    key = cache.cache_key(window_hours=3, include_deleted=True, limit=50)
+    stale_at = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    with cache._cond:
+        cache._conn.execute(
+            "UPDATE model_efficiency_cache SET built_at = ? WHERE cache_key = ?",
+            (stale_at, str(key)),
+        )
+
+    # Stale hit serves previous payload immediately, then async refresh recompute.
+    stale_served = cache.get_rows(window_hours=3, limit=50, include_deleted=True)
+    assert stale_served == first
+    deadline = time.time() + 2.0
+    while compute_calls["n"] < 2 and time.time() < deadline:
+        time.sleep(0.05)
+    assert compute_calls["n"] >= 2, "stale hit should kick async recompute"
+    serve_module.ModelEfficiencyCache.reset_for_tests()

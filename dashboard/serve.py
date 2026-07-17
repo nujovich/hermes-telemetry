@@ -23,6 +23,7 @@ unreachable from other hosts. To view it from another machine, either:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import logging
 import os
@@ -1326,12 +1327,59 @@ def _ensure_dashboard_cache_schema() -> None:
     return None
 
 
+def _payload_rows_count(payload) -> int:
+    """Count logical rows for cache metadata.
+
+    List payloads count elements. Dict payloads prefer an embedded ``rows``
+    list (e.g. provider-health); otherwise they contribute 0 so we don't
+    mistake object-key count for row count.
+    """
+    if isinstance(payload, list):
+        return len(payload)
+    if isinstance(payload, dict):
+        rows = payload.get("rows")
+        if isinstance(rows, list):
+            return len(rows)
+        return 0
+    return 0
+
+
+def _parse_cache_built_at(built_at):
+    if not built_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(built_at))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 class _BackgroundPayloadCache:
+    """SQLite-backed payload cache with background priming + TTL freshness.
+
+    ``get_rows`` is a pure presence check no longer: a hit is returned only
+    while ``built_at`` is within ``DEFAULT_REFRESH_SECONDS``. Stale hits are
+    served immediately and an async recompute is kicked for that exact key
+    (so UI presets that are not in ``DEFAULT_KEYS`` still refresh when used).
+    Misses still compute synchronously and seed the cache.
+
+    Shared-connection safety: every read/write on ``self._conn`` is guarded by
+    ``_cond``. The connection uses ``check_same_thread=False`` so request
+    threads and the background refresher can share it; the condition is the
+    serialization that makes that safe. WAL + ``busy_timeout`` only cover
+    *other* connections (plugin writers), not concurrent use of this one.
+    """
+
     _instance = None
     _lock = threading.Lock()
     CACHE_NAME = "base"
     DEFAULT_REFRESH_SECONDS = 300
     DEFAULT_KEYS = ()
+    MAX_ENTRIES = 64
+    # Drop entries older than this even if under MAX_ENTRIES.
+    MAX_ENTRY_AGE_SECONDS = 6 * 3600
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
@@ -1342,9 +1390,13 @@ class _BackgroundPayloadCache:
         )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA busy_timeout=30000")
+        # Serialize all use of self._conn across request + background threads.
         self._cond = threading.Condition(threading.Lock())
         self._stop = threading.Event()
         self._refreshing = False
+        self._inflight_keys = set()
+        self._last_refresh_at = None
+        self._last_refresh_seconds = 0.0
         self._thread = threading.Thread(
             target=self._run, name=f"{self.CACHE_NAME}-cache", daemon=True
         )
@@ -1388,18 +1440,51 @@ class _BackgroundPayloadCache:
             except Exception:
                 logger.exception("scheduled %s cache refresh failed", self.CACHE_NAME)
 
+    def _is_fresh(self, built_at) -> bool:
+        dt = _parse_cache_built_at(built_at)
+        if dt is None:
+            return False
+        age = (datetime.now(timezone.utc) - dt).total_seconds()
+        return age <= float(self.DEFAULT_REFRESH_SECONDS)
+
     def _cache_row(self, key):
-        row = self._conn.execute(
-            "SELECT payload_json, rows_count, built_at FROM endpoint_payload_cache WHERE cache_name = ? AND cache_key = ?",
-            (self.CACHE_NAME, key),
-        ).fetchone()
-        if not row:
-            return None
-        return {
-            "payload": json.loads(row["payload_json"]),
-            "rows_count": row["rows_count"],
-            "built_at": row["built_at"],
-        }
+        with self._cond:
+            row = self._conn.execute(
+                "SELECT payload_json, rows_count, built_at FROM endpoint_payload_cache WHERE cache_name = ? AND cache_key = ?",
+                (self.CACHE_NAME, key),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "payload": json.loads(row["payload_json"]),
+                "rows_count": row["rows_count"],
+                "built_at": row["built_at"],
+            }
+
+    def _evict_locked(self):
+        """Bound growth: drop expired entries, then keep the newest MAX_ENTRIES."""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=self.MAX_ENTRY_AGE_SECONDS)
+        ).isoformat()
+        self._conn.execute(
+            "DELETE FROM endpoint_payload_cache WHERE cache_name = ? AND built_at < ?",
+            (self.CACHE_NAME, cutoff),
+        )
+        rows = self._conn.execute(
+            """
+            SELECT cache_key FROM endpoint_payload_cache
+            WHERE cache_name = ?
+            ORDER BY built_at DESC
+            """,
+            (self.CACHE_NAME,),
+        ).fetchall()
+        if len(rows) <= self.MAX_ENTRIES:
+            return
+        for row in rows[self.MAX_ENTRIES :]:
+            self._conn.execute(
+                "DELETE FROM endpoint_payload_cache WHERE cache_name = ? AND cache_key = ?",
+                (self.CACHE_NAME, row["cache_key"]),
+            )
 
     def _write_cache(self, key, payload):
         with self._cond:
@@ -1416,15 +1501,20 @@ class _BackgroundPayloadCache:
                     self.CACHE_NAME,
                     key,
                     json.dumps(payload, default=str),
-                    len(payload) if isinstance(payload, list) else len(payload or []),
+                    _payload_rows_count(payload),
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
+            self._evict_locked()
 
     def get_rows(self, **kwargs):
         key = self.cache_key(**kwargs)
         cached = self._cache_row(key)
+        if cached is not None and self._is_fresh(cached["built_at"]):
+            return cached["payload"]
         if cached is not None:
+            # Stale but present: never freeze a dynamic UI window forever.
+            self._kick_async_refresh(kwargs)
             return cached["payload"]
         rows = self.compute_rows(**kwargs)
         try:
@@ -1432,6 +1522,28 @@ class _BackgroundPayloadCache:
         except Exception:
             logger.exception("failed to seed %s cache", self.CACHE_NAME)
         return rows
+
+    def _kick_async_refresh(self, kwargs):
+        key = self.cache_key(**kwargs)
+        with self._cond:
+            if key in self._inflight_keys:
+                return
+            self._inflight_keys.add(key)
+
+        def _worker():
+            try:
+                self.refresh(**kwargs)
+            except Exception:
+                logger.exception(
+                    "async stale refresh failed for %s key=%s", self.CACHE_NAME, key
+                )
+            finally:
+                with self._cond:
+                    self._inflight_keys.discard(key)
+
+        threading.Thread(
+            target=_worker, name=f"{self.CACHE_NAME}-stale-refresh", daemon=True
+        ).start()
 
     def refresh(self, **kwargs):
         rows = self.compute_rows(**kwargs)
@@ -1442,12 +1554,22 @@ class _BackgroundPayloadCache:
         if self._refreshing:
             return {"skipped": "already refreshing"}
         self._refreshing = True
+        started = time.monotonic()
         try:
             for kwargs in self.default_refresh_kwargs():
                 try:
                     self.refresh(**kwargs)
                 except Exception:
                     logger.exception("%s refresh failed for %s", self.CACHE_NAME, kwargs)
+            # Sweep leftovers from drifting calendar keys / one-off windows.
+            with self._cond:
+                self._evict_locked()
+            self._last_refresh_seconds = time.monotonic() - started
+            self._last_refresh_at = datetime.now(timezone.utc).isoformat()
+            return {
+                "refreshed_at": self._last_refresh_at,
+                "elapsed_seconds": round(self._last_refresh_seconds, 3),
+            }
         finally:
             self._refreshing = False
 
@@ -1618,8 +1740,13 @@ def api_model_efficiency_cache_status():
     return ModelEfficiencyCache.instance().status()
 
 
-def api_model_efficiency_refresh(window_hours=0, include_deleted=False):
-    """Force an immediate refresh of the cache for the given window."""
+def api_model_efficiency_refresh(window_hours=None, include_deleted=False):
+    """Force an immediate refresh of the cache for the given window.
+
+    ``window_hours=None`` refreshes the default window set. This endpoint is
+    intentionally unauthenticated like the rest of the standalone dashboard;
+    only expose the server on trusted networks (see ``_warn_if_exposed``).
+    """
     return ModelEfficiencyCache.instance().refresh(
         window_hours=window_hours, include_deleted=include_deleted
     )
@@ -3609,8 +3736,9 @@ def _warn_if_exposed(host: str) -> None:
         f"WARNING: binding dashboard on {host} exposes it to every host "
         "that can reach this interface, and the dashboard has NO "
         "authentication. Anyone who reaches the port will see every "
-        "captured token, cost, and tool-call detail. Do not expose to "
-        "the public internet or to untrusted networks."
+        "captured token, cost, and tool-call detail, and can also trigger "
+        "expensive POST /api/model-efficiency/refresh recomputes. Do not "
+        "expose to the public internet or to untrusted networks."
     )
     print(msg, file=sys.stderr)
     logger.warning("Dashboard bound on %s with no authentication.", host)
@@ -3619,101 +3747,85 @@ def _warn_if_exposed(host: str) -> None:
 # ---------------------------------------------------------------------------
 # ModelEfficiencyCache
 #
-# Background cache for api_model_efficiency. The underlying query joins
+# Thin subclass of `_BackgroundPayloadCache`. The underlying query joins
 # tool_calls × llm_calls over the configured window, which can take seconds
-# once telemetry grows. A single slow endpoint used to block the dashboard
-# UI even with ThreadingHTTPServer (because the browser fires ~10 endpoints
-# in parallel and the slow one dominates first-paint). This cache precomputes
-# the result in a background thread every few minutes so the HTTP handler
-# returns a SQLite row instead of recomputing.
+# once telemetry grows. Storage stays on `model_efficiency_cache` (schema v16)
+# so status/refresh keep their existing shape; TTL / serve-stale / eviction
+# logic is inherited from the base class.
 # ---------------------------------------------------------------------------
-class ModelEfficiencyCache:
-    _instance = None
-    _lock = threading.Lock()
-
-    DEFAULT_REFRESH_SECONDS = 300
+class ModelEfficiencyCache(_BackgroundPayloadCache):
+    CACHE_NAME = "model-efficiency"
     DEFAULT_WINDOWS = (24, 168, 720, 0)  # 1d, 1w, 30d, all
     DEFAULT_LIMITS = (50,)
-
-    def __init__(self, db_path: Path):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        _ensure_dashboard_cache_schema()
-        # check_same_thread=False: this connection is touched from both the
-        # background refresh thread and request handlers. We serialize writes
-        # through `_cond` and rely on SQLite's WAL + busy_timeout for reads.
-        self._conn = sqlite3.connect(
-            str(self.db_path), isolation_level=None, check_same_thread=False
-        )
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA busy_timeout=30000")
-        self._cond = threading.Condition(threading.Lock())
-        self._stop = threading.Event()
-        self._refreshing = False
-        self._last_refresh_at = None
-        self._last_refresh_seconds = 0.0
-        self._thread = threading.Thread(
-            target=self._run, name="model-efficiency-cache", daemon=True
-        )
-
-    @classmethod
-    def instance(cls):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = cls(DB_PATH)
-                cls._instance.start()
-            return cls._instance
-
-    @classmethod
-    def reset_for_tests(cls):
-        """Reset the singleton (used by tests)."""
-        with cls._lock:
-            if cls._instance is not None:
-                cls._instance.stop()
-            cls._instance = None
-
-    def start(self):
-        if not self._thread.is_alive():
-            self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        with self._cond:
-            self._cond.notify_all()
-
-    def _run(self):
-        # Prime the cache once at startup, then refresh on a schedule.
-        try:
-            self._refresh_all()
-        except Exception:
-            logger.exception("initial model-efficiency cache refresh failed")
-        while not self._stop.is_set():
-            with self._cond:
-                self._cond.wait(timeout=self.DEFAULT_REFRESH_SECONDS)
-            if self._stop.is_set():
-                break
-            try:
-                self._refresh_all()
-            except Exception:
-                logger.exception("scheduled model-efficiency cache refresh failed")
-
-    def _cache_rows(self, window_hours, include_deleted, limit):
-        key = _model_efficiency_cache_key(window_hours, include_deleted, limit)
-        row = self._conn.execute(
-            "SELECT payload_json, rows_count, built_at FROM model_efficiency_cache WHERE cache_key = ?",
-            (str(key),),
-        ).fetchone()
-        if not row:
-            return None
-        return {
-            "payload": json.loads(row["payload_json"]),
-            "rows_count": row["rows_count"],
-            "built_at": row["built_at"],
+    DEFAULT_KEYS = tuple(
+        {
+            "window_hours": wh,
+            "include_deleted": include_deleted,
+            "limit": limit,
         }
+        for wh in (24, 168, 720, 0)
+        for include_deleted in (False, True)
+        for limit in (50,)
+    )
 
-    def _write_cache(self, window_hours, include_deleted, limit, payload):
+    def cache_key(self, **kwargs):
+        window_hours = kwargs.get("window_hours", 24)
+        include_deleted = kwargs.get("include_deleted", False)
+        limit = max(1, min(int(kwargs.get("limit", 50)), 500))
+        return str(_model_efficiency_cache_key(window_hours, include_deleted, limit))
+
+    def compute_rows(self, **kwargs):
+        window_hours = kwargs.get("window_hours", 24)
+        include_deleted = kwargs.get("include_deleted", False)
+        limit = max(1, min(int(kwargs.get("limit", 50)), 500))
+        return _compute_model_efficiency_rows(window_hours, limit, include_deleted)
+
+    def _cache_row(self, key):
         with self._cond:
-            key = _model_efficiency_cache_key(window_hours, include_deleted, limit)
+            row = self._conn.execute(
+                "SELECT payload_json, rows_count, built_at FROM model_efficiency_cache WHERE cache_key = ?",
+                (str(key),),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "payload": json.loads(row["payload_json"]),
+                "rows_count": row["rows_count"],
+                "built_at": row["built_at"],
+            }
+
+    def _evict_locked(self):
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=self.MAX_ENTRY_AGE_SECONDS)
+        ).isoformat()
+        self._conn.execute(
+            "DELETE FROM model_efficiency_cache WHERE built_at < ?",
+            (cutoff,),
+        )
+        rows = self._conn.execute(
+            "SELECT cache_key FROM model_efficiency_cache ORDER BY built_at DESC"
+        ).fetchall()
+        if len(rows) <= self.MAX_ENTRIES:
+            return
+        for row in rows[self.MAX_ENTRIES :]:
+            self._conn.execute(
+                "DELETE FROM model_efficiency_cache WHERE cache_key = ?",
+                (row["cache_key"],),
+            )
+
+    def _write_cache(self, key, payload, window_hours=None, include_deleted=None, limit=None):
+        if window_hours is None or include_deleted is None or limit is None:
+            try:
+                parsed = ast.literal_eval(str(key))
+                if isinstance(parsed, tuple) and len(parsed) == 3:
+                    window_hours, include_deleted, limit = parsed
+                else:
+                    raise ValueError("unexpected key shape")
+            except Exception:
+                window_hours = 0 if window_hours is None else window_hours
+                include_deleted = False if include_deleted is None else include_deleted
+                limit = 50 if limit is None else limit
+        with self._cond:
             now_iso = datetime.now(timezone.utc).isoformat()
             self._conn.execute(
                 """
@@ -3722,7 +3834,10 @@ class ModelEfficiencyCache:
                 ON CONFLICT(cache_key) DO UPDATE SET
                     payload_json = excluded.payload_json,
                     rows_count = excluded.rows_count,
-                    built_at = excluded.built_at
+                    built_at = excluded.built_at,
+                    window_hours = excluded.window_hours,
+                    include_deleted = excluded.include_deleted,
+                    limit_n = excluded.limit_n
                 """,
                 (
                     str(key),
@@ -3730,32 +3845,38 @@ class ModelEfficiencyCache:
                     int(bool(include_deleted)),
                     int(limit),
                     json.dumps(payload, default=str),
-                    len(payload),
+                    _payload_rows_count(payload),
                     now_iso,
                 ),
             )
+            self._evict_locked()
 
-    def get_rows(self, window_hours, limit, include_deleted):
-        """Return cached rows, computing and seeding on miss."""
+    def get_rows(self, window_hours=24, limit=50, include_deleted=False, **kwargs):
         limit = max(1, min(int(limit), 500))
-        cached = self._cache_rows(window_hours, include_deleted, limit)
-        if cached is not None:
-            return cached["payload"]
-        rows = _compute_model_efficiency_rows(window_hours, limit, include_deleted)
-        try:
-            self._write_cache(window_hours, include_deleted, limit, rows)
-        except Exception:
-            logger.exception("failed to seed model_efficiency_cache")
-        return rows
+        return super().get_rows(
+            window_hours=window_hours, limit=limit, include_deleted=include_deleted
+        )
 
-    def refresh(self, window_hours=None, include_deleted=False):
-        """Force an immediate refresh of one window (or all windows)."""
+    def refresh(self, window_hours=None, include_deleted=False, limit=50, **kwargs):
+        """Force an immediate refresh of one window (or all default windows)."""
         if window_hours is None:
             return self._refresh_all()
         started = time.monotonic()
-        for limit in self.DEFAULT_LIMITS:
-            rows = _compute_model_efficiency_rows(window_hours, limit, include_deleted)
-            self._write_cache(window_hours, include_deleted, limit, rows)
+        # Keep historical behavior: a window refresh primes every default limit.
+        for lim in self.DEFAULT_LIMITS:
+            rows = self.compute_rows(
+                window_hours=window_hours, include_deleted=include_deleted, limit=lim
+            )
+            key = self.cache_key(
+                window_hours=window_hours, include_deleted=include_deleted, limit=lim
+            )
+            self._write_cache(
+                key,
+                rows,
+                window_hours=window_hours,
+                include_deleted=include_deleted,
+                limit=lim,
+            )
         elapsed = time.monotonic() - started
         with self._cond:
             self._last_refresh_seconds = elapsed
@@ -3768,49 +3889,28 @@ class ModelEfficiencyCache:
             }
 
     def _refresh_all(self):
-        if self._refreshing:
-            return {"skipped": "already refreshing"}
-        self._refreshing = True
-        started = time.monotonic()
-        try:
-            for wh in self.DEFAULT_WINDOWS:
-                for include_deleted in (False, True):
-                    for limit in self.DEFAULT_LIMITS:
-                        try:
-                            rows = _compute_model_efficiency_rows(wh, limit, include_deleted)
-                            self._write_cache(wh, include_deleted, limit, rows)
-                        except Exception:
-                            logger.exception(
-                                "model_efficiency_cache refresh failed (window=%s include_deleted=%s)",
-                                wh,
-                                include_deleted,
-                            )
-            self._last_refresh_seconds = time.monotonic() - started
-            self._last_refresh_at = datetime.now(timezone.utc).isoformat()
-            return {
-                "refreshed_at": self._last_refresh_at,
-                "elapsed_seconds": round(self._last_refresh_seconds, 3),
-                "windows": list(self.DEFAULT_WINDOWS),
-                "limits": list(self.DEFAULT_LIMITS),
-            }
-        finally:
-            self._refreshing = False
+        result = super()._refresh_all()
+        if isinstance(result, dict) and "skipped" not in result:
+            result["windows"] = list(self.DEFAULT_WINDOWS)
+            result["limits"] = list(self.DEFAULT_LIMITS)
+        return result
 
     def status(self):
         keys = []
-        for row in self._conn.execute(
-            "SELECT cache_key, window_hours, include_deleted, limit_n, rows_count, built_at FROM model_efficiency_cache ORDER BY window_hours, include_deleted, limit_n"
-        ).fetchall():
-            keys.append(
-                {
-                    "cache_key": row["cache_key"],
-                    "window_hours": row["window_hours"],
-                    "include_deleted": bool(row["include_deleted"]),
-                    "limit": row["limit_n"],
-                    "rows_count": row["rows_count"],
-                    "built_at": row["built_at"],
-                }
-            )
+        with self._cond:
+            for row in self._conn.execute(
+                "SELECT cache_key, window_hours, include_deleted, limit_n, rows_count, built_at FROM model_efficiency_cache ORDER BY window_hours, include_deleted, limit_n"
+            ).fetchall():
+                keys.append(
+                    {
+                        "cache_key": row["cache_key"],
+                        "window_hours": row["window_hours"],
+                        "include_deleted": bool(row["include_deleted"]),
+                        "limit": row["limit_n"],
+                        "rows_count": row["rows_count"],
+                        "built_at": row["built_at"],
+                    }
+                )
         return {
             "refresh_interval_seconds": self.DEFAULT_REFRESH_SECONDS,
             "last_refresh_at": self._last_refresh_at,
