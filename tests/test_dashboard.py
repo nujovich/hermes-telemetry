@@ -1314,3 +1314,90 @@ def test_payload_cache_ttl_and_stale_refresh(tmp_path, serve_module, monkeypatch
         time.sleep(0.05)
     assert compute_calls["n"] >= 2, "stale hit should kick async recompute"
     serve_module.ModelEfficiencyCache.reset_for_tests()
+
+
+def test_model_efficiency_refresh_reentrancy_guard(tmp_path, serve_module):
+    """ModelEfficiencyCache.refresh must not re-enter itself recursively."""
+    serve_module.ModelEfficiencyCache.reset_for_tests()
+    cache = serve_module.ModelEfficiencyCache.instance()
+
+    # Seed some data so the refresh has work to do.
+    now = db._utcnow()
+    db.start_run("sess-reentrant-1", model="gpt-5.4", platform="cli")
+    db.record_llm_call("sess-reentrant-1", now, "gpt-5.4", "openai-codex", 1000, 200, 0.01, 120)
+    db.record_tool_call("sess-reentrant-1", now, "search_files", True, 100)
+    db.end_run("sess-reentrant-1", "ok")
+
+    # Replace _refresh_all with a no-op so we can test refresh() directly.
+    original_refresh_all = cache._refresh_all
+    cache._refresh_all = lambda: {"skipped": "test"}
+
+    try:
+        # First refresh should succeed.
+        result1 = cache.refresh(window_hours=24, include_deleted=False, limit=50)
+        assert "window_hours" in result1
+
+        # Re-entrant call while still "refreshing" should be skipped.
+        cache._refreshing = True
+        result2 = cache.refresh(window_hours=24, include_deleted=False, limit=50)
+        assert result2 == {"skipped": "already refreshing"}
+
+        # After clearing the flag, refresh should work again.
+        cache._refreshing = False
+        result3 = cache.refresh(window_hours=24, include_deleted=False, limit=50)
+        assert "window_hours" in result3
+    finally:
+        cache._refresh_all = original_refresh_all
+        serve_module.ModelEfficiencyCache.reset_for_tests()
+
+
+def test_model_efficiency_sql_uses_window_filter(tmp_path, serve_module, monkeypatch):
+    """The DISTINCT JOIN in _compute_model_efficiency_rows must be bounded by the window."""
+    serve_module.ModelEfficiencyCache.reset_for_tests()
+
+    # Seed data across two time windows.
+    from datetime import datetime, timedelta, timezone
+    now_dt = datetime.now(timezone.utc)
+    old_dt = now_dt - timedelta(hours=48)
+    now = now_dt.isoformat()
+    old_ts = old_dt.isoformat()
+
+    db.start_run("sess-old-1", model="gpt-4", platform="cli")
+    db.record_llm_call("sess-old-1", old_ts, "gpt-4", "openai", 1000, 200, 0.02, 150)
+    db.record_tool_call("sess-old-1", old_ts, "search_files", True, 100)
+    db.end_run("sess-old-1", "ok")
+
+    db.start_run("sess-new-1", model="gpt-5.4", platform="cli")
+    db.record_llm_call("sess-new-1", now, "gpt-5.4", "openai-codex", 2000, 400, 0.04, 200)
+    db.record_tool_call("sess-new-1", now, "search_files", True, 120)
+    db.end_run("sess-new-1", "ok")
+
+    # Patch _rows to capture the SQL it runs.
+    captured_sql = []
+    original_rows = serve_module._rows
+
+    def capturing_rows(sql, params=()):
+        captured_sql.append((sql, params))
+        return original_rows(sql, params)
+
+    monkeypatch.setattr(serve_module, "_rows", capturing_rows)
+
+    try:
+        # Request only the last 24 hours.
+        serve_module._compute_model_efficiency_rows(window_hours=24, limit=50, include_deleted=False)
+
+        # Find the DISTINCT JOIN SQL.
+        distinct_join_sql = None
+        for sql, params in captured_sql:
+            if "DISTINCT tc.session_id" in sql and "JOIN llm_calls" in sql:
+                distinct_join_sql = sql
+                break
+
+        assert distinct_join_sql is not None, "DISTINCT JOIN SQL not found"
+        # The SQL must include a WHERE clause with the window filter.
+        assert "WHERE lc.ts >=" in distinct_join_sql, (
+            "DISTINCT JOIN must be bounded by window filter to avoid full table scan. "
+            f"SQL: {distinct_join_sql}"
+        )
+    finally:
+        serve_module.ModelEfficiencyCache.reset_for_tests()
