@@ -1785,11 +1785,13 @@ def _compute_model_efficiency_rows(window_hours, limit, include_deleted):
     )
     if rows:
         session_models = _rows(
-            """
+            f"""
             SELECT DISTINCT tc.session_id, lc.model, lc.provider
             FROM tool_calls tc
             JOIN llm_calls lc ON lc.session_id = tc.session_id
-            """
+            WHERE lc.ts >= {since_clause}
+            """,
+            visible_params,
         )
         tool_count: dict[tuple, int] = {}
         for sm in session_models:
@@ -3862,34 +3864,40 @@ class ModelEfficiencyCache(_BackgroundPayloadCache):
 
     def refresh(self, window_hours=None, include_deleted=False, limit=50, **kwargs):
         """Force an immediate refresh of one window (or all default windows)."""
-        if window_hours is None:
-            return self._refresh_all()
-        started = time.monotonic()
-        # Keep historical behavior: a window refresh primes every default limit.
-        for lim in self.DEFAULT_LIMITS:
-            rows = self.compute_rows(
-                window_hours=window_hours, include_deleted=include_deleted, limit=lim
-            )
-            key = self.cache_key(
-                window_hours=window_hours, include_deleted=include_deleted, limit=lim
-            )
-            self._write_cache(
-                key,
-                rows,
-                window_hours=window_hours,
-                include_deleted=include_deleted,
-                limit=lim,
-            )
-        elapsed = time.monotonic() - started
-        with self._cond:
-            self._last_refresh_seconds = elapsed
-            self._last_refresh_at = datetime.now(timezone.utc).isoformat()
-            return {
-                "window_hours": int(_coerce_window_hours(window_hours)),
-                "include_deleted": bool(include_deleted),
-                "elapsed_seconds": round(elapsed, 3),
-                "refreshed_at": self._last_refresh_at,
-            }
+        if self._refreshing:
+            return {"skipped": "already refreshing"}
+        self._refreshing = True
+        try:
+            if window_hours is None:
+                return self._refresh_all()
+            started = time.monotonic()
+            # Keep historical behavior: a window refresh primes every default limit.
+            for lim in self.DEFAULT_LIMITS:
+                rows = self.compute_rows(
+                    window_hours=window_hours, include_deleted=include_deleted, limit=lim
+                )
+                key = self.cache_key(
+                    window_hours=window_hours, include_deleted=include_deleted, limit=lim
+                )
+                self._write_cache(
+                    key,
+                    rows,
+                    window_hours=window_hours,
+                    include_deleted=include_deleted,
+                    limit=lim,
+                )
+            elapsed = time.monotonic() - started
+            with self._cond:
+                self._last_refresh_seconds = elapsed
+                self._last_refresh_at = datetime.now(timezone.utc).isoformat()
+                return {
+                    "window_hours": int(_coerce_window_hours(window_hours)),
+                    "include_deleted": bool(include_deleted),
+                    "elapsed_seconds": round(elapsed, 3),
+                    "refreshed_at": self._last_refresh_at,
+                }
+        finally:
+            self._refreshing = False
 
     def _refresh_all(self):
         result = super()._refresh_all()
