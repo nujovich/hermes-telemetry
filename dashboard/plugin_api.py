@@ -25,6 +25,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter
 
@@ -842,4 +843,96 @@ def forecast(window: str = "monthly") -> dict:
         "status": status,
         "lookback_days": lookback_days,
         "est_days_to_breach": est_days_to_breach,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Desktop plugin surface
+#
+# The Hermes Desktop app reuses the same ``hermes dashboard`` backend that the
+# web dashboard runs. Its plugin ``ctx.rest(path)`` resolves to
+# ``/api/plugins/hermes-telemetry/<path>`` (the plugin id is ``hermes-telemetry``
+# from plugin.yaml). So these routes are exactly what a Desktop HermesPlugin
+# panel calls — Milestone 1 of the Desktop dashboard plugin (card #175,
+# Option A: budget status always visible in the Desktop UI).
+# ---------------------------------------------------------------------------
+@router.get("/desktop")
+def desktop() -> dict:
+    """Single aggregate payload the Desktop panel polls.
+
+    Mirrors the web dashboard's budget/burn widget but flattened into one
+    call so the Desktop plugin can render spend-vs-budget, last-run status,
+    and session count without fan-out latency. Read-only; honors the same
+    query_only posture as every other route here.
+    """
+    last_run = _one(
+        "SELECT session_id, platform, status, started_at, ended_at, "
+        "COALESCE(cost_usd, 0) AS cost_usd "
+        "FROM runs ORDER BY started_at DESC LIMIT 1"
+    )
+    session_total = _one("SELECT COUNT(*) AS n FROM runs").get("n") or 0
+    running = _one("SELECT COUNT(*) AS n FROM runs WHERE status = 'running'").get("n") or 0
+
+    summary = None
+    try:
+        summary = _one(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd, "
+            "COALESCE(SUM(tokens_in), 0) AS tokens_in, "
+            "COALESCE(SUM(tokens_out), 0) AS tokens_out "
+            "FROM runs WHERE started_at >= ?",
+            (_window_start_utc("monthly"),),
+        )
+    except Exception:
+        summary = None
+
+    return {
+        "plugin": "hermes-telemetry",
+        "surface": "desktop",
+        "last_run": dict(last_run) if last_run else None,
+        "session_count": int(session_total),
+        "running_count": int(running),
+        "month_to_date": {
+            "cost_usd": round(float(summary["cost_usd"]), 6) if summary else 0.0,
+            "tokens_in": int(summary["tokens_in"]) if summary else 0,
+            "tokens_out": int(summary["tokens_out"]) if summary else 0,
+        },
+        "budget": budget(),
+        "actions": {
+            "open_dashboard": "/desktop/open-dashboard",
+            "pause_cron": "/cron",
+        },
+    }
+
+
+@router.get("/desktop/open-dashboard")
+def desktop_open_dashboard() -> dict:
+    """Quick action: deep link to the standalone HTML dashboard.
+
+    The Desktop panel's "Open Dashboard" action calls this; the plugin
+    opens the returned URL in the system browser. The standalone server is
+    the loopback ``dashboard/serve.py`` (port 8765). Returns the URL plus a
+    host-agnostic hint so the plugin can fall back to launching the server
+    if it is not already running.
+    """
+    # The standalone dashboard binds loopback:8765 by default. We surface the
+    # canonical local URL; the plugin handles actually opening it.
+    url = "http://localhost:8765"
+    reachable = False
+    try:
+        import socket
+
+        with socket.create_connection(("127.0.0.1", 8765), timeout=0.4):
+            reachable = True
+    except OSError:
+        reachable = False
+
+    return {
+        "url": url,
+        "reachable": reachable,
+        "hint": (
+            "open the URL in your browser"
+            if reachable
+            else "start it with: cd <plugin>/dashboard && python3 serve.py"
+        ),
+        "parsed_host": urlparse(url).hostname,
     }

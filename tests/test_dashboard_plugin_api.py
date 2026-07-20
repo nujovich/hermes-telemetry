@@ -8,6 +8,7 @@ isolation contract (HERMES_HOME → tmp dir) is enforced by conftest.py.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -210,7 +211,93 @@ def test_summary_and_listings_with_data(plugin_api):
     assert tokens["total_tokens"] == 150
 
 
-def test_session_detail_missing(plugin_api):
+def test_desktop_aggregate_empty(plugin_api):
+    """/desktop returns an aggregate payload the Desktop panel can poll,
+    with sane empty-state defaults when no runs exist yet."""
+    out = plugin_api.desktop()
+    assert out["plugin"] == "hermes-telemetry"
+    assert out["surface"] == "desktop"
+    assert out["last_run"] is None
+    assert out["session_count"] == 0
+    assert out["running_count"] == 0
+    assert out["month_to_date"]["cost_usd"] == 0.0
+    # budget() returns {'enabled': False} when no budget.yaml is present.
+    assert out["budget"]["enabled"] is False
+    assert out["actions"]["open_dashboard"] == "/desktop/open-dashboard"
+    assert out["actions"]["pause_cron"] == "/cron"
+
+
+def test_desktop_aggregate_with_run_and_budget(plugin_api, tmp_path, monkeypatch):
+    """/desktop surfaces last-run status, session count, month-to-date spend,
+    and the budget scopes read from budget.yaml."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[
+            {
+                "session_id": "s1",
+                "model": "gpt-4o",
+                "platform": "cron",
+            },
+            {
+                "session_id": "s2",
+                "model": "gpt-4o",
+                "platform": "cli",
+            },
+        ],
+        rows_llm=[
+            {
+                "session_id": "s1",
+                "ts": now,
+                "model": "gpt-4o",
+                "provider": "openai",
+                "tokens_in": 100,
+                "tokens_out": 50,
+                "cost_usd": 0.5,
+                "latency_ms": 100,
+            },
+        ],
+    )
+    import db as runtime_db
+
+    # s1 stays 'running' (default); s2 is finalized as 'ok'.
+    runtime_db.end_run("s2", "ok")
+
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    (hermes_home / "telemetry").mkdir(parents=True, exist_ok=True)
+    (hermes_home / "telemetry" / "budget.yaml").write_text(
+        "budgets:\n"
+        "  global:\n"
+        "    daily_usd: 1.0\n"
+        "    monthly_usd: 10.0\n"
+        "thresholds:\n"
+        "  soft_pct: 0.5\n"
+        "  hard_pct: 1.0\n",
+        encoding="utf-8",
+    )
+
+    out = plugin_api.desktop()
+    assert out["session_count"] == 2
+    assert out["running_count"] == 1
+    assert out["last_run"] is not None
+    assert out["last_run"]["status"] in ("running", "ok")
+    # Month-to-date cost sums runs.cost_usd; only s1 recorded an llm_call
+    # (cost_usd 0.5), so the aggregate is 0.5.
+    assert out["month_to_date"]["cost_usd"] == 0.5
+    assert out["budget"]["enabled"] is True
+    scopes = {s["scope"]: s for s in out["budget"]["scopes"]}
+    assert "global/daily" in scopes and "global/monthly" in scopes
+
+
+def test_desktop_open_dashboard_action(plugin_api):
+    """/desktop/open-dashboard returns the standalone dashboard deep link and a
+    reachability flag (no real server running in tests -> reachable False)."""
+    out = plugin_api.desktop_open_dashboard()
+    assert out["url"] == "http://localhost:8765"
+    assert out["reachable"] is False
+    assert out["parsed_host"] == "localhost"
+    assert "serve.py" in out["hint"]
     out = plugin_api.session_detail("nope")
     assert out["error"] == "session not found"
 
