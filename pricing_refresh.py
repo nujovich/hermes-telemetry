@@ -13,17 +13,17 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+try:
+    from . import paths
+except ImportError:  # pragma: no cover - pricing_refresh loaded standalone (no package context)
+    import paths
 
-PRICING_FILE = (
-    Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "telemetry" / "pricing.yaml"
-)
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +222,11 @@ def refresh_pricing(dry_run: bool = False) -> tuple[dict[str, dict], list[dict]]
         changes: {model: {old, new, source}}
         manual_overrides: [{model, local_input, remote_input, local_output, remote_output}]
     """
-    existing = _load_yaml(PRICING_FILE)
+    # Resolve at call time (not import time) via paths so HERMES_TELEMETRY_HOME
+    # outranks HERMES_HOME — a module-level constant froze the wrong path and
+    # ignored the consolidated cost-center dir.
+    pricing_file = paths.get_pricing_path()
+    existing = _load_yaml(pricing_file)
     existing_models = existing.get("models", {})
     defaults = existing.get(
         "defaults", {"cache_read_multiplier": 0.10, "cache_write_multiplier": 1.25}
@@ -313,7 +317,7 @@ def refresh_pricing(dry_run: bool = False) -> tuple[dict[str, dict], list[dict]]
     existing["_meta"] = meta
 
     if not dry_run and changes:
-        _save_yaml(PRICING_FILE, existing)
+        _save_yaml(pricing_file, existing)
         logger.info("pricing.yaml updated: %d changes", len(changes))
     elif dry_run:
         logger.info("dry-run: %d changes would be made", len(changes))

@@ -179,9 +179,11 @@ def test_manual_subscription_entry_survives_refresh(tmp_path, monkeypatch):
     it in _meta.subscription_models — not in estimated_price_models."""
     import yaml
 
+    import paths
     import pricing_refresh
 
-    pfile = tmp_path / "pricing.yaml"
+    pfile = paths.get_pricing_path()
+    pfile.parent.mkdir(parents=True, exist_ok=True)
     pfile.write_text(
         yaml.safe_dump(
             {
@@ -192,7 +194,6 @@ def test_manual_subscription_entry_survives_refresh(tmp_path, monkeypatch):
             }
         )
     )
-    monkeypatch.setattr(pricing_refresh, "PRICING_FILE", pfile)
     # OpenRouter returns the PREFIXED form — a different key, so no collision.
     monkeypatch.setattr(
         pricing_refresh,
@@ -213,3 +214,36 @@ def test_manual_subscription_entry_survives_refresh(tmp_path, monkeypatch):
     # Meta classifies the subscription model correctly
     assert "qwen3.7-plus" in meta["subscription_models"]
     assert "qwen3.7-plus" not in meta.get("estimated_price_models", [])
+
+
+def test_refresh_pricing_honors_telemetry_home_over_hermes_home(tmp_path, monkeypatch):
+    """refresh_pricing must resolve pricing.yaml via paths.get_pricing_path(),
+    honoring HERMES_TELEMETRY_HOME over HERMES_HOME. Regression: it wrote to a
+    module-level PRICING_FILE computed from HERMES_HOME at import time, so a set
+    HERMES_TELEMETRY_HOME (the consolidated cost-center dir used to unify profiles
+    on the VPS) was silently ignored and refresh landed in the wrong file."""
+    import yaml
+
+    import paths
+    import pricing_refresh
+
+    hermes_home = tmp_path / "hermes_home"
+    telemetry_home = tmp_path / "telemetry_home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(telemetry_home))
+
+    monkeypatch.setattr(
+        pricing_refresh,
+        "_SOURCES",
+        [_StubSource({"acme/model-x": {"input": 1.0, "output": 2.0}})],
+    )
+
+    pricing_refresh.refresh_pricing()
+
+    # HERMES_TELEMETRY_HOME outranks HERMES_HOME → refresh must write here.
+    target = telemetry_home / "telemetry" / "pricing.yaml"
+    assert target == paths.get_pricing_path()
+    assert target.exists()
+    assert yaml.safe_load(target.read_text())["models"]["acme/model-x"]["input"] == 1.0
+    # ...and must NOT write to the HERMES_HOME location.
+    assert not (hermes_home / "telemetry" / "pricing.yaml").exists()

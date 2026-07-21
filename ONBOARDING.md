@@ -786,10 +786,20 @@ case) surfaces instead of silently inflating cost:
   core-snapshot`, and hot-reloads. Because `pricing.yaml` is keyed by model only,
   a model that drifted under two providers is written once (first wins; a
   conflicting second rate is logged and skipped). Routes through
-  `paths.get_pricing_path()` (not `HERMES_HOME`-direct like
-  `pricing_refresh.PRICING_FILE`, whose latent bug is a separate follow-up).
+  `paths.get_pricing_path()` (resolved at call time, so `HERMES_TELEMETRY_HOME`
+  outranks `HERMES_HOME` — same as every other pricing.yaml reader/writer).
   `--model` limits to one canonical model; `--json` for machine output. No schema
   change.
+
+Note: `pricing_refresh.py` (the remote-source auto-refresh) previously used a
+module-level `PRICING_FILE` constant computed from `HERMES_HOME` at import time —
+it ignored `HERMES_TELEMETRY_HOME` and could freeze a stale path. Fixed to resolve
+`paths.get_pricing_path()` at call time, matching `pricing.py` and `pricing_drift`.
+Remaining follow-up: `__init__.py::_try_pricing_refresh` still derives its 24h
+`.pricing_refresh` throttle sentinel from `HERMES_HOME` directly, so on a
+consolidated (`HERMES_TELEMETRY_HOME`) install each profile keeps its own timer and
+may trigger redundant remote refreshes — harmless (all merge into the one shared
+file), but should also route through `paths.get_telemetry_home()`.
 
 ---
 
