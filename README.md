@@ -14,7 +14,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 263 passing](https://img.shields.io/badge/Tests-263%20passing-green.svg)](https://img.shields.io/badge/Tests-263%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 587 passing](https://img.shields.io/badge/Tests-587%20passing-green.svg)](https://img.shields.io/badge/Tests-587%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -1338,7 +1338,7 @@ global    $0.1812 / $2.00    9%  [daily]
 |Pricing auto-refresh (OpenRouter API)|✅ 320 models fetched, manual overrides preserved   |
 |Estimated-price model handling       |✅ Negative prices → $0.00, budget degradation      |
 |Dashboard (HTML, auto-refresh 30s)   |✅ Charts, tables, budget bar, provider distribution|
-|263 tests pass                       |✅                                                  |
+|587 tests pass                       |✅                                                  |
 
 -----
 
@@ -1365,23 +1365,38 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (263 tests):**
+**Test suite (593 tests, 587 passing + 6 skipped):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
-|`test_pricing.py`                |61   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds (incl. `nemotron-3-ultra` paid + `:free` suffix → $0 rule), subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`|
-|`test_telemetry_cli.py`          |32   |CLI subcommands (stats/budget), all window variants, text + `--json` output, entry point smoke test                            |
-|`test_db.py`                     |45   |Schema v1→v5 migrations, CRUD, aggregations, concurrent WAL writes (10 threads × 5 writes), `known_free_models` CRUD, `backfill_known_free_models`, `is_free_tier_transition` (id-change detection)|
+|`test_db.py`                     |114  |Schema migrations (v1→v16), CRUD, aggregations, concurrent WAL writes, `known_free_models`, pricing snapshots, subagent edges, cache layer|
+|`test_pricing.py`                |67   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds (incl. `nemotron-3-ultra` paid + `:free` suffix → $0 rule), subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`|
+|`test_dashboard.py`              |45   |HTML dashboard rendering, auto-refresh, chart data endpoints, viewer-timezone budget windows, cache layer (TTL / serve-stale)  |
+|`test_telemetry_cli.py`          |34   |CLI subcommands (stats/budget/pricing/sync-profiles), all window variants, text + `--json` output, entry point smoke test      |
+|`test_dashboard_plugin_api.py`   |33   |Plugin dashboard API: per-profile scoping clauses, efficiency/smells/budget endpoints                                          |
+|`test_pricing_drift.py`          |31   |Drift vs core snapshots: threshold, subscription skip, canonical collapse, provider-assumed routing, `--apply` write-back, malformed-YAML safety, CLI|
+|`test_sync_profiles.py`          |29   |Profile consolidation via `HERMES_TELEMETRY_HOME`: `.env` upsert, name scoping, template preservation                          |
+|`test_budget.py`                 |28   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload|
+|`test_stats_smells.py`           |22   |Anti-pattern (smell) detection and scoring                                                                                     |
 |`test_setup.py`                  |21   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |
-|`test_dashboard.py`              |21   |HTML dashboard rendering, auto-refresh, chart data endpoints, viewer-timezone budget windows                                   |
-|`test_budget.py`                 |20   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload|
+|`test_pricing_snapshots.py`      |21   |Core-sourced pricing snapshots: append-per-change, `resolved_model` canonicalization, capture throttle                         |
+|`test_init.py`                   |19   |Cron session ID regex, tool success/failure parsing, free→paid transition alert (detection, queueing, injection, backfill)     |
+|`test_stats_models.py`           |18   |Per-model breakdown, `/stats models` output format                                                                             |
+|`test_subagent_reconciliation.py`|15   |Parent + child hook sequence, token reconciliation, no double-counting                                                         |
+|`test_pricing_refresh.py`        |15   |Auto-refresh from OpenRouter API, change detection, manual override preservation, subscription-model metadata, `HERMES_TELEMETRY_HOME` resolution|
 |`test_stats_providers.py`        |14   |Real vs estimated per provider, `/stats providers` output format, Nous warning dedup                                           |
-|`test_pricing_refresh.py`        |14   |Auto-refresh from OpenRouter API, change detection, manual override preservation, subscription-model metadata                  |
-|`test_init.py`                   |13   |Cron session ID regex, tool success/failure parsing, free→paid transition alert (detection, queueing, injection, backfill)     |
-|`test_subagent_reconciliation.py`|9    |Parent + child hook sequence, token reconciliation, no double-counting                                                         |
-|`test_stats_models.py`           |8    |Per-model breakdown, `/stats models` output format                                                                             |
+|`test_stats_efficiency.py`       |12   |Per-session efficiency scoring (0–100)                                                                                         |
+|`test_moa.py`                    |11   |Mixture-of-Agents (MoA) telemetry capture                                                                                      |
+|`test_sync_profiles_cli.py`      |7    |`sync-profiles` CLI wiring, dry-run + `--apply`                                                                                |
+|`test_pricing_backfill.py`       |7    |Seed pricing snapshots for historical models (coverage seed, fail-open, idempotent)                                            |
+|`test_paths.py`                  |6    |Telemetry path resolution precedence: `HERMES_TELEMETRY_HOME` > `HERMES_HOME` > `~/.hermes`                                     |
+|`test_dashboard_plugin_isolation.py`|6 |Enforces zero shared Python code between the two dashboard surfaces                                                             |
+|`test_isolation.py`              |5    |`HERMES_HOME` redirect, no writes to real `~/.hermes`                                                                          |
 |`test_pricing_hot_reload.py`     |3    |In-process cache invalidation on pricing update                                                                                |
-|`test_isolation.py`              |2    |HERMES_HOME redirect, no writes to real `~/.hermes`                                                                            |
+|`test_moa_integration.py`        |3    |MoA end-to-end integration                                                                                                     |
+|`test_budget_per_profile.py`     |3    |Per-profile budget scoping                                                                                                     |
+|`test_profile_capture.py`        |2    |Per-profile attribution capture                                                                                                |
+|`test_logging_isolation.py`      |2    |Plugin logger state isolation between tests                                                                                    |
 
 No live Hermes is required — all tests are self-contained with in-memory SQLite.
 
