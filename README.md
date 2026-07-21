@@ -14,7 +14,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 587 passing](https://img.shields.io/badge/Tests-587%20passing-green.svg)](https://img.shields.io/badge/Tests-587%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 594 passing](https://img.shields.io/badge/Tests-594%20passing-green.svg)](https://img.shields.io/badge/Tests-594%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -754,8 +754,15 @@ for every threshold.
 /budget set global daily 5.00       → set or raise a limit (persists + hot-reloads)
 /budget set cron_job daily 1.00     → set default per-cron-job limit
 /budget set sender daily 2.00       → set default per-sender limit
+/budget set profile daily 2.00      → set default per-profile limit
+/budget set profile faro monthly 50 → set a per-profile override (id after scope; optional)
 /budget forecast [daily|monthly] [scope] [id]  → project burn rate toward the limit
 ```
+
+`set` takes an optional id after the scope (`set <scope> [<id>] <window> <usd>`): with
+an id it writes a `per_<scope>.overrides.<id>` entry, without one it writes the scope's
+`default` bucket. `global` takes no id. On the standalone CLI the id is a flag:
+`hermes-telemetry budget set profile monthly 50 --id faro`.
 
 `forecast` defaults to the `monthly` window and the `global` scope. It learns a
 recent daily spend rate (moving average over the last 14 days), projects spend
@@ -1338,7 +1345,7 @@ global    $0.1812 / $2.00    9%  [daily]
 |Pricing auto-refresh (OpenRouter API)|✅ 320 models fetched, manual overrides preserved   |
 |Estimated-price model handling       |✅ Negative prices → $0.00, budget degradation      |
 |Dashboard (HTML, auto-refresh 30s)   |✅ Charts, tables, budget bar, provider distribution|
-|587 tests pass                       |✅                                                  |
+|594 tests pass                       |✅                                                  |
 
 -----
 
@@ -1365,18 +1372,18 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (593 tests, 587 passing + 6 skipped):**
+**Test suite (600 tests, 594 passing + 6 skipped):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
 |`test_db.py`                     |114  |Schema migrations (v1→v16), CRUD, aggregations, concurrent WAL writes, `known_free_models`, pricing snapshots, subagent edges, cache layer|
 |`test_pricing.py`                |67   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds (incl. `nemotron-3-ultra` paid + `:free` suffix → $0 rule), subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`|
 |`test_dashboard.py`              |45   |HTML dashboard rendering, auto-refresh, chart data endpoints, viewer-timezone budget windows, cache layer (TTL / serve-stale)  |
-|`test_telemetry_cli.py`          |34   |CLI subcommands (stats/budget/pricing/sync-profiles), all window variants, text + `--json` output, entry point smoke test      |
+|`test_telemetry_cli.py`          |35   |CLI subcommands (stats/budget/pricing/sync-profiles), all window variants, text + `--json` output, entry point smoke test      |
+|`test_budget.py`                 |34   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` (default + per-profile/id override) hot-reload|
 |`test_dashboard_plugin_api.py`   |33   |Plugin dashboard API: per-profile scoping clauses, efficiency/smells/budget endpoints                                          |
 |`test_pricing_drift.py`          |31   |Drift vs core snapshots: threshold, subscription skip, canonical collapse, provider-assumed routing, `--apply` write-back, malformed-YAML safety, CLI|
 |`test_sync_profiles.py`          |29   |Profile consolidation via `HERMES_TELEMETRY_HOME`: `.env` upsert, name scoping, template preservation                          |
-|`test_budget.py`                 |28   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` hot-reload|
 |`test_stats_smells.py`           |22   |Anti-pattern (smell) detection and scoring                                                                                     |
 |`test_setup.py`                  |21   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |
 |`test_pricing_snapshots.py`      |21   |Core-sourced pricing snapshots: append-per-change, `resolved_model` canonicalization, capture throttle                         |

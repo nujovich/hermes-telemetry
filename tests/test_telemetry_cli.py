@@ -131,7 +131,13 @@ def test_budget_set_text(capsys):
         main(["budget", "set", "global", "daily", "10.00"])
     out, _ = capsys.readouterr()
     assert out == "Budget updated.\n"
-    m.assert_called_once_with("global", "daily", 10.0)
+    m.assert_called_once_with("global", "daily", 10.0, "")
+
+
+def test_budget_set_profile_cli(capsys):
+    with patch("hermes_telemetry.budget._set_budget", return_value="ok") as m:
+        main(["budget", "set", "profile", "monthly", "50.00", "--id", "faro"])
+    m.assert_called_once_with("profile", "monthly", 50.0, "faro")
 
 
 def test_budget_set_invalid_amount_exits():

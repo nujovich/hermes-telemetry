@@ -145,9 +145,15 @@ def _build_parser_into(sub) -> None:
     bc.add_argument("--json", action="store_true", help="Output as JSON")
 
     bs = bsub.add_parser("set", help="Set a budget limit")
-    bs.add_argument("scope", choices=["global", "cron_job", "sender"])
+    bs.add_argument("scope", choices=["global", "cron_job", "sender", "profile"])
     bs.add_argument("window", choices=["daily", "monthly"])
     bs.add_argument("usd", type=float)
+    bs.add_argument(
+        "--id",
+        dest="scope_id",
+        default="",
+        help="Override id (e.g. a profile name); omit to set the scope's default bucket",
+    )
 
     bf = bsub.add_parser("forecast", help="Project burn rate toward the budget limit")
     bf.add_argument("window", nargs="?", choices=["daily", "monthly"], default="monthly")
@@ -267,7 +273,7 @@ def _handle_budget(args: argparse.Namespace) -> None:
     from . import budget as _budget
 
     if args.budget_command == "set":
-        print(_budget._set_budget(args.scope, args.window, args.usd))
+        print(_budget._set_budget(args.scope, args.window, args.usd, getattr(args, "scope_id", "")))
         return
 
     if args.budget_command == "forecast":

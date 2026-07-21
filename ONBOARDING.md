@@ -837,6 +837,20 @@ safe because spend only changes when a new `post_api_request` is recorded
 The cache is keyed by `(scope, scope_id)`. A `reload_config()` call clears it
 (e.g., after `/budget set`).
 
+### Setting budgets (`/budget set`)
+
+`_set_budget(scope, window, usd, scope_id="")` persists a limit to `budget.yaml`
+and hot-reloads. With a `scope_id` it writes `per_<scope>.overrides.<id>`; without
+one it writes the scope's shared `default` bucket. `global` takes no id. The
+id-override form is **generic** across `cron_job` / `sender` / `profile` — the read
+side (`_resolve_limits`) already resolved `overrides.<id> or default` for all of
+them, so `set` just fills the same shape. Surface asymmetry (intentional): the chat
+form takes the id as a positional after the scope
+(`/budget set <scope> [<id>] <window> <usd>`), while the standalone CLI uses a
+`--id` flag — argparse can't express an optional *middle* positional, and the CLI
+already validates `window`/`usd` as typed positionals. Writes are atomic (temp
+file + `os.replace`), then `reload_config()` clears the verdict cache.
+
 ### Anti-spam ledger (`budget_alerts` table)
 
 Soft alerts fire **once per window per scope** — not on every `pre_llm_call`.
