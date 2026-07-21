@@ -58,6 +58,17 @@ updating the doc.
 
 ---
 
+## Desktop plugin surface
+
+`dashboard/plugin.tsx` is a HermesPlugin for the Hermes Desktop shell. It lives
+alongside the web dashboard plugin but is loaded via a separate discovery path:
+the Desktop scans `$HERMES_HOME/desktop-plugins/` ("disk door"), not
+`dashboard/manifest.json`. The plugin id (`hermes-telemetry`) matches the web
+dashboard `manifest.json` `name` so `ctx.rest(path)` resolves to the same
+`plugin_api.py` backend. Install with `bash tools/install-desktop-plugin.sh`.
+
+---
+
 ## Test and lint commands
 
 ```bash

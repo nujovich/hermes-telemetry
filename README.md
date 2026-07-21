@@ -367,6 +367,84 @@ They share **zero Python code** — only the SQLite DB. The isolation is enforce
 
 -----
 
+## Hermes Desktop Plugin
+
+`hermes-telemetry` also ships a **Hermes Desktop plugin** (`dashboard/plugin.tsx`)
+that registers a pane in the Hermes Desktop shell. When installed, you get
+budget status, last-run info, session counts, and month-to-date spend at a
+glance, plus an "Open Dashboard" quick-action button.
+
+### Screenshots
+
+[![Desktop plugin pane](docs/plugin/desktop-pane.png)](docs/plugin/desktop-pane.png)
+
+*The Desktop pane polls `/desktop` every 30s. Shows: last-run status with
+platform badge and recency, session count, running count (if > 0),
+month-to-date cost + token totals, per-scope budget bars with exhaust
+badges, and an "Open Dashboard" quick action.*
+
+### Backend routes (mounted at `/api/plugins/hermes-telemetry/desktop*`)
+
+These read-only endpoints serve the Desktop pane. They reuse the same
+`query_only` FastAPI router as the web dashboard.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/desktop` | Aggregated budget status, last-run info, session count, and month-to-date cost for the Desktop pane. |
+| GET | `/desktop/open-dashboard` | Returns `{ url }` pointing to the standalone dashboard (or the web dashboard host). |
+
+### How discovery works
+
+The Hermes Desktop shell scans `$HERMES_HOME/desktop-plugins/` on startup
+("disk door"). Any directory containing a `plugin.js` file is auto-loaded
+as a Desktop plugin pane. The plugin id (`hermes-telemetry`) matches the
+web dashboard `manifest.json` `name` so `ctx.rest(path)` resolves to the
+same backend (`/api/plugins/hermes-telemetry/<path>`).
+
+### Install
+
+The Desktop plugin ships as source TypeScript — it must be compiled to a
+single JS bundle before the Desktop shell can load it.
+
+**Quick install (disk door — recommended for end-users):**
+
+```bash
+cd ~/.hermes/plugins/hermes-telemetry/dashboard
+esbuild plugin.tsx --bundle --outfile=plugin.js \
+  --external:@hermes/plugin-sdk \
+  --external:react \
+  --external:react/jsx-runtime
+mkdir -p "$HERMES_HOME/desktop-plugins/hermes-telemetry"
+cp plugin.js "$HERMES_HOME/desktop-plugins/hermes-telemetry/plugin.js"
+```
+
+The Desktop discovers it on next launch. To update, recompile and overwrite
+`plugin.js`.
+
+**Bundled alternative (for hermes-agent repo contributors):**
+
+Copy `dashboard/plugin.tsx` into the hermes-agent source tree — Vite glob
+picks it up as a bundled plugin:
+
+```bash
+cp dashboard/plugin.tsx \
+  apps/desktop/src/plugins/hermes-telemetry/plugin.tsx
+```
+
+No separate build step — it is compiled alongside the Desktop shell.
+
+### Install helper
+
+A one-liner convenience script is available at `tools/install-desktop-plugin.sh`.
+It compiles the TSX and copies the bundle to the disk door without manual
+folder creation:
+
+```bash
+bash tools/install-desktop-plugin.sh
+```
+
+-----
+
 ## Quick Start
 
 1. Install and enable the plugin (see above)

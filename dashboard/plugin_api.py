@@ -25,6 +25,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter
 
@@ -843,3 +844,191 @@ def forecast(window: str = "monthly") -> dict:
         "lookback_days": lookback_days,
         "est_days_to_breach": est_days_to_breach,
     }
+
+
+# ---------------------------------------------------------------------------
+# Desktop plugin surface
+#
+# The Hermes Desktop app reuses the same ``hermes dashboard`` backend that the
+# web dashboard runs. Its plugin ``ctx.rest(path)`` resolves to
+# ``/api/plugins/hermes-telemetry/<path>`` (the plugin id is ``hermes-telemetry``
+# from plugin.yaml). So these routes are exactly what a Desktop HermesPlugin
+# panel calls — Milestone 1 of the Desktop dashboard plugin (card #175,
+# Option A: budget status always visible in the Desktop UI).
+# ---------------------------------------------------------------------------
+@router.get("/desktop")
+def desktop() -> dict:
+    """Single aggregate payload the Desktop panel polls.
+
+    Mirrors the web dashboard's budget/burn widget but flattened into one
+    call so the Desktop plugin can render spend-vs-budget, last-run status,
+    and session count without fan-out latency. Read-only; honors the same
+    query_only posture as every other route here.
+    """
+    last_run = _one(
+        "SELECT session_id, platform, status, started_at, ended_at, "
+        "COALESCE(cost_usd, 0) AS cost_usd "
+        "FROM runs ORDER BY started_at DESC LIMIT 1"
+    )
+    session_total = _one("SELECT COUNT(*) AS n FROM runs").get("n") or 0
+    running = _one("SELECT COUNT(*) AS n FROM runs WHERE status = 'running'").get("n") or 0
+
+    summary = None
+    try:
+        summary = _one(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd, "
+            "COALESCE(SUM(tokens_in), 0) AS tokens_in, "
+            "COALESCE(SUM(tokens_out), 0) AS tokens_out "
+            "FROM runs WHERE started_at >= ?",
+            (_window_start_utc("monthly"),),
+        )
+    except Exception:
+        summary = None
+
+    return {
+        "plugin": "hermes-telemetry",
+        "surface": "desktop",
+        "last_run": dict(last_run) if last_run else None,
+        "session_count": int(session_total),
+        "running_count": int(running),
+        "month_to_date": {
+            "cost_usd": round(float(summary["cost_usd"]), 6) if summary else 0.0,
+            "tokens_in": int(summary["tokens_in"]) if summary else 0,
+            "tokens_out": int(summary["tokens_out"]) if summary else 0,
+        },
+        "budget": budget(),
+        "actions": {
+            "open_dashboard": "/desktop/open-dashboard",
+            "pause_cron": "/cron",
+        },
+    }
+
+
+@router.get("/desktop/open-dashboard")
+def desktop_open_dashboard() -> dict:
+    """Quick action: deep link to the standalone HTML dashboard.
+
+    The Desktop panel's "Open Dashboard" action calls this; the plugin
+    opens the returned URL in the system browser. The standalone server is
+    the loopback ``dashboard/serve.py`` (port 8765). Returns the URL plus a
+    host-agnostic hint so the plugin can fall back to launching the server
+    if it is not already running.
+    """
+    # The standalone dashboard binds loopback:8765 by default. We surface the
+    # canonical local URL; the plugin handles actually opening it.
+    url = "http://localhost:8765"
+    reachable = False
+    try:
+        import socket
+
+        with socket.create_connection(("127.0.0.1", 8765), timeout=0.4):
+            reachable = True
+    except OSError:
+        reachable = False
+
+    return {
+        "url": url,
+        "reachable": reachable,
+        "hint": (
+            "open the URL in your browser"
+            if reachable
+            else "start it with: cd <plugin>/dashboard && python3 serve.py"
+        ),
+        "parsed_host": urlparse(url).hostname,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Desktop plugin surface — write actions (Milestone 3)
+# ---------------------------------------------------------------------------
+@router.post("/desktop/budget")
+def desktop_set_budget(payload: dict) -> dict:
+    """Quick action: set budget cap (writes budget.yaml daily/monthly limits).
+
+    Accepts::
+
+        {"scope": "global", "window": "daily", "limit_usd": 5.0}
+
+    Writes atomically via temp file + os.replace, then returns fresh
+    budget status from ``budget()``.  Scope is restricted to ``"global"``
+    in this iteration (per-profile and per-cron write support follow in
+    a later milestone once the Desktop panel UX is settled).
+    """
+    try:
+        import yaml
+    except ImportError:
+        return {"ok": False, "error": "PyYAML not installed"}
+
+    scope: str = payload.get("scope", "global")
+    window: str = payload.get("window", "daily")
+    limit_usd = payload.get("limit_usd")
+
+    # Validate — scope is restricted to global for now
+    if scope != "global":
+        return {
+            "ok": False,
+            "error": f"invalid scope: {scope!r}. Desktop API supports global scope only.",
+        }
+    if window not in ("daily", "monthly"):
+        return {
+            "ok": False,
+            "error": f"invalid window: {window!r}. Use daily or monthly.",
+        }
+    if limit_usd is None:
+        return {"ok": False, "error": "limit_usd is required"}
+    try:
+        limit_usd = float(limit_usd)
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "limit_usd must be a number"}
+    if limit_usd < 0:
+        return {"ok": False, "error": "limit_usd must be >= 0"}
+
+    key = f"{window}_usd"
+    path = _budget_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    raw: dict = {}
+    if path.exists():
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            raw = {}
+
+    budgets = raw.setdefault("budgets", {})
+    budgets.setdefault(scope, {})[key] = limit_usd
+
+    # Atomic write — temp file + os.replace prevents the budget file
+    # watcher from reading a partial file on IN_MODIFY.
+    tmp = path.with_suffix(".yaml.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
+    os.replace(tmp, path)
+
+    return {"ok": True, **budget()}
+
+
+@router.post("/desktop/cron/{cron_id}/pause")
+def desktop_pause_cron(cron_id: str, payload: dict | None = None) -> dict:
+    """Quick action: pause a cron job for future runs.
+
+    Optional body: ``{"reason": "budget exhausted"}``.  Calls
+    ``cron.jobs.pause_job(cron_id, reason)`` and returns success or error.
+
+    The cron module is loaded lazily — on a Hermes installation where the
+    ``cron`` package is not importable (e.g. a minimal dashboard-only
+    deployment), the endpoint returns a clear error rather than crashing
+    the plugin.
+    """
+    reason = (payload or {}).get("reason") if payload else "Paused via Desktop dashboard"
+    try:
+        from cron.jobs import pause_job  # type: ignore
+
+        pause_job(cron_id, reason=reason)
+        return {"ok": True, "cron_job_id": cron_id, "reason": reason}
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "cron module not available in this environment",
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}

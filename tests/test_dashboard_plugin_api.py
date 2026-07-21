@@ -8,6 +8,7 @@ isolation contract (HERMES_HOME → tmp dir) is enforced by conftest.py.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -210,7 +211,93 @@ def test_summary_and_listings_with_data(plugin_api):
     assert tokens["total_tokens"] == 150
 
 
-def test_session_detail_missing(plugin_api):
+def test_desktop_aggregate_empty(plugin_api):
+    """/desktop returns an aggregate payload the Desktop panel can poll,
+    with sane empty-state defaults when no runs exist yet."""
+    out = plugin_api.desktop()
+    assert out["plugin"] == "hermes-telemetry"
+    assert out["surface"] == "desktop"
+    assert out["last_run"] is None
+    assert out["session_count"] == 0
+    assert out["running_count"] == 0
+    assert out["month_to_date"]["cost_usd"] == 0.0
+    # budget() returns {'enabled': False} when no budget.yaml is present.
+    assert out["budget"]["enabled"] is False
+    assert out["actions"]["open_dashboard"] == "/desktop/open-dashboard"
+    assert out["actions"]["pause_cron"] == "/cron"
+
+
+def test_desktop_aggregate_with_run_and_budget(plugin_api, tmp_path, monkeypatch):
+    """/desktop surfaces last-run status, session count, month-to-date spend,
+    and the budget scopes read from budget.yaml."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[
+            {
+                "session_id": "s1",
+                "model": "gpt-4o",
+                "platform": "cron",
+            },
+            {
+                "session_id": "s2",
+                "model": "gpt-4o",
+                "platform": "cli",
+            },
+        ],
+        rows_llm=[
+            {
+                "session_id": "s1",
+                "ts": now,
+                "model": "gpt-4o",
+                "provider": "openai",
+                "tokens_in": 100,
+                "tokens_out": 50,
+                "cost_usd": 0.5,
+                "latency_ms": 100,
+            },
+        ],
+    )
+    import db as runtime_db
+
+    # s1 stays 'running' (default); s2 is finalized as 'ok'.
+    runtime_db.end_run("s2", "ok")
+
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    (hermes_home / "telemetry").mkdir(parents=True, exist_ok=True)
+    (hermes_home / "telemetry" / "budget.yaml").write_text(
+        "budgets:\n"
+        "  global:\n"
+        "    daily_usd: 1.0\n"
+        "    monthly_usd: 10.0\n"
+        "thresholds:\n"
+        "  soft_pct: 0.5\n"
+        "  hard_pct: 1.0\n",
+        encoding="utf-8",
+    )
+
+    out = plugin_api.desktop()
+    assert out["session_count"] == 2
+    assert out["running_count"] == 1
+    assert out["last_run"] is not None
+    assert out["last_run"]["status"] in ("running", "ok")
+    # Month-to-date cost sums runs.cost_usd; only s1 recorded an llm_call
+    # (cost_usd 0.5), so the aggregate is 0.5.
+    assert out["month_to_date"]["cost_usd"] == 0.5
+    assert out["budget"]["enabled"] is True
+    scopes = {s["scope"]: s for s in out["budget"]["scopes"]}
+    assert "global/daily" in scopes and "global/monthly" in scopes
+
+
+def test_desktop_open_dashboard_action(plugin_api):
+    """/desktop/open-dashboard returns the standalone dashboard deep link and a
+    reachability flag (no real server running in tests -> reachable False)."""
+    out = plugin_api.desktop_open_dashboard()
+    assert out["url"] == "http://localhost:8765"
+    assert out["reachable"] is False
+    assert out["parsed_host"] == "localhost"
+    assert "serve.py" in out["hint"]
     out = plugin_api.session_detail("nope")
     assert out["error"] == "session not found"
 
@@ -780,3 +867,118 @@ def test_budget_empty_profile_override_falls_back_to_default(plugin_api):
     out = plugin_api.budget()
     scopes = {s["scope"]: s for s in out["scopes"]}
     assert scopes["profile:coder/daily"]["limit_usd"] == 5.0
+
+
+# ---------------------------------------------------------------------------
+# Milestone 3 — Desktop quick-action write endpoints
+# ---------------------------------------------------------------------------
+def test_desktop_set_budget_writes_and_returns_status(plugin_api):
+    """POST /desktop/budget writes budget.yaml atomically and returns
+    the full budget() readout with the new limit reflected."""
+    out = plugin_api.desktop_set_budget({"scope": "global", "window": "daily", "limit_usd": 5.0})
+    assert out["ok"] is True
+    assert out["enabled"] is True
+    scopes = {s["scope"]: s for s in out["scopes"]}
+    assert "global/daily" in scopes
+    assert scopes["global/daily"]["limit_usd"] == 5.0
+
+    # Verify the file was actually written
+    import yaml
+
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    raw = yaml.safe_load((hermes_home / "telemetry" / "budget.yaml").read_text(encoding="utf-8"))
+    assert raw["budgets"]["global"]["daily_usd"] == 5.0
+
+
+def test_desktop_set_budget_validates_input(plugin_api):
+    """POST /desktop/budget rejects invalid scope, window, and amount."""
+    out = plugin_api.desktop_set_budget({"scope": "cron_job", "window": "daily", "limit_usd": 1.0})
+    assert out["ok"] is False
+    assert "scope" in out["error"]
+
+    out = plugin_api.desktop_set_budget({"scope": "global", "window": "annual", "limit_usd": 1.0})
+    assert out["ok"] is False
+    assert "window" in out["error"]
+
+    out = plugin_api.desktop_set_budget({"scope": "global", "window": "daily"})
+    assert out["ok"] is False
+    assert "limit_usd" in out["error"]
+
+    out = plugin_api.desktop_set_budget({"scope": "global", "window": "daily", "limit_usd": -5.0})
+    assert out["ok"] is False
+    assert ">= 0" in out["error"]
+
+
+def test_desktop_set_budget_monthly_window(plugin_api):
+    """POST /desktop/budget with window=monthly writes and returns the
+    monthly limit correctly."""
+    out = plugin_api.desktop_set_budget(
+        {"scope": "global", "window": "monthly", "limit_usd": 100.0}
+    )
+    assert out["ok"] is True
+    scopes = {s["scope"]: s for s in out["scopes"]}
+    assert "global/monthly" in scopes
+    assert scopes["global/monthly"]["limit_usd"] == 100.0
+
+
+def test_desktop_pause_cron_success(plugin_api, monkeypatch):
+    """POST /desktop/cron/{id}/pause calls pause_job and returns ok."""
+    import sys
+
+    # cron.jobs is not importable in tests — monkeypatch it
+    calls = []
+
+    class FakeJobs:
+        @staticmethod
+        def pause_job(job_id, reason=""):
+            calls.append((job_id, reason))
+
+    fake_cron = type("cron", (), {})()
+    fake_cron.jobs = FakeJobs()
+    monkeypatch.setitem(sys.modules, "cron", fake_cron)
+    monkeypatch.setitem(sys.modules, "cron.jobs", FakeJobs())
+
+    out = plugin_api.desktop_pause_cron("my-job", {"reason": "budget exhausted"})
+    assert out["ok"] is True
+    assert out["cron_job_id"] == "my-job"
+    assert out["reason"] == "budget exhausted"
+    assert len(calls) == 1
+    assert calls[0] == ("my-job", "budget exhausted")
+
+
+def test_desktop_pause_cron_default_reason(plugin_api, monkeypatch):
+    """POST /desktop/cron/{id}/pause without a body uses a default reason."""
+    import sys
+
+    calls = []
+
+    class FakeJobs:
+        @staticmethod
+        def pause_job(job_id, reason=""):
+            calls.append((job_id, reason))
+
+    fake_cron = type("cron", (), {})()
+    fake_cron.jobs = FakeJobs()
+    monkeypatch.setitem(sys.modules, "cron", fake_cron)
+    monkeypatch.setitem(sys.modules, "cron.jobs", FakeJobs())
+
+    out = plugin_api.desktop_pause_cron("job-a")
+    assert out["ok"] is True
+    assert "Desktop dashboard" in out["reason"]
+
+
+def test_desktop_pause_cron_runtime_error(plugin_api, monkeypatch):
+    """POST /desktop/cron/{id}/pause returns an error when pause_job
+    raises an exception at runtime (e.g. cron backend unavailable)."""
+    import sys
+
+    class FakeFailingJobs:
+        @staticmethod
+        def pause_job(job_id, reason=""):
+            raise RuntimeError("cron service unreachable")
+
+    monkeypatch.setitem(sys.modules, "cron.jobs", FakeFailingJobs())
+
+    out = plugin_api.desktop_pause_cron("bad-job")
+    assert out["ok"] is False
+    assert "cron service unreachable" in out["error"]
