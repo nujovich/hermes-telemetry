@@ -867,3 +867,118 @@ def test_budget_empty_profile_override_falls_back_to_default(plugin_api):
     out = plugin_api.budget()
     scopes = {s["scope"]: s for s in out["scopes"]}
     assert scopes["profile:coder/daily"]["limit_usd"] == 5.0
+
+
+# ---------------------------------------------------------------------------
+# Milestone 3 — Desktop quick-action write endpoints
+# ---------------------------------------------------------------------------
+def test_desktop_set_budget_writes_and_returns_status(plugin_api):
+    """POST /desktop/budget writes budget.yaml atomically and returns
+    the full budget() readout with the new limit reflected."""
+    out = plugin_api.desktop_set_budget({"scope": "global", "window": "daily", "limit_usd": 5.0})
+    assert out["ok"] is True
+    assert out["enabled"] is True
+    scopes = {s["scope"]: s for s in out["scopes"]}
+    assert "global/daily" in scopes
+    assert scopes["global/daily"]["limit_usd"] == 5.0
+
+    # Verify the file was actually written
+    import yaml
+
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    raw = yaml.safe_load((hermes_home / "telemetry" / "budget.yaml").read_text(encoding="utf-8"))
+    assert raw["budgets"]["global"]["daily_usd"] == 5.0
+
+
+def test_desktop_set_budget_validates_input(plugin_api):
+    """POST /desktop/budget rejects invalid scope, window, and amount."""
+    out = plugin_api.desktop_set_budget({"scope": "cron_job", "window": "daily", "limit_usd": 1.0})
+    assert out["ok"] is False
+    assert "scope" in out["error"]
+
+    out = plugin_api.desktop_set_budget({"scope": "global", "window": "annual", "limit_usd": 1.0})
+    assert out["ok"] is False
+    assert "window" in out["error"]
+
+    out = plugin_api.desktop_set_budget({"scope": "global", "window": "daily"})
+    assert out["ok"] is False
+    assert "limit_usd" in out["error"]
+
+    out = plugin_api.desktop_set_budget({"scope": "global", "window": "daily", "limit_usd": -5.0})
+    assert out["ok"] is False
+    assert ">= 0" in out["error"]
+
+
+def test_desktop_set_budget_monthly_window(plugin_api):
+    """POST /desktop/budget with window=monthly writes and returns the
+    monthly limit correctly."""
+    out = plugin_api.desktop_set_budget(
+        {"scope": "global", "window": "monthly", "limit_usd": 100.0}
+    )
+    assert out["ok"] is True
+    scopes = {s["scope"]: s for s in out["scopes"]}
+    assert "global/monthly" in scopes
+    assert scopes["global/monthly"]["limit_usd"] == 100.0
+
+
+def test_desktop_pause_cron_success(plugin_api, monkeypatch):
+    """POST /desktop/cron/{id}/pause calls pause_job and returns ok."""
+    import sys
+
+    # cron.jobs is not importable in tests — monkeypatch it
+    calls = []
+
+    class FakeJobs:
+        @staticmethod
+        def pause_job(job_id, reason=""):
+            calls.append((job_id, reason))
+
+    fake_cron = type("cron", (), {})()
+    fake_cron.jobs = FakeJobs()
+    monkeypatch.setitem(sys.modules, "cron", fake_cron)
+    monkeypatch.setitem(sys.modules, "cron.jobs", FakeJobs())
+
+    out = plugin_api.desktop_pause_cron("my-job", {"reason": "budget exhausted"})
+    assert out["ok"] is True
+    assert out["cron_job_id"] == "my-job"
+    assert out["reason"] == "budget exhausted"
+    assert len(calls) == 1
+    assert calls[0] == ("my-job", "budget exhausted")
+
+
+def test_desktop_pause_cron_default_reason(plugin_api, monkeypatch):
+    """POST /desktop/cron/{id}/pause without a body uses a default reason."""
+    import sys
+
+    calls = []
+
+    class FakeJobs:
+        @staticmethod
+        def pause_job(job_id, reason=""):
+            calls.append((job_id, reason))
+
+    fake_cron = type("cron", (), {})()
+    fake_cron.jobs = FakeJobs()
+    monkeypatch.setitem(sys.modules, "cron", fake_cron)
+    monkeypatch.setitem(sys.modules, "cron.jobs", FakeJobs())
+
+    out = plugin_api.desktop_pause_cron("job-a")
+    assert out["ok"] is True
+    assert "Desktop dashboard" in out["reason"]
+
+
+def test_desktop_pause_cron_runtime_error(plugin_api, monkeypatch):
+    """POST /desktop/cron/{id}/pause returns an error when pause_job
+    raises an exception at runtime (e.g. cron backend unavailable)."""
+    import sys
+
+    class FakeFailingJobs:
+        @staticmethod
+        def pause_job(job_id, reason=""):
+            raise RuntimeError("cron service unreachable")
+
+    monkeypatch.setitem(sys.modules, "cron.jobs", FakeFailingJobs())
+
+    out = plugin_api.desktop_pause_cron("bad-job")
+    assert out["ok"] is False
+    assert "cron service unreachable" in out["error"]

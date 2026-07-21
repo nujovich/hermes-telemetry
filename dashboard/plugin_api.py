@@ -936,3 +936,99 @@ def desktop_open_dashboard() -> dict:
         ),
         "parsed_host": urlparse(url).hostname,
     }
+
+
+# ---------------------------------------------------------------------------
+# Desktop plugin surface — write actions (Milestone 3)
+# ---------------------------------------------------------------------------
+@router.post("/desktop/budget")
+def desktop_set_budget(payload: dict) -> dict:
+    """Quick action: set budget cap (writes budget.yaml daily/monthly limits).
+
+    Accepts::
+
+        {"scope": "global", "window": "daily", "limit_usd": 5.0}
+
+    Writes atomically via temp file + os.replace, then returns fresh
+    budget status from ``budget()``.  Scope is restricted to ``"global"``
+    in this iteration (per-profile and per-cron write support follow in
+    a later milestone once the Desktop panel UX is settled).
+    """
+    try:
+        import yaml
+    except ImportError:
+        return {"ok": False, "error": "PyYAML not installed"}
+
+    scope: str = payload.get("scope", "global")
+    window: str = payload.get("window", "daily")
+    limit_usd = payload.get("limit_usd")
+
+    # Validate — scope is restricted to global for now
+    if scope != "global":
+        return {
+            "ok": False,
+            "error": f"invalid scope: {scope!r}. Desktop API supports global scope only.",
+        }
+    if window not in ("daily", "monthly"):
+        return {
+            "ok": False,
+            "error": f"invalid window: {window!r}. Use daily or monthly.",
+        }
+    if limit_usd is None:
+        return {"ok": False, "error": "limit_usd is required"}
+    try:
+        limit_usd = float(limit_usd)
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "limit_usd must be a number"}
+    if limit_usd < 0:
+        return {"ok": False, "error": "limit_usd must be >= 0"}
+
+    key = f"{window}_usd"
+    path = _budget_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    raw: dict = {}
+    if path.exists():
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            raw = {}
+
+    budgets = raw.setdefault("budgets", {})
+    budgets.setdefault(scope, {})[key] = limit_usd
+
+    # Atomic write — temp file + os.replace prevents the budget file
+    # watcher from reading a partial file on IN_MODIFY.
+    tmp = path.with_suffix(".yaml.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
+    os.replace(tmp, path)
+
+    return {"ok": True, **budget()}
+
+
+@router.post("/desktop/cron/{cron_id}/pause")
+def desktop_pause_cron(cron_id: str, payload: dict | None = None) -> dict:
+    """Quick action: pause a cron job for future runs.
+
+    Optional body: ``{"reason": "budget exhausted"}``.  Calls
+    ``cron.jobs.pause_job(cron_id, reason)`` and returns success or error.
+
+    The cron module is loaded lazily — on a Hermes installation where the
+    ``cron`` package is not importable (e.g. a minimal dashboard-only
+    deployment), the endpoint returns a clear error rather than crashing
+    the plugin.
+    """
+    reason = (payload or {}).get("reason") if payload else "Paused via Desktop dashboard"
+    try:
+        from cron.jobs import pause_job  # type: ignore
+
+        pause_job(cron_id, reason=reason)
+        return {"ok": True, "cron_job_id": cron_id, "reason": reason}
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "cron module not available in this environment",
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
