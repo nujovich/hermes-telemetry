@@ -2691,6 +2691,77 @@ def api_session_detail(session_id: str):
     }
 
 
+# ---------------------------------------------------------------------------
+# Session artifacts
+# ---------------------------------------------------------------------------
+_ARTIFACT_EXTENSIONS = {
+    ".md": "markdown",
+    ".txt": "text",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".py": "code",
+    ".js": "code",
+    ".ts": "code",
+    ".tsx": "code",
+    ".html": "code",
+    ".css": "code",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".gif": "image",
+    ".svg": "image",
+    ".webp": "image",
+    ".mp4": "video",
+    ".webm": "video",
+    ".mp3": "audio",
+    ".wav": "audio",
+    ".ogg": "audio",
+    ".pdf": "document",
+    ".csv": "data",
+    ".log": "log",
+}
+
+
+def _classify_artifact(filename: str) -> str:
+    lower = filename.lower()
+    for ext, kind in _ARTIFACT_EXTENSIONS.items():
+        if lower.endswith(ext):
+            return kind
+    return "other"
+
+
+def api_session_artifacts(session_id: str):
+    if not session_id:
+        return {"error": "session_id is required"}
+    session_dir = HERMES_HOME / "sessions" / session_id
+    if not session_dir.exists() or not session_dir.is_dir():
+        return {"session_id": session_id, "artifacts": [], "session_dir_exists": False}
+    files = []
+    try:
+        for entry in sorted(session_dir.iterdir(), key=lambda e: e.name.lower()):
+            if entry.is_file():
+                stat = entry.stat()
+                files.append(
+                    {
+                        "name": entry.name,
+                        "size_bytes": stat.st_size,
+                        "type": _classify_artifact(entry.name),
+                        "modified": datetime.fromtimestamp(
+                            stat.st_mtime, tz=timezone.utc
+                        ).isoformat(),
+                    }
+                )
+    except OSError:
+        return {"session_id": session_id, "artifacts": [], "session_dir_exists": True}
+    return {
+        "session_id": session_id,
+        "artifacts": files,
+        "session_dir_exists": True,
+        "artifact_count": len(files),
+    }
+
+
 def api_cache_efficiency(window_hours=24):
     since_clause_ts = _since_clause(window_hours, "ts")
     overall = _one(
@@ -3413,6 +3484,10 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/session-detail":
                 qs = parse_qs(parsed.query)
                 return self._json(api_session_detail(qs.get("session_id", [""])[0]))
+
+            if path == "/api/session-artifacts":
+                qs = parse_qs(parsed.query)
+                return self._json(api_session_artifacts(qs.get("session_id", [""])[0]))
 
             if path == "/api/request-detail":
                 qs = parse_qs(parsed.query)
