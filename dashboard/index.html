@@ -98,6 +98,33 @@
   .modal-error { color: #f85149; font-size: 12px; margin-top: 8px; display: none; }
   .modal-error.show { display: block; }
 
+  /* Artifact preview modal */
+  .artifact-modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.82); display: none; align-items: center; justify-content: center; z-index: 100001; }
+  .artifact-modal-overlay.open { display: flex !important; }
+  .artifact-modal { background: #0d1117; border: 1px solid #30363d; border-radius: 10px; width: 100%; max-width: 960px; max-height: 90vh; margin: 24px; display: flex; flex-direction: column; box-shadow: 0 12px 48px rgba(0,0,0,0.6); }
+  .artifact-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid #21262d; flex-shrink: 0; }
+  .artifact-modal-title { font-size: 15px; font-weight: 600; color: #e6edf3; word-break: break-all; display: flex; align-items: center; gap: 8px; }
+  .artifact-modal-close { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+  .artifact-modal-close:hover { background: #30363d; }
+  .artifact-modal-body { padding: 20px; overflow-y: auto; flex: 1; }
+  .artifact-modal-markdown { font-size: 14px; line-height: 1.7; color: #c9d1d9; }
+  .artifact-modal-markdown h1, .artifact-modal-markdown h2, .artifact-modal-markdown h3 { color: #e6edf3; margin: 14px 0 8px; }
+  .artifact-modal-markdown h1 { font-size: 20px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  .artifact-modal-markdown h2 { font-size: 17px; }
+  .artifact-modal-markdown h3 { font-size: 14px; }
+  .artifact-modal-markdown p { margin: 8px 0; }
+  .artifact-modal-markdown code { background: #161b22; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  .artifact-modal-markdown pre { background: #161b22; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.6; margin: 10px 0; border: 1px solid #21262d; }
+  .artifact-modal-markdown pre code { background: none; padding: 0; }
+  .artifact-modal-markdown ul, .artifact-modal-markdown ol { padding-left: 24px; margin: 8px 0; }
+  .artifact-modal-markdown a { color: #58a6ff; }
+  .artifact-modal-markdown blockquote { border-left: 3px solid #30363d; padding-left: 14px; color: #8b949e; margin: 10px 0; }
+  .artifact-modal-markdown table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+  .artifact-modal-markdown th, .artifact-modal-markdown td { border: 1px solid #30363d; padding: 8px 12px; font-size: 13px; text-align: left; }
+  .artifact-modal-markdown th { background: #161b22; font-weight: 600; }
+  .artifact-modal-image { max-width: 100%; max-height: 70vh; display: block; margin: 0 auto; border-radius: 6px; }
+  .artifact-modal-code { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: #c9d1d9; background: #161b22; padding: 16px; border-radius: 8px; overflow-x: auto; max-height: 70vh; border: 1px solid #21262d; }
+
   /* charts */
   .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
   .chart-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
@@ -374,6 +401,17 @@
       <button class="modal-btn cancel" onclick="closeBudgetModal()">Cancel</button>
       <button class="modal-btn save" onclick="saveBudget()">Save</button>
     </div>
+  </div>
+</div>
+
+<!-- Artifact Preview Modal -->
+<div class="artifact-modal-overlay" id="artifactModal" onclick="if(event.target===this) closeArtifactModal()">
+  <div class="artifact-modal" onclick="event.stopPropagation()">
+    <div class="artifact-modal-header">
+      <div class="artifact-modal-title" id="artifactModalTitle"></div>
+      <button class="artifact-modal-close" onclick="closeArtifactModal()">Close</button>
+    </div>
+    <div class="artifact-modal-body" id="artifactModalBody"><div class="loading" style="padding:24px">Loading...</div></div>
   </div>
 </div>
 
@@ -1569,6 +1607,7 @@ function renderArtifacts(data, sessionId) {
     html += `<div class="artifact-icon ${escHtml(iconClass)}">${artifactIcon(type)}</div>`;
     html += `<div class="artifact-name">${escHtml(a.name)}</div>`;
     html += `<div class="artifact-meta">${fmtSize(a.size_bytes)}</div>`;
+    html += `<button class="artifact-download" onclick="event.stopPropagation(); openArtifactModal('${escHtml(sessionId)}', '${escHtml(a.name)}', '${escHtml(type)}', event)" title="Fullscreen preview">Preview</button>`;
     html += `<a class="artifact-download" href="/api/session-artifact-content?session_id=${encodeURIComponent(sessionId)}&filename=${encodeURIComponent(a.name)}" onclick="event.stopPropagation()" download="${escHtml(a.name)}">Download</a>`;
     html += '</div>';
     html += `<div class="artifact-body" id="artifact-body-${i}"><div class="loading" style="padding:12px">Loading…</div></div>`;
@@ -1598,6 +1637,36 @@ async function toggleArtifact(headerEl, sessionId, filename, type) {
     body.innerHTML = '<div class="error-box">Failed to load artifact: ' + escHtml(err.message) + '</div>';
   }
 }
+
+async function openArtifactModal(sessionId, filename, type, event) {
+  if (event) event.stopPropagation();
+  const overlay = $('#artifactModal');
+  const title = $('#artifactModalTitle');
+  const body = $('#artifactModalBody');
+  title.innerHTML = artifactIcon(type) + ' ' + escHtml(filename);
+  body.innerHTML = '<div class="loading" style="padding:24px">Loading...</div>';
+  overlay.classList.add('open');
+  try {
+    const data = await fetchArtifactContent(sessionId, filename);
+    if (type === 'image') {
+      body.innerHTML = '<img class="artifact-modal-image" src="/api/session-artifact-content?session_id=' + encodeURIComponent(sessionId) + '&filename=' + encodeURIComponent(filename) + '" alt="' + escHtml(filename) + '" />';
+    } else if (type === 'markdown') {
+      body.innerHTML = '<div class="artifact-modal-markdown">' + simpleMarkdown(data.content) + '</div>';
+    } else {
+      body.innerHTML = '<div class="artifact-modal-code">' + escHtml(data.content) + '</div>';
+    }
+  } catch (err) {
+    body.innerHTML = '<div class="error-box">Failed to load artifact: ' + escHtml(err.message) + '</div>';
+  }
+}
+
+function closeArtifactModal() {
+  $('#artifactModal').classList.remove('open');
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeArtifactModal();
+});
 
 async function openSessionDetail(sessionId) {
   if (!sessionId) return;
