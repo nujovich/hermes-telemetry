@@ -1316,47 +1316,59 @@ def test_payload_cache_ttl_and_stale_refresh(tmp_path, serve_module, monkeypatch
     serve_module.ModelEfficiencyCache.reset_for_tests()
 
 
-def test_model_efficiency_refresh_reentrancy_guard(tmp_path, serve_module):
-    """ModelEfficiencyCache.refresh must not re-enter itself recursively."""
+def test_model_efficiency_refresh_while_base_refreshing(tmp_path, serve_module, monkeypatch):
+    """Per-key refresh must still compute while base ``_refresh_all`` holds ``_refreshing``.
+
+    ``_BackgroundPayloadCache._refresh_all`` sets ``self._refreshing`` then calls
+    ``refresh(**kwargs)`` for every default key. A local guard on that flag would
+    turn every legitimate per-key refresh into a silent no-op.
+    """
     serve_module.ModelEfficiencyCache.reset_for_tests()
     cache = serve_module.ModelEfficiencyCache.instance()
 
-    # Seed some data so the refresh has work to do.
     now = db._utcnow()
     db.start_run("sess-reentrant-1", model="gpt-5.4", platform="cli")
     db.record_llm_call("sess-reentrant-1", now, "gpt-5.4", "openai-codex", 1000, 200, 0.01, 120)
     db.record_tool_call("sess-reentrant-1", now, "search_files", True, 100)
     db.end_run("sess-reentrant-1", "ok")
 
-    # Replace _refresh_all with a no-op so we can test refresh() directly.
-    original_refresh_all = cache._refresh_all
-    cache._refresh_all = lambda: {"skipped": "test"}
+    compute_calls = {"n": 0}
+    original = serve_module._compute_model_efficiency_rows
+
+    def counting_compute(*args, **kwargs):
+        compute_calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(serve_module, "_compute_model_efficiency_rows", counting_compute)
 
     try:
-        # First refresh should succeed.
-        result1 = cache.refresh(window_hours=24, include_deleted=False, limit=50)
-        assert "window_hours" in result1
-
-        # Re-entrant call while still "refreshing" should be skipped.
+        # Simulate the base-class background loop holding the flag.
         cache._refreshing = True
-        result2 = cache.refresh(window_hours=24, include_deleted=False, limit=50)
-        assert result2 == {"skipped": "already refreshing"}
-
-        # After clearing the flag, refresh should work again.
-        cache._refreshing = False
-        result3 = cache.refresh(window_hours=24, include_deleted=False, limit=50)
-        assert "window_hours" in result3
+        result = cache.refresh(window_hours=24, include_deleted=True, limit=50)
+        assert "skipped" not in result, result
+        assert result.get("window_hours") == 24
+        assert compute_calls["n"] >= 1, "per-key refresh must still compute rows"
+        # Payload must have been written despite _refreshing=True.
+        cached = cache.get_rows(window_hours=24, limit=50, include_deleted=True)
+        assert isinstance(cached, list)
+        assert any(r.get("model") == "gpt-5.4" for r in cached)
     finally:
-        cache._refresh_all = original_refresh_all
+        cache._refreshing = False
         serve_module.ModelEfficiencyCache.reset_for_tests()
 
 
 def test_model_efficiency_sql_uses_window_filter(tmp_path, serve_module, monkeypatch):
-    """The DISTINCT JOIN in _compute_model_efficiency_rows must be bounded by the window."""
+    """DISTINCT JOIN must window-bound tool attribution and accept visibility params.
+
+    Regression coverage for two bugs:
+    1. ``WHERE lc.ts >= {since_clause}`` double-predicate (always empty).
+    2. Passing non-empty ``visible_params`` into a placeholder-less subquery
+       (``sqlite3.ProgrammingError`` when Hermes session metadata is available).
+    """
+    from datetime import timedelta
+
     serve_module.ModelEfficiencyCache.reset_for_tests()
 
-    # Seed data across two time windows.
-    from datetime import datetime, timedelta, timezone
     now_dt = datetime.now(timezone.utc)
     old_dt = now_dt - timedelta(hours=48)
     now = now_dt.isoformat()
@@ -1372,32 +1384,51 @@ def test_model_efficiency_sql_uses_window_filter(tmp_path, serve_module, monkeyp
     db.record_tool_call("sess-new-1", now, "search_files", True, 120)
     db.end_run("sess-new-1", "ok")
 
-    # Patch _rows to capture the SQL it runs.
-    captured_sql = []
+    # Non-empty visibility set + metadata_available forces visible_params to be
+    # non-empty on the main query (and used to crash the DISTINCT JOIN).
+    monkeypatch.setattr(
+        serve_module,
+        "_active_hermes_session_ids",
+        lambda: ({"sess-new-1", "sess-old-1"}, True),
+    )
+
+    captured = []
     original_rows = serve_module._rows
 
     def capturing_rows(sql, params=()):
-        captured_sql.append((sql, params))
+        captured.append((sql, params))
         return original_rows(sql, params)
 
     monkeypatch.setattr(serve_module, "_rows", capturing_rows)
 
     try:
-        # Request only the last 24 hours.
-        serve_module._compute_model_efficiency_rows(window_hours=24, limit=50, include_deleted=False)
-
-        # Find the DISTINCT JOIN SQL.
-        distinct_join_sql = None
-        for sql, params in captured_sql:
-            if "DISTINCT tc.session_id" in sql and "JOIN llm_calls" in sql:
-                distinct_join_sql = sql
-                break
-
-        assert distinct_join_sql is not None, "DISTINCT JOIN SQL not found"
-        # The SQL must include a WHERE clause with the window filter.
-        assert "WHERE lc.ts >=" in distinct_join_sql, (
-            "DISTINCT JOIN must be bounded by window filter to avoid full table scan. "
-            f"SQL: {distinct_join_sql}"
+        rows = serve_module._compute_model_efficiency_rows(
+            window_hours=24, limit=50, include_deleted=False
         )
+
+        models = {r["model"] for r in rows}
+        assert "gpt-5.4" in models
+        assert "gpt-4" not in models, "out-of-window session must be excluded"
+
+        new_row = next(r for r in rows if r["model"] == "gpt-5.4")
+        assert int(new_row["tool_calls"]) >= 1, (
+            "in-window session must keep tool attribution via DISTINCT JOIN"
+        )
+
+        distinct = next(
+            (
+                (sql, params)
+                for sql, params in captured
+                if "DISTINCT tc.session_id" in sql and "JOIN llm_calls" in sql
+            ),
+            None,
+        )
+        assert distinct is not None, "DISTINCT JOIN SQL not found"
+        sql, params = distinct
+        # Bare predicate splice — not ``WHERE lc.ts >= lc.ts >= …``.
+        assert "WHERE lc.ts >= lc.ts >=" not in sql
+        assert "WHERE lc.ts >=" in sql or "WHERE  lc.ts >=" in sql
+        # Placeholder-less subquery must not receive bindings.
+        assert params in ((), [], None) or len(params) == 0, params
     finally:
         serve_module.ModelEfficiencyCache.reset_for_tests()
