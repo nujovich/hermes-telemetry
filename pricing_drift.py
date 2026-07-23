@@ -98,6 +98,7 @@ def run(*, apply: bool = False, threshold_pct: float = 1.0, model: str | None = 
                 {
                     "provider": provider,
                     "model": write_key,
+                    "snapshot_id": row["id"],
                     "local_input": local_in,
                     "local_output": local_out,
                     "snap_input": float(snap_in),
@@ -189,12 +190,20 @@ def _apply_drift(drifted: list[dict]) -> int:
     hot-reloads pricing.py's cache. Returns the number of entries written.
 
     pricing.yaml is keyed by model only, so if the same model drifted under two
-    providers (run() keys canonical by (provider, model)), only the first is
-    written; a conflicting second rate is logged and skipped rather than silently
-    overwriting.
+    providers (run() keys canonical by (provider, model)), only one rate can be
+    pinned. We keep the MOST RECENT snapshot (highest snapshot_id) so a stale
+    older capture never wins over a fresh one — e.g. a custom provider and a
+    built-in provider sharing the same API where the built-in was captured later
+    (issue #84). A conflicting older rate is logged and skipped rather than
+    silently overwriting. Entries without a snapshot_id (direct callers/tests)
+    fall back to first-wins via a stable sort.
     """
     if not drifted:
         return 0
+
+    # Most-recent-first so the first write per model wins with the newest rate.
+    # Stable sort preserves original order for equal/absent ids (first-wins).
+    drifted = sorted(drifted, key=lambda d: -(d.get("snapshot_id") or 0))
 
     import yaml
 
@@ -225,9 +234,9 @@ def _apply_drift(drifted: list[dict]) -> int:
             if applied[target] != rates:
                 logger.warning(
                     "hermes-telemetry: conflicting core rates for model %r across "
-                    "providers (%s vs %s) — keeping the first, skipping the rest. "
-                    "pricing.yaml is keyed by model only, so per-provider rates "
-                    "cannot both be pinned.",
+                    "providers (kept %s, skipped %s) — keeping the most recent "
+                    "snapshot, skipping the rest. pricing.yaml is keyed by model "
+                    "only, so per-provider rates cannot both be pinned.",
                     d["model"],
                     applied[target],
                     rates,
