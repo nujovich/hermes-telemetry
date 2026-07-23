@@ -347,6 +347,88 @@ def session_detail(session_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Session artifacts
+# ---------------------------------------------------------------------------
+_ARTIFACT_EXTENSIONS = {
+    ".md": "markdown",
+    ".txt": "text",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".py": "code",
+    ".js": "code",
+    ".ts": "code",
+    ".tsx": "code",
+    ".html": "code",
+    ".css": "code",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".gif": "image",
+    ".svg": "image",
+    ".webp": "image",
+    ".mp4": "video",
+    ".webm": "video",
+    ".mp3": "audio",
+    ".wav": "audio",
+    ".ogg": "audio",
+    ".pdf": "document",
+    ".csv": "data",
+    ".log": "log",
+}
+
+
+def _classify_artifact(filename: str) -> str:
+    """Return artifact type based on file extension."""
+    lower = filename.lower()
+    for ext, kind in _ARTIFACT_EXTENSIONS.items():
+        if lower.endswith(ext):
+            return kind
+    return "other"
+
+
+def _scan_session_artifacts(session_id: str) -> dict:
+    """Scan the session directory for generated files (artifacts)."""
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    session_dir = hermes_home / "sessions" / session_id
+
+    if not session_dir.exists() or not session_dir.is_dir():
+        return {"session_id": session_id, "artifacts": [], "session_dir_exists": False}
+
+    files = []
+    try:
+        for entry in sorted(session_dir.iterdir(), key=lambda e: e.name.lower()):
+            if entry.is_file():
+                stat = entry.stat()
+                files.append(
+                    {
+                        "name": entry.name,
+                        "size_bytes": stat.st_size,
+                        "type": _classify_artifact(entry.name),
+                        "modified": datetime.fromtimestamp(
+                            stat.st_mtime, tz=timezone.utc
+                        ).isoformat(),
+                    }
+                )
+    except OSError:
+        return {"session_id": session_id, "artifacts": [], "session_dir_exists": True}
+
+    return {
+        "session_id": session_id,
+        "artifacts": files,
+        "session_dir_exists": True,
+        "artifact_count": len(files),
+    }
+
+
+@router.get("/session/{session_id}/artifacts")
+def session_artifacts(session_id: str) -> dict:
+    if not session_id:
+        return {"error": "session_id is required"}
+    return _scan_session_artifacts(session_id)
+
+
+# ---------------------------------------------------------------------------
 # Budget (read-only, global scope)
 # ---------------------------------------------------------------------------
 def _budget_path() -> Path:
