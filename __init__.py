@@ -778,8 +778,8 @@ def register(ctx) -> None:  # noqa: ANN001
     ctx.register_command(
         "budget",
         budget.handle,
-        description="Show/set spend budgets (global, per cron job, per sender)",
-        args_hint="[cron | set <scope> <window> <usd>]",
+        description="Show/set spend budgets (global, per cron job, per sender, per profile)",
+        args_hint="[cron | set <scope> [<id>] <window> <usd>]",
     )
 
     # ------------------------------------------------------------------

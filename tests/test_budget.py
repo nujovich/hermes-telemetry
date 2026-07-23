@@ -347,6 +347,49 @@ def test_budget_set_validation(tmp_path):
     assert "window" in budget.handle("set global yearly 5").lower()
 
 
+def test_budget_set_profile_default(tmp_path):
+    """`set profile <window> <usd>` (no id) writes per_profile.default."""
+    out = budget.handle("set profile daily 3.00")
+    assert "3.00" in out
+    assert "profile" in out.lower()
+    # default applies to any profile with no explicit override
+    assert budget._resolve_limits("profile", "anything")["daily_usd"] == 3.00
+
+
+def test_budget_set_profile_override(tmp_path):
+    """`set profile <id> <window> <usd>` writes per_profile.overrides.<id>."""
+    out = budget.handle("set profile faro monthly 50.00")
+    assert "50.00" in out
+    assert "faro" in out
+    assert budget._resolve_limits("profile", "faro")["monthly_usd"] == 50.00
+    # a different profile has no monthly limit (default not set)
+    assert "monthly_usd" not in budget._resolve_limits("profile", "other")
+
+
+def test_budget_set_profile_override_and_default_coexist(tmp_path):
+    budget.handle("set profile daily 2.00")  # default
+    budget.handle("set profile faro daily 25.00")  # override
+    assert budget._resolve_limits("profile", "faro")["daily_usd"] == 25.00
+    assert budget._resolve_limits("profile", "other")["daily_usd"] == 2.00
+
+
+def test_budget_set_global_rejects_id(tmp_path):
+    out = budget.handle("set global faro daily 5.00")
+    assert "global" in out.lower()
+    assert "no id" in out.lower()
+
+
+def test_budget_set_id_form_generic_for_cron(tmp_path):
+    """The optional-id override form works for any id-scope, not just profile."""
+    budget.handle("set cron_job nightly daily 3.00")
+    assert budget._resolve_limits("cron_job", "nightly")["daily_usd"] == 3.00
+
+
+def test_budget_set_usage_mentions_profile(tmp_path):
+    out = budget.handle("set")  # no args after subcommand → usage
+    assert "profile" in out.lower()
+
+
 def test_budget_status_no_config(tmp_path):
     out = budget.handle("")
     assert "No budgets configured" in out

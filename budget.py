@@ -628,16 +628,24 @@ def _cron_block() -> str:
     return "\n".join(lines)
 
 
-def _set_budget(scope: str, window: str, usd: float) -> str:
-    """Persist a limit to budget.yaml and hot-reload."""
+def _set_budget(scope: str, window: str, usd: float, scope_id: str = "") -> str:
+    """Persist a limit to budget.yaml and hot-reload.
+
+    ``scope_id`` targets a per-id override (``per_<scope>.overrides.<id>``);
+    omitted, the limit lands in the scope's shared ``default`` bucket. The
+    ``global`` scope takes no id. Mirrors the read structure in
+    ``_resolve_limits``.
+    """
     import os
 
     import yaml
 
-    if scope not in ("global", "cron_job", "sender"):
-        return f"Unknown scope {scope!r}. Use: global | cron_job | sender"
+    if scope not in ("global", "cron_job", "sender", "profile"):
+        return f"Unknown scope {scope!r}. Use: global | cron_job | sender | profile"
     if window not in ("daily", "monthly"):
         return f"Unknown window {window!r}. Use: daily | monthly"
+    if scope == "global" and scope_id:
+        return "The global scope takes no id. Use: set global <daily|monthly> <usd>"
     key = f"{window}_usd"
 
     path = _budget_path()
@@ -652,10 +660,17 @@ def _set_budget(scope: str, window: str, usd: float) -> str:
     budgets = raw.setdefault("budgets", {})
     if scope == "global":
         budgets.setdefault("global", {})[key] = usd
-    elif scope == "cron_job":
-        budgets.setdefault("per_cron_job", {}).setdefault("default", {})[key] = usd
-    else:  # sender
-        budgets.setdefault("per_sender", {}).setdefault("default", {})[key] = usd
+    else:
+        per_key = {
+            "cron_job": "per_cron_job",
+            "sender": "per_sender",
+            "profile": "per_profile",
+        }[scope]
+        node = budgets.setdefault(per_key, {})
+        if scope_id:
+            node.setdefault("overrides", {}).setdefault(scope_id, {})[key] = usd
+        else:
+            node.setdefault("default", {})[key] = usd
 
     # Atomic write: temp file + os.replace (POSIX atomic)
     # Prevents watchdog from reading partial/empty YAML on IN_MODIFY
@@ -664,7 +679,8 @@ def _set_budget(scope: str, window: str, usd: float) -> str:
         yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
     os.replace(tmp, path)
     reload_config()
-    return f"Set {scope} {window} budget to ${usd:.2f}. Saved to {path}."
+    target = f"{scope} '{scope_id}'" if scope_id else scope
+    return f"Set {target} {window} budget to ${usd:.2f}. Saved to {path}."
 
 
 def _days_ago_utc(days: int) -> str:
@@ -699,20 +715,28 @@ def handle(raw_args: str) -> str:
         return _forecast_block(scope, scope_id, window)
 
     if sub == "set":
-        if len(parts) != 4:
-            return "Usage: /budget set <global|cron_job|sender> <daily|monthly> <usd>"
-        _, scope, window, usd_s = parts
+        rest = parts[1:]
+        if len(rest) == 3:
+            scope, window, usd_s = rest
+            scope_id = ""
+        elif len(rest) == 4:
+            scope, scope_id, window, usd_s = rest
+        else:
+            return (
+                "Usage: /budget set <global|cron_job|sender|profile> [<id>] <daily|monthly> <usd>"
+            )
         try:
             usd = float(usd_s)
         except ValueError:
             return f"Invalid amount {usd_s!r} — must be a number, e.g. 5.00"
         if usd < 0:
             return "Amount must be non-negative."
-        return _set_budget(scope.lower(), window.lower(), usd)
+        return _set_budget(scope.lower(), window.lower(), usd, scope_id)
 
     return (
-        "Usage: /budget [cron | set <scope> <window> <usd>]\n"
-        "  /budget                       — status of all scopes\n"
-        "  /budget cron                  — per-cron-job budgets\n"
-        "  /budget set global daily 5.00 — set/raise a limit (hot-reloads)"
+        "Usage: /budget [cron | set <scope> [<id>] <window> <usd>]\n"
+        "  /budget                             — status of all scopes\n"
+        "  /budget cron                        — per-cron-job budgets\n"
+        "  /budget set global daily 5.00       — set/raise a limit (hot-reloads)\n"
+        "  /budget set profile faro monthly 50 — per-profile override (id optional)"
     )
