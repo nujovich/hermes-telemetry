@@ -124,6 +124,29 @@ def test_run_flags_coverage_gap():
     assert result["coverage_gap"] >= 1
 
 
+def test_apply_multi_provider_same_model_writes_most_recent_snapshot():
+    # Issue #84: a custom provider and a built-in provider (sharing the same API)
+    # both have snapshots for the same canonical model. The custom snapshot is
+    # older/stale ($0.435); the built-in one is newer/current ($0.348). Apply must
+    # write the MOST RECENT snapshot (highest id), not the alphabetically-first
+    # provider ("custom" < "nous"), which used to win and pinned the stale price.
+    import yaml
+    from hermes_telemetry import paths
+
+    db.record_pricing_snapshot("custom", "deepseek/deepseek-v4-pro", _snap(0.435, 0.87))
+    db.record_pricing_snapshot("nous", "deepseek/deepseek-v4-pro", _snap(0.348, 0.696))
+    _write_pricing_yaml({"deepseek/deepseek-v4-pro": {"input": 1.6, "output": 3.2}})
+
+    result = pricing_drift.run(apply=True)
+    assert result["written"] == 1
+
+    with open(paths.get_pricing_path()) as f:
+        data = yaml.safe_load(f)
+    entry = data["models"]["deepseek/deepseek-v4-pro"]
+    assert entry["input"] == 0.348  # newest snapshot (nous), not stale custom 0.435
+    assert entry["output"] == 0.696
+
+
 def test_run_model_filter():
     db.record_pricing_snapshot("nous", "a", _snap(0.435, 0.87))
     db.record_pricing_snapshot("nous", "b", _snap(0.435, 0.87))

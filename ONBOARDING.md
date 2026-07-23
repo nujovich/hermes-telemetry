@@ -784,8 +784,10 @@ case) surfaces instead of silently inflating cost:
 - **Dry-run by default**; `--apply` merges the snapshot input/output rates back
   into `pricing.yaml` (never clobber), tags each repaired entry `_source:
   core-snapshot`, and hot-reloads. Because `pricing.yaml` is keyed by model only,
-  a model that drifted under two providers is written once (first wins; a
-  conflicting second rate is logged and skipped). Routes through
+  a model that drifted under two providers is written once — the **most recent
+  snapshot wins** (highest `snapshot_id`), so a stale older capture from one
+  provider never overwrites a fresher one from another sharing the same API
+  (issue #84); a conflicting older rate is logged and skipped. Routes through
   `paths.get_pricing_path()` (resolved at call time, so `HERMES_TELEMETRY_HOME`
   outranks `HERMES_HOME` — same as every other pricing.yaml reader/writer).
   `--model` limits to one canonical model; `--json` for machine output. No schema
