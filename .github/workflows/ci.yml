@@ -7,11 +7,24 @@ on:
   # pull_request_target (not pull_request) so CI runs on PRs from forks without
   # the manual "Approve and run" gate. The workflow definition always comes from
   # the base branch (main = trusted); each job explicitly checks out the PR head
-  # to exercise the contributor's code. SAFE HERE because this workflow uses NO
-  # secrets and GITHUB_TOKEN is read-only. If a secret is ever added below, this
-  # trigger MUST be revisited — pull_request_target exposes secrets to fork code.
+  # to exercise the contributor's code.
+  #
+  # SECURITY — this runs UNTRUSTED fork code in a pull_request_target context, so
+  # the checkout steps set allow-unsafe-pr-checkout: true. That is only safe here
+  # because ALL of the following hold:
+  #   * no secrets are referenced anywhere in this workflow;
+  #   * the token is read-only (permissions: contents: read below);
+  #   * nothing is cached (no actions/cache, no `cache:` on setup-python).
+  # If ANY of those change (add a secret, widen permissions, add a cache), this
+  # becomes a "pwn request" hole — revisit the trigger before doing so.
   pull_request_target:
     branches: [main]
+
+# Least privilege: fork code executes here, so the token can only read a public
+# repo (which the fork author can do anyway). Do not widen without re-reading the
+# SECURITY note above.
+permissions:
+  contents: read
 
 concurrency:
   # Scope by PR number (pull_request_target sets github.ref to the base branch,
@@ -28,9 +41,12 @@ jobs:
     steps:
       # Check out the PR head under pull_request_target (defaults to base ref
       # otherwise). On push events the ref is empty → checkout uses the default.
+      # allow-unsafe-pr-checkout is required to fetch fork code here; safe only
+      # under the constraints in the SECURITY note at the top of this file.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          allow-unsafe-pr-checkout: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -88,6 +104,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          allow-unsafe-pr-checkout: true
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
