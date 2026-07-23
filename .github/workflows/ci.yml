@@ -3,11 +3,20 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
+  workflow_dispatch: # manual trigger (useful for smoke-testing the workflow)
+  # pull_request_target (not pull_request) so CI runs on PRs from forks without
+  # the manual "Approve and run" gate. The workflow definition always comes from
+  # the base branch (main = trusted); each job explicitly checks out the PR head
+  # to exercise the contributor's code. SAFE HERE because this workflow uses NO
+  # secrets and GITHUB_TOKEN is read-only. If a secret is ever added below, this
+  # trigger MUST be revisited — pull_request_target exposes secrets to fork code.
+  pull_request_target:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Scope by PR number (pull_request_target sets github.ref to the base branch,
+  # so all PRs would otherwise share one group and cancel each other).
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -17,7 +26,11 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
+      # Check out the PR head under pull_request_target (defaults to base ref
+      # otherwise). On push events the ref is empty → checkout uses the default.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -71,7 +84,10 @@ jobs:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
 
     steps:
+      # See lint job: check out the PR head so tests run the contributor's code.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
