@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+  workflow_dispatch: # manual trigger (useful for smoke-testing the workflow)
   # pull_request_target (not pull_request) so CI runs on PRs from forks without
   # the manual "Approve and run" gate. The workflow definition always comes from
   # the base branch (main = trusted); each job explicitly checks out the PR head
