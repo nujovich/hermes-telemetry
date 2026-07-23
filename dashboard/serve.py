@@ -2762,6 +2762,40 @@ def api_session_artifacts(session_id: str):
     }
 
 
+def api_session_artifact_content(session_id: str, filename: str):
+    """Serve the raw content of a session artifact file."""
+    if not session_id:
+        return {"error": "session_id is required"}
+    if not filename:
+        return {"error": "filename is required"}
+    session_dir = HERMES_HOME / "sessions" / session_id
+    file_path = session_dir / filename
+    # Path traversal guard: resolved path must stay inside session_dir
+    try:
+        resolved = file_path.resolve()
+        session_resolved = session_dir.resolve()
+        if (
+            not str(resolved).startswith(str(session_resolved) + os.sep)
+            and resolved != session_resolved
+        ):
+            return {"error": "invalid filename"}
+    except (OSError, ValueError):
+        return {"error": "invalid filename"}
+    if not file_path.is_file():
+        return {"error": "file not found"}
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return {"error": f"failed to read file: {exc}"}
+    return {
+        "session_id": session_id,
+        "filename": filename,
+        "size_bytes": file_path.stat().st_size,
+        "content": content,
+        "type": _classify_artifact(filename),
+    }
+
+
 def api_cache_efficiency(window_hours=24):
     since_clause_ts = _since_clause(window_hours, "ts")
     overall = _one(
@@ -3488,6 +3522,15 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/session-artifacts":
                 qs = parse_qs(parsed.query)
                 return self._json(api_session_artifacts(qs.get("session_id", [""])[0]))
+
+            if path == "/api/session-artifact-content":
+                qs = parse_qs(parsed.query)
+                return self._json(
+                    api_session_artifact_content(
+                        qs.get("session_id", [""])[0],
+                        qs.get("filename", [""])[0],
+                    )
+                )
 
             if path == "/api/request-detail":
                 qs = parse_qs(parsed.query)

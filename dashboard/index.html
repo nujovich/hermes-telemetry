@@ -206,6 +206,43 @@
   .drawer-close { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
   .drawer-section { margin-bottom: 24px; }
   .drawer-section h4 { font-size: 13px; color: #e6edf3; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.4px; }
+
+  /* Artifacts */
+  .artifact-list { display: flex; flex-direction: column; gap: 8px; }
+  .artifact-item { background: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
+  .artifact-item-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; }
+  .artifact-item-header:hover { background: #1c2128; }
+  .artifact-icon { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; font-size: 14px; flex-shrink: 0; }
+  .artifact-icon.markdown { background: #1a2332; color: #58a6ff; }
+  .artifact-icon.text { background: #1a2332; color: #8b949e; }
+  .artifact-icon.code { background: #1a2320; color: #3fb950; }
+  .artifact-icon.json, .artifact-icon.yaml, .artifact-icon.data { background: #231a1a; color: #d29922; }
+  .artifact-icon.image { background: #231a2e; color: #bc8cff; }
+  .artifact-icon.document { background: #1a1a23; color: #f78166; }
+  .artifact-icon.other { background: #21262d; color: #8b949e; }
+  .artifact-name { flex: 1; font-size: 13px; color: #c9d1d9; word-break: break-all; }
+  .artifact-meta { font-size: 11px; color: #8b949e; white-space: nowrap; }
+  .artifact-body { padding: 0 14px 14px; display: none; }
+  .artifact-body.open { display: block; }
+  .artifact-markdown { font-size: 13px; line-height: 1.6; color: #c9d1d9; }
+  .artifact-markdown h1, .artifact-markdown h2, .artifact-markdown h3 { color: #e6edf3; margin: 12px 0 6px; }
+  .artifact-markdown h1 { font-size: 18px; }
+  .artifact-markdown h2 { font-size: 15px; }
+  .artifact-markdown h3 { font-size: 13px; }
+  .artifact-markdown p { margin: 6px 0; }
+  .artifact-markdown code { background: #21262d; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  .artifact-markdown pre { background: #0d1117; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; line-height: 1.5; margin: 8px 0; }
+  .artifact-markdown pre code { background: none; padding: 0; }
+  .artifact-markdown ul, .artifact-markdown ol { padding-left: 20px; margin: 6px 0; }
+  .artifact-markdown a { color: #58a6ff; }
+  .artifact-markdown blockquote { border-left: 3px solid #30363d; padding-left: 12px; color: #8b949e; margin: 8px 0; }
+  .artifact-markdown table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  .artifact-markdown th, .artifact-markdown td { border: 1px solid #30363d; padding: 6px 10px; font-size: 12px; text-align: left; }
+  .artifact-markdown th { background: #161b22; }
+  .artifact-raw { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; color: #c9d1d9; background: #0d1117; padding: 12px; border-radius: 6px; max-height: 400px; overflow-y: auto; line-height: 1.5; }
+  .artifact-download { display: inline-flex; align-items: center; gap: 4px; color: #58a6ff; font-size: 12px; text-decoration: none; padding: 4px 8px; border: 1px solid #30363d; border-radius: 4px; margin-left: 8px; }
+  .artifact-download:hover { background: #1c2128; }
+  .artifact-empty { color: #8b949e; font-size: 13px; padding: 12px 0; }
 </style>
 </head>
 <body>
@@ -1466,6 +1503,102 @@ function renderSessionDetail(data) {
   return html;
 }
 
+function artifactIcon(type) {
+  const icons = {
+    markdown: '<svg width="14" height="14" viewBox="0 0 16 16"><path fill="currentColor" d="M14.85 2.35l-1.2-1.2a.5.5 0 00-.35-.15H2.5a.5.5 0 00-.5.5v13a.5.5 0 00.5.5h11a.5.5 0 00.5-.5V2.7a.5.5 0 00-.15-.35zM13 14H3V2h9.3L13 2.7V14zM4 4h5v1H4V4zm0 2h8v1H4V6zm0 2h8v1H4V8zm0 2h5v1H4v-1z"/></svg>',
+    text: '<svg width="14" height="14" viewBox="0 0 16 16"><path fill="currentColor" d="M2 1h12a1 1 0 011 1v12a1 1 0 01-1 1H2a1 1 0 01-1-1V2a1 1 0 011-1zm1 2v2h10V3H3zm0 4v2h10V7H3zm0 4v2h7v-2H3z"/></svg>',
+    code: '<svg width="14" height="14" viewBox="0 0 16 16"><path fill="currentColor" d="M4.72 4.22a.75.75 0 011.06 1.06L2.06 9l3.72 3.72a.75.75 0 11-1.06 1.06L.47 9.53a.75.75 0 010-1.06l4.25-4.25zm6.56 0a.75.75 0 10-1.06 1.06L13.94 9l-3.72 3.72a.75.75 0 101.06 1.06l4.25-4.25a.75.75 0 000-1.06L11.28 4.22z"/></svg>',
+    json: '<svg width="14" height="14" viewBox="0 0 16 16"><path fill="currentColor" d="M2 1h12a1 1 0 011 1v12a1 1 0 01-1 1H2a1 1 0 01-1-1V2a1 1 0 011-1zm1 2v10h10V3H3zm2 2h1v1H5V5zm2 0h4v1H7V5zm0 2h4v1H7V7zm0 2h4v1H7V9zm-2 0h1v1H5V9zm-2 2h1v1H3v-1zm2 0h1v1H5v-1zm2 0h4v1H7v-1z"/></svg>',
+    image: '<svg width="14" height="14" viewBox="0 0 16 16"><path fill="currentColor" d="M1.5 1h13l.5.5v13l-.5.5h-13l-.5-.5v-13l.5-.5zM2 2v12h12V2H2zm2 2l2.5 3L8 5.5 11 9.5l2-2.5V13H3V4h1zm2.5 2a1.5 1.5 0 110-3 1.5 1.5 0 010 3z"/></svg>',
+    document: '<svg width="14" height="14" viewBox="0 0 16 16"><path fill="currentColor" d="M2 1h8.3l3.7 3.7V14a1 1 0 01-1 1H2a1 1 0 01-1-1V2a1 1 0 011-1zm1 1v11h10V5h-3V2H3zm7 1h2.3L10 2.7V3z"/></svg>',
+    other: '<svg width="14" height="14" viewBox="0 0 16 16"><path fill="currentColor" d="M2 1h12a1 1 0 011 1v12a1 1 0 01-1 1H2a1 1 0 01-1-1V2a1 1 0 011-1zm1 2v10h10V3H3z"/></svg>',
+  };
+  return icons[type] || icons.other;
+}
+
+function fmtSize(bytes) {
+  if (bytes == null) return '—';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+function simpleMarkdown(text) {
+  let html = escHtml(text);
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(m, lang, code) {
+    return '<pre><code>' + code + '</code></pre>';
+  });
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+  html = html.replace(/^[*-] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/\n\n/g, '</p><p>');
+  html = '<p>' + html + '</p>';
+  html = html.replace(/<p><\/p>/g, '');
+  return html;
+}
+
+async function fetchArtifactContent(sessionId, filename) {
+  const url = `/api/session-artifact-content?session_id=${encodeURIComponent(sessionId)}&filename=${encodeURIComponent(filename)}`;
+  const data = await fetchJSON(url);
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+function renderArtifacts(data, sessionId) {
+  let html = '<div class="drawer-section"><h4>Artifacts</h4>';
+  const artifacts = data?.artifacts || [];
+  if (!artifacts.length) {
+    html += '<div class="artifact-empty">No artifacts found for this session.</div></div>';
+    return html;
+  }
+  html += '<div class="artifact-list">';
+  for (let i = 0; i < artifacts.length; i++) {
+    const a = artifacts[i];
+    const type = a.type || 'other';
+    const iconClass = type === 'yaml' ? 'json' : type;
+    html += '<div class="artifact-item">';
+    html += `<div class="artifact-item-header" onclick="toggleArtifact(this, '${escHtml(sessionId)}', '${escHtml(a.name)}', '${escHtml(type)}')">`;
+    html += `<div class="artifact-icon ${escHtml(iconClass)}">${artifactIcon(type)}</div>`;
+    html += `<div class="artifact-name">${escHtml(a.name)}</div>`;
+    html += `<div class="artifact-meta">${fmtSize(a.size_bytes)}</div>`;
+    html += `<a class="artifact-download" href="/api/session-artifact-content?session_id=${encodeURIComponent(sessionId)}&filename=${encodeURIComponent(a.name)}" onclick="event.stopPropagation()" download="${escHtml(a.name)}">Download</a>`;
+    html += '</div>';
+    html += `<div class="artifact-body" id="artifact-body-${i}"><div class="loading" style="padding:12px">Loading…</div></div>`;
+    html += '</div>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+async function toggleArtifact(headerEl, sessionId, filename, type) {
+  const item = headerEl.parentElement;
+  const body = item.querySelector('.artifact-body');
+  if (!body) return;
+  const wasOpen = body.classList.contains('open');
+  document.querySelectorAll('.artifact-body.open').forEach(b => b.classList.remove('open'));
+  if (wasOpen) return;
+  body.classList.add('open');
+  body.innerHTML = '<div class="loading" style="padding:12px">Loading…</div>';
+  try {
+    const data = await fetchArtifactContent(sessionId, filename);
+    if (type === 'markdown') {
+      body.innerHTML = '<div class="artifact-markdown">' + simpleMarkdown(data.content) + '</div>';
+    } else {
+      body.innerHTML = '<div class="artifact-raw">' + escHtml(data.content) + '</div>';
+    }
+  } catch (err) {
+    body.innerHTML = '<div class="error-box">Failed to load artifact: ' + escHtml(err.message) + '</div>';
+  }
+}
+
 async function openSessionDetail(sessionId) {
   if (!sessionId) return;
   const requestId = ++latestDrawerRequestId;
@@ -1478,7 +1611,20 @@ async function openSessionDetail(sessionId) {
     if (requestId !== latestDrawerRequestId) return;
     $('#sessionDrawerTitle').textContent = `Session detail · ${data?.run?.platform || 'session'}`;
     $('#sessionDrawerSubtitle').textContent = sessionId;
-    $('#sessionDrawerBody').innerHTML = renderSessionDetail(data);
+    let html = renderSessionDetail(data);
+    // Fetch artifacts
+    try {
+      const artifactsData = await fetchJSON(`/api/session-artifacts?session_id=${encodeURIComponent(sessionId)}`);
+      if (requestId === latestDrawerRequestId) {
+        html += renderArtifacts(artifactsData, sessionId);
+      }
+    } catch (artErr) {
+      // Artifacts are non-critical; silently skip if unavailable
+      html += '<div class="drawer-section"><h4>Artifacts</h4><div class="artifact-empty">Unable to load artifacts.</div></div>';
+    }
+    if (requestId === latestDrawerRequestId) {
+      $('#sessionDrawerBody').innerHTML = html;
+    }
   } catch (err) {
     if (requestId !== latestDrawerRequestId) return;
     $('#sessionDrawerBody').innerHTML = `<div class="error-box">Failed to load session detail: ${escHtml(err.message)}</div>`;
