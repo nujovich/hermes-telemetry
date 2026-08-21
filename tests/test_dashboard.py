@@ -1432,3 +1432,304 @@ def test_model_efficiency_sql_uses_window_filter(tmp_path, serve_module, monkeyp
         assert params in ((), [], None) or len(params) == 0, params
     finally:
         serve_module.ModelEfficiencyCache.reset_for_tests()
+
+
+# --- Tests added in fix-3 for 5-min spike prevention ---
+
+
+def test_is_all_time_kwargs_uses_window_hours_only(serve_module):
+    """Background warm must skip real all-time shapes.
+
+    Real ``DEFAULT_KEYS`` in every cache pair ``window_hours=0`` with
+    ``limit_days >= 3650``; the helper intentionally checks ``window_hours``
+    only and ignores a stand-alone ``limit_days`` marker because no live
+    cache relies on that shape and a synthetic test combo would give false
+    coverage. This test pins that contract.
+    """
+    helper = serve_module._BackgroundPayloadCache._is_all_time_kwargs
+    # Empty / missing -> not all-time (must not blow up on missing keys).
+    assert helper({}) is False
+    assert helper(None) is False
+    # The real shape.
+    assert helper({"window_hours": 0}) is True
+    assert helper({"window_hours": 0, "limit_days": 3650}) is True
+    assert helper({"window_hours": 0, "limit_days": 4000}) is True
+    # Non-all-time windows stay cached.
+    assert helper({"window_hours": 24}) is False
+    assert helper({"window_hours": 168}) is False
+    assert helper({"window_hours": 720}) is False
+    # Garbage values are tolerated.
+    assert helper({"window_hours": "0"}) is True
+    assert helper({"window_hours": "oops"}) is False
+
+
+def test_refresh_all_skips_all_time_kwargs(serve_module, tmp_path, monkeypatch):
+    """Background warm must skip all-time kwargs.
+
+    Those scan the entire history and were the dominant 5-min spike source.
+    On-demand refresh() from a request path is unaffected.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "telemetry.db"
+    # The cache's _write_cache needs the endpoint_payload_cache table.
+    # Build a minimal schema so the test is self-contained.
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE endpoint_payload_cache (
+            cache_name TEXT,
+            cache_key TEXT,
+            payload_json TEXT NOT NULL,
+            rows_count INTEGER NOT NULL DEFAULT 0,
+            built_at TEXT NOT NULL,
+            PRIMARY KEY (cache_name, cache_key)
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    calls = []
+
+    class DemoCache(serve_module._BackgroundPayloadCache):
+        CACHE_NAME = "demo-skip"
+        DEFAULT_REFRESH_SECONDS = 60
+        DEFAULT_KEYS = (
+            {"window_hours": 24},
+            {"window_hours": 168},
+            {"window_hours": 0},  # all-time -> skip in background cadence
+        )
+
+        def cache_key(self, **kw):
+            return f"{kw.get('window_hours')}-{kw.get('limit_days', '')}"
+
+        def compute_rows(self, **kw):
+            calls.append((kw.get("window_hours"), kw.get("limit_days")))
+            return []
+
+    cache = DemoCache(db_path)
+    # Default background cadence skips all-time.
+    cache._refresh_all()
+    assert sorted(calls) == [(24, None), (168, None)], calls
+    # Operator-triggered refresh-all with include_all_time=True rebuilds it.
+    calls.clear()
+    cache._refresh_all(include_all_time=True)
+    assert sorted(calls) == [
+        (0, None),
+        (24, None),
+        (168, None),
+    ], calls
+    # On-demand refresh() always computes the requested kwargs regardless
+    # of the background cadence.
+    calls.clear()
+    cache.refresh(window_hours=0)
+    assert calls == [(0, None)]
+
+
+def test_refresh_all_skips_all_time_but_evicts_stale_entries(serve_module, tmp_path, monkeypatch):
+    """Documented tradeoff: with all-time skipped from background cadence,
+    a low-traffic all-time view goes stale past ``MAX_ENTRY_AGE_SECONDS``
+    (6h by default) and is evicted; the next request recomputes it.
+
+    Eviction still runs at the end of every ``_refresh_all`` regardless of
+    which keys were refreshed. This test pins that behavior so the
+    tradeoff can't silently regress.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "telemetry.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE endpoint_payload_cache (
+            cache_name TEXT,
+            cache_key TEXT,
+            payload_json TEXT NOT NULL,
+            rows_count INTEGER NOT NULL DEFAULT 0,
+            built_at TEXT NOT NULL,
+            PRIMARY KEY (cache_name, cache_key)
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    class DemoCache(serve_module._BackgroundPayloadCache):
+        CACHE_NAME = "demo-evict"
+        DEFAULT_REFRESH_SECONDS = 60
+        MAX_ENTRY_AGE_SECONDS = 1  # 1-second TTL so the test stays fast
+        DEFAULT_KEYS = ({"window_hours": 24}, {"window_hours": 0})
+
+        def cache_key(self, **kw):
+            return f"wh-{kw.get('window_hours')}"
+
+        def compute_rows(self, **kw):
+            return []
+
+    cache = DemoCache(db_path)
+    # Seed an all-time row.
+    cache.refresh(window_hours=0)
+    # Wait past MAX_ENTRY_AGE_SECONDS so the row is stale before the
+    # background tick runs eviction.
+    import time
+
+    time.sleep(1.2)
+    # Background cadence skips all-time but still evicts the stale row
+    # via _evict_locked() at the end of _refresh_all().
+    cache._refresh_all()
+    with cache._cond:
+        rows = cache._conn.execute(
+            "SELECT cache_key FROM endpoint_payload_cache WHERE cache_name = ?",
+            (cache.CACHE_NAME,),
+        ).fetchall()
+    # Only the freshly-refreshed 24h row survives; the un-refreshed all-time
+    # row was evicted because its built_at exceeded MAX_ENTRY_AGE_SECONDS.
+    assert [r["cache_key"] for r in rows] == ["wh-24"], rows
+
+
+def test_refresh_all_include_all_time_flag_rebuilds_all_time(serve_module, tmp_path, monkeypatch):
+    """The ``include_all_time=True`` opt-in rebuilds the all-time row even
+    from ``_refresh_all`` — that's the path used by
+    ``api_model_efficiency_refresh(window_hours=None)``.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "telemetry.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE endpoint_payload_cache (
+            cache_name TEXT,
+            cache_key TEXT,
+            payload_json TEXT NOT NULL,
+            rows_count INTEGER NOT NULL DEFAULT 0,
+            built_at TEXT NOT NULL,
+            PRIMARY KEY (cache_name, cache_key)
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    calls = []
+
+    class DemoCache(serve_module._BackgroundPayloadCache):
+        CACHE_NAME = "demo-optin"
+        DEFAULT_REFRESH_SECONDS = 60
+        DEFAULT_KEYS = ({"window_hours": 24}, {"window_hours": 0})
+
+        def cache_key(self, **kw):
+            return f"wh-{kw.get('window_hours')}"
+
+        def compute_rows(self, **kw):
+            calls.append(kw.get("window_hours"))
+            return []
+
+    cache = DemoCache(db_path)
+    cache._refresh_all(include_all_time=True)
+    assert sorted(calls) == [0, 24], calls
+
+
+def test_run_stagger_offset_is_deterministic_per_cache(serve_module):
+    """The per-cache startup offset is deterministic across restarts.
+
+    Calls the production helper directly — no inline formula duplication.
+    """
+    offsets = {}
+    for name in (
+        "providers",
+        "provider-health",
+        "daily-token-chart",
+        "daily-model-chart",
+        "model-efficiency",
+    ):
+        offsets[name] = serve_module._BackgroundPayloadCache._startup_jitter_seconds(name)
+    # All within [0, 30) and not all the same (otherwise the stagger is dead code).
+    assert all(0 <= v < 30 for v in offsets.values()), offsets
+    assert len(set(offsets.values())) > 1, offsets
+    # Same input -> same output across calls.
+    for name in offsets:
+        a = serve_module._BackgroundPayloadCache._startup_jitter_seconds(name)
+        b = serve_module._BackgroundPayloadCache._startup_jitter_seconds(name)
+        assert a == b == offsets[name], (name, a, b, offsets[name])
+    # Empty / missing cache name must not raise; must return 0 (no jitter).
+    assert serve_module._BackgroundPayloadCache._startup_jitter_seconds("") == 0
+
+
+def test_run_stagger_does_not_hold_condition_lock(serve_module, tmp_path, monkeypatch):
+    """Regression: the startup-jitter wait must release ``self._cond`` so
+    other cache methods (which take ``with self._cond:``) aren't blocked
+    for the full jitter duration after a restart.
+    """
+    import sqlite3
+    import threading
+
+    db_path = tmp_path / "telemetry.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE endpoint_payload_cache (
+            cache_name TEXT,
+            cache_key TEXT,
+            payload_json TEXT NOT NULL,
+            rows_count INTEGER NOT NULL DEFAULT 0,
+            built_at TEXT NOT NULL,
+            PRIMARY KEY (cache_name, cache_key)
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    # Force a long deterministic jitter so the test has time to probe the
+    # lock state from another thread.
+    monkeypatch.setattr(
+        serve_module._BackgroundPayloadCache,
+        "_startup_jitter_seconds",
+        staticmethod(lambda name: 3),  # 3-second wait
+    )
+
+    class DemoCache(serve_module._BackgroundPayloadCache):
+        CACHE_NAME = "demo-lock"
+        DEFAULT_REFRESH_SECONDS = 60
+        DEFAULT_KEYS = ({"window_hours": 24},)
+
+        def cache_key(self, **kw):
+            return f"wh-{kw.get('window_hours')}"
+
+        def compute_rows(self, **kw):
+            return []
+
+    cache = DemoCache(db_path)
+    runner = threading.Thread(target=cache._run, daemon=True)
+    runner.start()
+    try:
+        # Give the runner time to enter the wait block.
+        import time
+
+        time.sleep(0.3)
+
+        # Try to acquire self._cond from another thread. If the wait is
+        # holding the lock via Event.wait, this times out. If it's the
+        # correct Condition.wait, it acquires immediately.
+        acquired = threading.Event()
+
+        def _probe():
+            # ``_cond`` is a Condition; its underlying lock is the test.
+            if cache._cond.acquire(timeout=1.0):
+                cache._cond.release()
+                acquired.set()
+
+        probe_thread = threading.Thread(target=_probe, daemon=True)
+        probe_thread.start()
+        probe_thread.join(timeout=2.0)
+        assert acquired.is_set(), (
+            "startup-jitter wait is holding self._cond — "
+            "use self._cond.wait(timeout=...) instead of self._stop.wait()"
+        )
+    finally:
+        cache._stop.set()
+        with cache._cond:
+            cache._cond.notify_all()
+        runner.join(timeout=2.0)

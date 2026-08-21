@@ -2087,3 +2087,94 @@ Both surfaces are upgraded with a single `git pull` in
 `~/.hermes/plugins/hermes-telemetry`. The manifest version is pinned to
 `__version__` by `test_plugin_version_matches_package`, so a release tag
 implicitly ships both surfaces in lockstep.
+
+---
+
+## Dashboard Cache Refresh Spike Prevention
+
+The five `_BackgroundPayloadCache` subclasses
+(`ProvidersCache`, `ProviderHealthCache`, `DailyTokenChartCache`,
+`DailyModelChartCache`, `ModelEfficiencyCache`) all share
+`DEFAULT_REFRESH_SECONDS = 300` and a single shared SQLite connection
+(`self._conn`). Three design decisions were added to prevent the
+synchronized 5-minute CPU/temp spike that resulted.
+
+### 1. Skip all-time keys from background cadence
+
+`window_hours=0` (and the always-paired `limit_days >= 3650` marker)
+asks the underlying query for the entire `tool_calls` history. On a
+busy host that's 10y+ of rows — orders of magnitude more work than the
+24h / 168h / 720h windows. Skipping these from `_refresh_all()` drops
+the worst contributor to the spike.
+
+The skip is gated by `_BackgroundPayloadCache._is_all_time_kwargs()`,
+which intentionally checks `window_hours` only — every live `DEFAULT_KEYS`
+in every cache pairs `window_hours=0` with `limit_days >= 3650`, so the
+single check covers every real shape. A standalone `limit_days` branch
+would be untestable against real usage and risks giving false coverage
+with synthetic test combos.
+
+### 2. Stagger initial refresh across caches
+
+Each cache's `_run()` waits a deterministic 0–29s offset (derived from
+`CACHE_NAME`) before its first refresh. Same input → same offset across
+restarts, so timing doesn't thrash.
+
+**Important**: the wait uses `self._cond.wait(timeout=jitter)` — NOT
+`self._stop.wait(timeout=jitter)`. `Event.wait()` does not release the
+Condition's underlying lock, so the older code held `self._cond` for the
+full jitter duration after every restart and blocked every other method
+that takes `with self._cond:` (`_cache_row`, `_write_cache`,
+`_kick_async_refresh`, `_evict_locked`). The replacement uses
+`Condition.wait()`, which releases the lock while waiting. The
+`test_run_stagger_does_not_hold_condition_lock` test pins this contract
+with a 3-second jitter and a probe thread that tries to acquire
+`self._cond`.
+
+### 3. Explicit refresh still rebuilds all-time
+
+`_refresh_all()` takes an `include_all_time=False` default. The
+background cadence never sets it; the operator-triggered refresh path
+(`api_model_efficiency_refresh(window_hours=None)` and the
+`ModelEfficiencyCache.refresh(window_hours=None)` branch) sets it
+explicitly. This preserves the pre-spike-fix contract: hitting
+"refresh all" in the dashboard rebuilds every window the UI can show,
+including the all-time row.
+
+Tradeoff documented: a low-traffic all-time view checked less than once
+per `MAX_ENTRY_AGE_SECONDS` (default 6h) is now evicted, because
+nothing keeps its `built_at` fresh except an actual request. The next
+request recomputes it from scratch instead of getting a pre-warmed
+cache hit — including right after a deploy, when traffic may spike.
+This is intentional and tested by
+`test_refresh_all_skips_all_time_but_evicts_stale_entries`.
+
+### Why `on-demand` calls still work for all-time
+
+`refresh(**kwargs)` and `get_rows(**kwargs)` go through `compute_rows`
+directly without consulting `_is_all_time_kwargs`. The skip only
+applies to the background `_refresh_all()` loop. So:
+
+| Path | All-time behavior |
+|------|-------------------|
+| Background `_refresh_all()` | Skipped (spike protection) |
+| `refresh(window_hours=0)` | Computed immediately |
+| `get_rows(window_hours=0)` cache miss | Computed immediately |
+| `get_rows(window_hours=0)` cache hit | Served from cache, async kicker refreshes in background |
+| `_refresh_all(include_all_time=True)` | Refreshed (operator opt-in) |
+
+### Tradeoff rationale
+
+The 5-min spike was the dominant host load source — 80–100% CPU,
+temperature warnings, dropped dashboard refreshes. The all-time row is
+the single biggest contributor to that spike and is queried less
+frequently than the 24h / 168h / 720h windows. Skipping it from
+background cadence was the simplest fix that didn't require restructuring
+the schema or the query. The cost — first all-time request after a
+restart, or after eviction, pays for the full history scan — is paid
+infrequently enough to be acceptable.
+
+If the all-time view becomes hot enough that on-demand recomputation
+becomes its own problem, the fix is a separate background cache that
+refreshes the all-time row on a longer cadence (e.g. hourly), not to
+re-add it to the 5-min tick.

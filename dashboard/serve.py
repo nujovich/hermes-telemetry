@@ -1424,7 +1424,37 @@ class _BackgroundPayloadCache:
         with self._cond:
             self._cond.notify_all()
 
+    @staticmethod
+    def _startup_jitter_seconds(cache_name: str) -> int:
+        """Per-cache startup offset (0–29s) so 5 sibling caches don't pile onto
+        the same SQLite connection at process start or after a restart.
+
+        Deterministic function of ``cache_name`` so restarts preserve timing.
+        Returned as int seconds; the steady-state jitter formula is exercised
+        by ``test_run_stagger_offset_is_deterministic_per_cache`` via this
+        helper rather than re-implementing it in the test.
+        """
+        if not cache_name:
+            return 0
+        try:
+            return (sum(ord(c) for c in cache_name) * 37 + 1) % 30
+        except Exception:
+            return 0
+
     def _run(self):
+        # Stagger initial refresh across caches so the 5 cache loops (each
+        # DEFAULT_REFRESH_SECONDS=300) don't pile onto the same SQLite
+        # connection at startup and again on every tick. Must release the
+        # Condition's underlying lock while waiting, otherwise every other
+        # cache method (which does ``with self._cond:``) blocks for the full
+        # jitter duration after a restart.
+        jitter = self._startup_jitter_seconds(self.CACHE_NAME)
+        if jitter:
+            if not self._stop.is_set():
+                with self._cond:
+                    self._cond.wait(timeout=jitter)
+            if self._stop.is_set():
+                return
         try:
             self._refresh_all()
         except Exception:
@@ -1547,13 +1577,31 @@ class _BackgroundPayloadCache:
         self._write_cache(self.cache_key(**kwargs), rows, **kwargs)
         return rows
 
-    def _refresh_all(self):
+    def _refresh_all(self, *, include_all_time: bool = False):
+        """Refresh the default window set for this cache.
+
+        ``include_all_time`` is opt-in: background cadence (``_run``) calls
+        this with the default ``False`` so the heavy all-time keys don't pile
+        onto the 5-min tick — that's the whole point of the spike fix.
+        Explicit operator-triggered refreshes (e.g. the
+        ``api_model_efficiency_refresh`` endpoint) pass ``True`` so the
+        all-time rows get rebuilt when someone asks for them, even though
+        they were skipped from the background cadence.
+        """
         if self._refreshing:
             return {"skipped": "already refreshing"}
         self._refreshing = True
         started = time.monotonic()
         try:
             for kwargs in self.default_refresh_kwargs():
+                # Skip all-time/zero-window keys from the background cadence —
+                # those scan the entire history (10y+ of tool_calls on a busy
+                # host) and dominate the 5-min spike. The on-demand path in
+                # ``refresh()``/``get_rows()`` still computes them when the UI
+                # actually asks for the all-time window, and an explicit
+                # refresh-all (include_all_time=True) refreshes them too.
+                if not include_all_time and self._is_all_time_kwargs(kwargs):
+                    continue
                 try:
                     self.refresh(**kwargs)
                 except Exception:
@@ -1569,6 +1617,35 @@ class _BackgroundPayloadCache:
             }
         finally:
             self._refreshing = False
+
+    @staticmethod
+    def _is_all_time_kwargs(kwargs) -> bool:
+        """Return True for kwargs that ask for the full history window.
+
+        Background warm skips these — the all-time rows are still computed
+        when ``refresh()``/``get_rows()`` is called from a request path.
+        An explicit refresh-all with ``include_all_time=True`` also refreshes
+        them.
+        """
+        if not kwargs:
+            return False
+        # The codebase's convention: ``window_hours=0`` means "no lower bound,
+        # all rows". Real ``DEFAULT_KEYS`` in every cache consistently pair
+        # ``limit_days >= 3650`` with ``window_hours=0`` (10y+ markers), so
+        # the ``window_hours`` check below catches every all-time key in
+        # production. We intentionally do NOT branch on ``limit_days`` alone:
+        # no live key shape relies on it, and a synthetic test combo
+        # (``{"window_hours": 24, "limit_days": 3650}``) would give false
+        # confidence the branch is exercised. If a future DEFAULT_KEYS ever
+        # needs an all-time marker that doesn't use ``window_hours=0``,
+        # extend this function and add a real-shape test.
+        if "window_hours" in kwargs:
+            try:
+                if int(kwargs["window_hours"]) == 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        return False
 
     def cache_key(self, **kwargs):
         raise NotImplementedError
@@ -1740,13 +1817,24 @@ def api_model_efficiency_cache_status():
 def api_model_efficiency_refresh(window_hours=None, include_deleted=False):
     """Force an immediate refresh of the cache for the given window.
 
-    ``window_hours=None`` refreshes the default window set. This endpoint is
-    intentionally unauthenticated like the rest of the standalone dashboard;
-    only expose the server on trusted networks (see ``_warn_if_exposed``).
+    ``window_hours=None`` refreshes the default window set **including**
+    the all-time rows (``window_hours=0``). Even though the background
+    cadence skips all-time to prevent the 5-min CPU/temp spike, an explicit
+    operator-triggered refresh should rebuild every window the dashboard
+    can show — otherwise a "refresh all" call after e.g. a pricing
+    correction silently leaves the all-time row untouched.
+
+    Pass a concrete ``window_hours`` to refresh a single window only.
+    This endpoint is intentionally unauthenticated like the rest of the
+    standalone dashboard; only expose the server on trusted networks
+    (see ``_warn_if_exposed``).
     """
-    return ModelEfficiencyCache.instance().refresh(
-        window_hours=window_hours, include_deleted=include_deleted
-    )
+    cache = ModelEfficiencyCache.instance()
+    if window_hours is None:
+        # Default-set refresh: opt-in to all-time so the endpoint stays
+        # idempotent with the pre-spike-fix behavior.
+        return cache._refresh_all(include_all_time=True)
+    return cache.refresh(window_hours=window_hours, include_deleted=include_deleted)
 
 
 def _compute_model_efficiency_rows(window_hours, limit, include_deleted):
@@ -3875,9 +3963,13 @@ class ModelEfficiencyCache(_BackgroundPayloadCache):
         cache permanently empty. The ``refresh(None) -> _refresh_all ->
         refresh(<window>)`` chain terminates on its own (inner calls always pass
         a concrete window), so no re-entrancy guard is needed.
+
+        ``window_hours=None`` triggers a full default-set refresh including
+        the all-time row — same contract as ``api_model_efficiency_refresh``,
+        because that's the only place this branch is reachable in practice.
         """
         if window_hours is None:
-            return self._refresh_all()
+            return self._refresh_all(include_all_time=True)
         started = time.monotonic()
         # Keep historical behavior: a window refresh primes every default limit.
         for lim in self.DEFAULT_LIMITS:
@@ -3905,8 +3997,8 @@ class ModelEfficiencyCache(_BackgroundPayloadCache):
                 "refreshed_at": self._last_refresh_at,
             }
 
-    def _refresh_all(self):
-        result = super()._refresh_all()
+    def _refresh_all(self, *, include_all_time: bool = False):
+        result = super()._refresh_all(include_all_time=include_all_time)
         if isinstance(result, dict) and "skipped" not in result:
             result["windows"] = list(self.DEFAULT_WINDOWS)
             result["limits"] = list(self.DEFAULT_LIMITS)
