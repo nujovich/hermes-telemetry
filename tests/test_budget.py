@@ -412,6 +412,63 @@ def test_budget_cron_subcommand_notes_subagent_attribution(tmp_path):
     assert "includes" in out.lower()  # per-cron-job now attributes linked subagent spend
 
 
+def test_budget_status_lists_profiles(tmp_path):
+    _write_budget(
+        tmp_path,
+        """
+        budgets:
+          per_profile:
+            default:
+              daily_usd: 5.00
+            overrides:
+              faro:
+                daily_usd: 20.00
+    """,
+    )
+    db.start_run("s1", model="claude-sonnet-4-6", platform="cli", profile="faro")
+    db.record_llm_call(
+        "s1",
+        ts=db._utcnow(),
+        model="claude-sonnet-4-6",
+        provider="test",
+        tokens_in=0,
+        tokens_out=0,
+        cost_usd=3.00,
+        latency_ms=0,
+    )
+    db.start_run("s2", model="claude-sonnet-4-6", platform="cli", profile="default")
+    db.record_llm_call(
+        "s2",
+        ts=db._utcnow(),
+        model="claude-sonnet-4-6",
+        provider="test",
+        tokens_in=0,
+        tokens_out=0,
+        cost_usd=0.50,
+        latency_ms=0,
+    )
+    out = budget.handle("")
+    assert "Profiles:" in out
+    assert "faro" in out
+    assert "default" in out
+
+
+def test_budget_status_hides_empty_profiles(tmp_path):
+    _write_budget(
+        tmp_path,
+        """
+        budgets:
+          per_profile:
+            default:
+              daily_usd: 5.00
+    """,
+    )
+    # No runs with profile set — Profiles: section should not appear
+    _seed("s1", 1.00)
+    out = budget.handle("")
+    assert "Profiles:" not in out
+
+
 # ---------------------------------------------------------------------------
 # Burn-rate forecasting (Milestone 3)
 # ---------------------------------------------------------------------------

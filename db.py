@@ -1299,6 +1299,16 @@ def list_sender_ids(since_iso: str) -> list[str]:
     return [r["sender_id"] for r in rows]
 
 
+def list_profile_ids(since_iso: str) -> list[str]:
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT DISTINCT profile FROM runs "
+        "WHERE profile IS NOT NULL AND profile != '' AND started_at >= ?",
+        (since_iso,),
+    ).fetchall()
+    return [r["profile"] for r in rows]
+
+
 def stats_by_provider(
     window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
 ) -> list[dict[str, Any]]:
