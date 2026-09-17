@@ -547,8 +547,14 @@ def _status_block() -> str:
         lines.append("  Senders:")
         for sid in senders:
             lines.append("  " + _fmt_verdict_line(sid, check("sender", sid)))
+    profiles = db.list_profile_ids(since30)
+    if profiles:
+        lines.append("")
+        lines.append("  Profiles:")
+        for pid in profiles:
+            lines.append("  " + _fmt_verdict_line(pid, check("profile", pid)))
 
-    if g is None and not cron_ids and not senders:
+    if g is None and not cron_ids and not senders and not profiles:
         lines.append("")
         lines.append("  No budgets configured. Add ~/.hermes/telemetry/budget.yaml")
         lines.append("  or run: /budget set global daily 5.00")
