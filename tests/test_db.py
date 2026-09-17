@@ -2027,3 +2027,109 @@ def test_count_distinct_llm_models_ignores_empty():
     db.record_llm_call("s4", _BF_NOW, "", "nous", 1, 1, 0.0, 1)  # empty — ignored
 
     assert db.count_distinct_llm_models() == 2
+
+
+# ---------------------------------------------------------------------------
+# Write durability — retry + dropped-row counter (issue #99)
+# ---------------------------------------------------------------------------
+
+
+def test_retry_recovers_on_transient_error(monkeypatch):
+    """record_llm_call retries and succeeds when a transient error resolves."""
+    import hermes_telemetry.db as db_mod
+    from unittest.mock import MagicMock
+
+    db_mod.reset_dropped_row_count()
+    call_count = [0]
+    failed_once = [False]
+
+    class MockConn:
+        row_factory = None
+        def execute(self, sql, params=(), *args, **kwargs):
+            call_count[0] += 1
+            if not failed_once[0]:
+                failed_once[0] = True
+                raise sqlite3.OperationalError("disk I/O error")
+            return MagicMock(rowcount=1)
+        def close(self):
+            pass
+
+    monkeypatch.setattr(db_mod, "_get_conn", lambda: MockConn())
+    monkeypatch.setattr(db_mod, "_ensure_run_row", lambda *a, **kw: None)
+    db_mod.record_llm_call("retry-recovers", "2026-01-01T00:00:00+00:00", "m", "p", 100, 50, 0.01, 200)
+    assert call_count[0] >= 2  # at least one retry
+    assert db_mod.get_dropped_row_count() == 0
+    db_mod.reset_dropped_row_count()
+
+
+def test_retry_exhausted_increments_dropped_counter(monkeypatch):
+    """When all 3 retries fail, the dropped counter increments."""
+    import hermes_telemetry.db as db_mod
+
+    db_mod.reset_dropped_row_count()
+
+    class FailingConn:
+        row_factory = None
+        def execute(self, *_args, **_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+        def close(self):
+            pass
+
+    monkeypatch.setattr(db_mod, "_get_conn", lambda: FailingConn())
+    monkeypatch.setattr(db_mod, "_ensure_run_row", lambda *a, **kw: None)
+    try:
+        db_mod.record_llm_call("retry-exhausted", "2026-01-01T00:00:00+00:00", "m", "p", 100, 50, 0.01, 200)
+    except sqlite3.OperationalError:
+        pass
+    assert db_mod.get_dropped_row_count() == 1
+    db_mod.reset_dropped_row_count()
+
+
+def test_non_transient_error_not_retried(monkeypatch):
+    """Non-transient errors (e.g. constraint violations) raise immediately."""
+    import hermes_telemetry.db as db_mod
+
+    db_mod.reset_dropped_row_count()
+    call_count = [0]
+
+    class IntegrityConn:
+        row_factory = None
+        def execute(self, *_args, **_kwargs):
+            call_count[0] += 1
+            raise sqlite3.IntegrityError("UNIQUE constraint failed")
+        def close(self):
+            pass
+
+    monkeypatch.setattr(db_mod, "_get_conn", lambda: IntegrityConn())
+    monkeypatch.setattr(db_mod, "_ensure_run_row", lambda *a, **kw: None)
+    try:
+        db_mod.record_llm_call("no-retry", "2026-01-01T00:00:00+00:00", "m", "p", 100, 50, 0.01, 200)
+    except sqlite3.IntegrityError:
+        pass
+    assert call_count[0] == 1  # no retry
+    assert db_mod.get_dropped_row_count() == 0
+    db_mod.reset_dropped_row_count()
+
+
+def test_is_transient_sqlite_error():
+    """_is_transient_sqlite_error matches only OperationalError with transient messages."""
+    import hermes_telemetry.db as db_mod
+
+    assert db_mod._is_transient_sqlite_error(
+        sqlite3.OperationalError("disk I/O error")
+    )
+    assert db_mod._is_transient_sqlite_error(
+        sqlite3.OperationalError("database is locked")
+    )
+    assert db_mod._is_transient_sqlite_error(
+        sqlite3.OperationalError("SQLITE_BUSY")
+    )
+    assert not db_mod._is_transient_sqlite_error(
+        sqlite3.IntegrityError("UNIQUE constraint failed")
+    )
+    assert not db_mod._is_transient_sqlite_error(
+        ValueError("not sqlite")
+    )
+    assert not db_mod._is_transient_sqlite_error(
+        sqlite3.OperationalError("no such table: missing")
+    )

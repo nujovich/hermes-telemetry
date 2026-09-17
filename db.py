@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import random
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -52,6 +54,83 @@ _local = threading.local()
 # while migrating is cheap (only the first connect per thread) and removes the
 # race when many cron jobs start at once.
 _schema_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Write durability (issue #99): retry + dropped-row counter
+# ---------------------------------------------------------------------------
+_WRITE_MAX_RETRIES = 3
+_WRITE_BASE_DELAY_S = 0.1
+_dropped_rows: int = 0
+_dropped_rows_lock = threading.Lock()
+
+# Transient SQLite error messages that warrant a retry. These are not schema
+# or constraint violations — they mean the storage layer was temporarily
+# unavailable, and the write can succeed on a subsequent attempt.
+_TRANSIENT_SQLITE_ERRORS = (
+    "disk i/o error",
+    "database is locked",
+    "database or disk is full",
+    "sqlite_busy",
+    "unable to open database file",
+)
+
+
+def _is_transient_sqlite_error(exc: Exception) -> bool:
+    """Return True when `exc` is a sqlite3.OperationalError with a transient
+    message — a temporary IO/contention failure, not a schema/bug error."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return any(phrase in msg for phrase in _TRANSIENT_SQLITE_ERRORS)
+
+
+def _retry_write(fn, *args, **kwargs):
+    """Execute *fn(*args, **kwargs)* with bounded retry on transient SQLite errors.
+
+    Up to ``_WRITE_MAX_RETRIES`` attempts, with exponential backoff (100 ms,
+    200 ms, 400 ms) and random jitter (0-50 ms). Non-transient errors are
+    re-raised immediately. When all retries are exhausted, the counter
+    ``_dropped_rows`` is incremented and a warning is logged.
+    """
+    for attempt in range(_WRITE_MAX_RETRIES):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            if not _is_transient_sqlite_error(exc):
+                raise
+            if attempt == _WRITE_MAX_RETRIES - 1:
+                with _dropped_rows_lock:
+                    global _dropped_rows
+                    _dropped_rows += 1
+                logger.warning(
+                    "telemetry write dropped after %s retries: %s — %s",
+                    _WRITE_MAX_RETRIES,
+                    type(exc).__name__,
+                    exc,
+                )
+                raise
+            delay = _WRITE_BASE_DELAY_S * (2**attempt) + random.uniform(0, 0.05)
+            logger.debug(
+                "telemetry write retry %s/%s after %.3fs: %s",
+                attempt + 1,
+                _WRITE_MAX_RETRIES - 1,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+
+
+def get_dropped_row_count() -> int:
+    """Return the number of telemetry rows dropped since last reset."""
+    with _dropped_rows_lock:
+        return _dropped_rows
+
+
+def reset_dropped_row_count() -> None:
+    """Reset the dropped-row counter to zero (primarily for tests)."""
+    with _dropped_rows_lock:
+        global _dropped_rows
+        _dropped_rows = 0
 
 
 def _get_db_path() -> Path:
@@ -683,21 +762,24 @@ def start_run(
 
 
 def end_run(session_id: str, status: str, ended_at: str | None = None) -> None:
-    now = ended_at or _utcnow()
-    _ensure_run_row(session_id, now)
-    conn = _get_conn()
-    conn.execute(
-        """
-        UPDATE runs
-        SET ended_at   = ?,
-            status     = ?,
-            duration_ms = CAST(
-                (julianday(?) - julianday(started_at)) * 86400000 AS INTEGER
-            )
-        WHERE session_id = ?
-        """,
-        (now, status, now, session_id),
-    )
+    def _impl() -> None:
+        now = ended_at or _utcnow()
+        _ensure_run_row(session_id, now)
+        conn = _get_conn()
+        conn.execute(
+            """
+            UPDATE runs
+            SET ended_at   = ?,
+                status     = ?,
+                duration_ms = CAST(
+                    (julianday(?) - julianday(started_at)) * 86400000 AS INTEGER
+                )
+            WHERE session_id = ?
+            """,
+            (now, status, now, session_id),
+        )
+
+    _retry_write(_impl)
 
 
 def record_llm_call(
@@ -716,73 +798,76 @@ def record_llm_call(
     provider_assumed: bool = False,
     moa_preset: str | None = None,
 ) -> None:
-    conn = _get_conn()
-    conn.execute(
-        """
-        INSERT INTO llm_calls
-            (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms,
-             cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated,
-             provider_assumed, moa_preset)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            session_id,
-            ts,
-            model,
-            provider,
-            tokens_in,
-            tokens_out,
-            cost_usd,
-            latency_ms,
-            cache_read_tokens,
-            cache_write_tokens,
-            reasoning_tokens,
-            1 if estimated else 0,
-            1 if provider_assumed else 0,
-            moa_preset,
-        ),
-    )
-    _ensure_run_row(session_id, ts)
-    conn.execute(
-        """
-        UPDATE runs
-        SET tokens_in         = tokens_in  + ?,
-            tokens_out        = tokens_out + ?,
-            cache_read_tokens = cache_read_tokens + ?,
-            cache_write_tokens = cache_write_tokens + ?,
-            cost_usd          = cost_usd   + ?,
-            api_calls         = api_calls  + 1,
-            model             = COALESCE(model, ?),
-            provider          = COALESCE(provider, ?)
-        WHERE session_id = ?
-        """,
-        (
-            tokens_in,
-            tokens_out,
-            cache_read_tokens,
-            cache_write_tokens,
-            cost_usd,
-            model,
-            provider,
-            session_id,
-        ),
-    )
-    if estimated:
+    def _impl() -> None:
+        conn = _get_conn()
         conn.execute(
-            "UPDATE runs SET estimated_llm_calls = estimated_llm_calls + 1 WHERE session_id = ?",
-            (session_id,),
+            """
+            INSERT INTO llm_calls
+                (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms,
+                 cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated,
+                 provider_assumed, moa_preset)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                ts,
+                model,
+                provider,
+                tokens_in,
+                tokens_out,
+                cost_usd,
+                latency_ms,
+                cache_read_tokens,
+                cache_write_tokens,
+                reasoning_tokens,
+                1 if estimated else 0,
+                1 if provider_assumed else 0,
+                moa_preset,
+            ),
         )
-    if provider_assumed:
+        _ensure_run_row(session_id, ts)
         conn.execute(
-            "UPDATE runs SET provider_assumed_calls = provider_assumed_calls + 1 "
-            "WHERE session_id = ?",
-            (session_id,),
+            """
+            UPDATE runs
+            SET tokens_in         = tokens_in  + ?,
+                tokens_out        = tokens_out + ?,
+                cache_read_tokens = cache_read_tokens + ?,
+                cache_write_tokens = cache_write_tokens + ?,
+                cost_usd          = cost_usd   + ?,
+                api_calls         = api_calls  + 1,
+                model             = COALESCE(model, ?),
+                provider          = COALESCE(provider, ?)
+            WHERE session_id = ?
+            """,
+            (
+                tokens_in,
+                tokens_out,
+                cache_read_tokens,
+                cache_write_tokens,
+                cost_usd,
+                model,
+                provider,
+                session_id,
+            ),
         )
-    if moa_preset:
-        conn.execute(
-            "UPDATE runs SET moa_calls = moa_calls + 1 WHERE session_id = ?",
-            (session_id,),
-        )
+        if estimated:
+            conn.execute(
+                "UPDATE runs SET estimated_llm_calls = estimated_llm_calls + 1 WHERE session_id = ?",
+                (session_id,),
+            )
+        if provider_assumed:
+            conn.execute(
+                "UPDATE runs SET provider_assumed_calls = provider_assumed_calls + 1 "
+                "WHERE session_id = ?",
+                (session_id,),
+            )
+        if moa_preset:
+            conn.execute(
+                "UPDATE runs SET moa_calls = moa_calls + 1 WHERE session_id = ?",
+                (session_id,),
+            )
+
+    _retry_write(_impl)
 
 
 def set_sender(session_id: str, sender_id: str) -> None:
@@ -826,18 +911,21 @@ def record_tool_call(
     ok: bool,
     latency_ms: int | None,
 ) -> None:
-    conn = _get_conn()
-    conn.execute(
-        """
-        INSERT INTO tool_calls (session_id, ts, tool_name, ok, latency_ms)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (session_id, ts, tool_name, 1 if ok else 0, latency_ms),
-    )
-    conn.execute(
-        "UPDATE runs SET tool_calls = tool_calls + 1 WHERE session_id = ?",
-        (session_id,),
-    )
+    def _impl() -> None:
+        conn = _get_conn()
+        conn.execute(
+            """
+            INSERT INTO tool_calls (session_id, ts, tool_name, ok, latency_ms)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (session_id, ts, tool_name, 1 if ok else 0, latency_ms),
+        )
+        conn.execute(
+            "UPDATE runs SET tool_calls = tool_calls + 1 WHERE session_id = ?",
+            (session_id,),
+        )
+
+    _retry_write(_impl)
 
 
 def record_subagent_start(
@@ -855,23 +943,27 @@ def record_subagent_start(
     _build_child_agent BEFORE async dispatch — so the edge exists before the
     child's first post_api_request and resolution never races the child's events.
     """
-    _get_conn().execute(
-        """
-        INSERT OR IGNORE INTO subagent_edges
-            (child_session_id, parent_session_id, parent_turn_id,
-             parent_subagent_id, child_subagent_id, child_role, started_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            child_session_id,
-            parent_session_id,
-            parent_turn_id,
-            parent_subagent_id,
-            child_subagent_id,
-            child_role,
-            started_at or _utcnow(),
-        ),
-    )
+
+    def _impl() -> None:
+        _get_conn().execute(
+            """
+            INSERT OR IGNORE INTO subagent_edges
+                (child_session_id, parent_session_id, parent_turn_id,
+                 parent_subagent_id, child_subagent_id, child_role, started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                child_session_id,
+                parent_session_id,
+                parent_turn_id,
+                parent_subagent_id,
+                child_subagent_id,
+                child_role,
+                started_at or _utcnow(),
+            ),
+        )
+
+    _retry_write(_impl)
 
 
 def record_subagent_stop(
@@ -888,28 +980,32 @@ def record_subagent_stop(
     child's cost still resolves to its parent. child_subagent_id is absent on the
     stop hook, so a backfilled edge has no subagent id.
     """
-    conn = _get_conn()
-    now = stopped_at or _utcnow()
-    cur = conn.execute(
-        """
-        UPDATE subagent_edges
-        SET stopped_at   = ?,
-            child_status = ?,
-            child_role   = COALESCE(child_role, ?)
-        WHERE child_session_id = ?
-        """,
-        (now, child_status, child_role, child_session_id),
-    )
-    if cur.rowcount == 0 and parent_session_id:
-        conn.execute(
+
+    def _impl() -> None:
+        conn = _get_conn()
+        now = stopped_at or _utcnow()
+        cur = conn.execute(
             """
-            INSERT OR IGNORE INTO subagent_edges
-                (child_session_id, parent_session_id, child_role,
-                 started_at, stopped_at, child_status)
-            VALUES (?, ?, ?, ?, ?, ?)
+            UPDATE subagent_edges
+            SET stopped_at   = ?,
+                child_status = ?,
+                child_role   = COALESCE(child_role, ?)
+            WHERE child_session_id = ?
             """,
-            (child_session_id, parent_session_id, child_role, now, now, child_status),
+            (now, child_status, child_role, child_session_id),
         )
+        if cur.rowcount == 0 and parent_session_id:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO subagent_edges
+                    (child_session_id, parent_session_id, child_role,
+                     started_at, stopped_at, child_status)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (child_session_id, parent_session_id, child_role, now, now, child_status),
+            )
+
+    _retry_write(_impl)
 
 
 # ---------------------------------------------------------------------------

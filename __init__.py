@@ -662,6 +662,15 @@ def register(ctx) -> None:  # noqa: ANN001
             tele_log.debug("session_end session=%s status=%s", session_id, status)
         except Exception as exc:
             tele_log.error("on_session_end hook failed: %s", exc)
+        finally:
+            # Durability signal (issue #99): surface dropped-row count.
+            dropped = db.get_dropped_row_count()
+            if dropped > 0:
+                tele_log.warning(
+                    "hermes-telemetry: %d telemetry row(s) dropped due to "
+                    "transient write failures since last reset",
+                    dropped,
+                )
 
     ctx.register_hook("on_session_end", on_session_end)
 
