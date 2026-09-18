@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `/budget` status block did not list per-profile budgets (#70)
+
+- `/budget set profile <id> ...` and `/budget forecast ... profile <id>` already
+  worked, but plain `/budget` never showed per-profile status — only `global`,
+  `cron_job`, and `sender` scopes rendered. Added `db.list_profile_ids()`
+  (mirrors `list_cron_job_ids`/`list_sender_ids`) and a `Profiles:` section in
+  `_status_block()`, closing the command-surface parity gap between `set`,
+  `forecast`, and `status` for the `profile` scope. Only profiles seen in runs
+  within the last 30 days appear, matching the existing cron-job/sender window.
+
 ### Changed — Core-sourced pricing snapshots are now the primary cost source
 
 - `estimate_cost()` now prefers the tariff Hermes core itself resolved for a

@@ -881,6 +881,25 @@ form takes the id as a positional after the scope
 already validates `window`/`usd` as typed positionals. Writes are atomic (temp
 file + `os.replace`), then `reload_config()` clears the verdict cache.
 
+### Reading budgets (`/budget` status block)
+
+`_status_block()` does not enumerate scope ids from `budget.yaml` — it asks the
+DB which ids actually had activity, via `db.list_cron_job_ids(since30)` /
+`list_sender_ids(since30)` / `list_profile_ids(since30)`, where `since30 =
+_days_ago_utc(30)`. Each section (`Cron jobs:` / `Senders:` / `Profiles:`) is
+rendered only when its list is non-empty, then each id is resolved through the
+same `check(scope, scope_id)` verdict path `/budget set` and `/budget forecast`
+use, so a scope's `default`/`overrides.<id>` limit renders identically across
+all three commands.
+
+**Consequence:** a scope with a configured limit but no runs in the last 30
+days renders no section at all — `budget.yaml` having an entry is not enough.
+This is why the "No budgets configured" fallback guard checks `g is None and
+not cron_ids and not senders and not profiles` — every enumerated list has to
+be empty, not just the absence of a `budget.yaml` file, or the fallback would
+wrongly claim nothing is configured while a stale/inactive scope still has a
+limit set.
+
 ### Anti-spam ledger (`budget_alerts` table)
 
 Soft alerts fire **once per window per scope** — not on every `pre_llm_call`.

@@ -769,12 +769,22 @@ recent daily spend rate (moving average over the last 14 days), projects spend
 to the end of the current window at that rate, and flags whether the scope is on
 track to breach. It is a read-only projection — it never mutates budget state.
 
+The status block also lists per-`cron_job`/`sender`/`profile` scopes it has seen
+activity for in the last 30 days, alongside `global`, so `set` / `forecast` /
+status stay consistent for every scope — including `profile`. A scope with a
+configured limit but no recent runs simply does not get a section; it is not
+silently dropped, there is just nothing to report yet.
+
 **Example output (`/budget`):**
 
 ```
 hermes-telemetry — budget status
 ============================================================
   global                       $   0.1812 / $    2.00      9%  [daily]
+
+  Profiles:
+    faro                         $   3.0000 / $   20.00     15%  [monthly]
+    default                      $   0.5000 / $    5.00     10%  [daily]
 
   Legend:  (blank)=ok  !=soft (≥80%)  █=hard (≥100%)  ~est=estimated data
 ```
