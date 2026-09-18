@@ -2027,3 +2027,111 @@ def test_count_distinct_llm_models_ignores_empty():
     db.record_llm_call("s4", _BF_NOW, "", "nous", 1, 1, 0.0, 1)  # empty — ignored
 
     assert db.count_distinct_llm_models() == 2
+
+
+# ---------------------------------------------------------------------------
+# loop_facts — per-session loop detection facts
+# ---------------------------------------------------------------------------
+
+
+def test_loop_facts_table_created_by_migration():
+    conn = db._get_conn()
+    tables = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    assert "loop_facts" in tables
+
+
+def test_recompute_loop_facts_cron_sessions():
+    now = "2026-07-25T12:00:00+00:00"
+    db.start_run("s-cron-1", "gpt-4", "cron", cron_job_id="job-abc")
+    db.end_run("s-cron-1", "completed", ended_at=now)
+    db.start_run("s-cron-2", "gpt-4", "cron", cron_job_id="job-abc")
+    db.end_run("s-cron-2", "completed", ended_at=now)
+
+    count = db.recompute_loop_facts()
+    assert count == 2
+
+    facts = db.list_loop_facts()
+    assert len(facts) == 2
+    for f in facts:
+        assert f["loop_type"] == "cron"
+        assert f["detected_from"] == "cron_platform"
+        assert f["cron_job_id"] == "job-abc"
+        assert f["status"] in ("active", "unknown")
+        assert f["fire_count"] == 2
+
+
+def test_recompute_loop_facts_self_perpetuating():
+    now = "2026-07-25T12:00:00+00:00"
+    db.start_run("s-sp-1", "gpt-4", "chat")
+    db.record_tool_call("s-sp-1", now, "cronjob", ok=1, latency_ms=10)
+    db.end_run("s-sp-1", "completed", ended_at=now)
+
+    count = db.recompute_loop_facts()
+    assert count == 1
+
+    facts = db.list_loop_facts()
+    assert len(facts) == 1
+    f = facts[0]
+    assert f["loop_type"] == "self_perpetuating"
+    assert f["detected_from"] == "cronjob_tool"
+    assert f["fire_count"] == 1
+    assert f["tool_call_count"] == 1
+
+
+def test_recompute_loop_facts_preserves_cancelled():
+    now = "2026-07-25T12:00:00+00:00"
+    db.start_run("s-cxl-1", "gpt-4", "cron", cron_job_id="job-cxl")
+    db.end_run("s-cxl-1", "completed", ended_at=now)
+    db.recompute_loop_facts()
+
+    # Manually set cancelled status.
+    conn = db._get_conn()
+    conn.execute("UPDATE loop_facts SET status = 'cancelled' WHERE session_id = 's-cxl-1'")
+
+    # Recompute again — cancelled should survive.
+    count = db.recompute_loop_facts()
+    assert count == 1
+    f = db.get_loop_fact("s-cxl-1")
+    assert f["status"] == "cancelled"
+
+
+def test_recompute_loop_facts_idempotent():
+    now = "2026-07-25T12:00:00+00:00"
+    db.start_run("s-idem-1", "gpt-4", "cron", cron_job_id="job-idem")
+    db.end_run("s-idem-1", "completed", ended_at=now)
+
+    first = db.recompute_loop_facts()
+    second = db.recompute_loop_facts()
+    assert first == second == 1
+
+
+def test_get_loop_fact():
+    now = "2026-07-25T12:00:00+00:00"
+    db.start_run("s-get-1", "gpt-4", "cron", cron_job_id="job-get")
+    db.end_run("s-get-1", "completed", ended_at=now)
+    db.recompute_loop_facts()
+
+    f = db.get_loop_fact("s-get-1")
+    assert f is not None
+    assert f["session_id"] == "s-get-1"
+    assert f["cron_job_id"] == "job-get"
+
+    assert db.get_loop_fact("nonexistent") is None
+
+
+def test_list_loop_facts_ordering():
+    now_old = "2026-07-20T00:00:00+00:00"
+    now_new = "2026-07-25T00:00:00+00:00"
+    db.start_run("s-old", "gpt-4", "cron", cron_job_id="job-a")
+    db.end_run("s-old", "completed", ended_at=now_old)
+    db.start_run("s-new", "gpt-4", "cron", cron_job_id="job-b")
+    db.end_run("s-new", "completed", ended_at=now_new)
+    db.recompute_loop_facts()
+
+    facts = db.list_loop_facts()
+    assert len(facts) == 2
+    # Most recently first_seen first.
+    assert facts[0]["session_id"] == "s-new"
+    assert facts[1]["session_id"] == "s-old"

@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 16
+_SCHEMA_VERSION = 17
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -177,6 +177,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v14(conn)
     _migrate_v15(conn)
     _migrate_v16(conn)
+    _migrate_v17(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -626,6 +627,51 @@ def _migrate_v16(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (16, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v17(conn: sqlite3.Connection) -> None:
+    """Add v17 schema: loop_facts — per-session loop detection facts with a
+    lifecycle state machine (active/expired/cancelled/unknown).
+
+    One row per session that is part of or creates a loop (cron jobs and
+    self-perpetuating sessions that use the cronjob tool). The status field
+    is recomputed on each call to ``recompute_loop_facts`` based on how
+    recently the associated loop pattern last fired.
+
+    Lifecycle rules applied at recompute time:
+      - active:    last fire within 7 days
+      - expired:   no fire in > 30 days
+      - cancelled: cron job tombstoned or deleted (set externally)
+      - unknown:   cannot determine (7-30 day gap, or no cron_job_id)
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 17")
+    if cur.fetchone() is not None:
+        return
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS loop_facts (
+            session_id      TEXT PRIMARY KEY,
+            loop_type       TEXT NOT NULL,
+            detected_from   TEXT NOT NULL,
+            cron_job_id     TEXT,
+            status          TEXT NOT NULL DEFAULT 'unknown',
+            first_seen_at   TEXT NOT NULL,
+            last_seen_at    TEXT NOT NULL,
+            fire_count      INTEGER DEFAULT 1,
+            tool_call_count INTEGER DEFAULT 0,
+            detected_at     TEXT NOT NULL,
+            recomputed_at   TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_loop_facts_cron_job
+            ON loop_facts(cron_job_id);
+        CREATE INDEX IF NOT EXISTS idx_loop_facts_status
+            ON loop_facts(status);
+    """)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (17, ?)",
         (_utcnow(),),
     )
 
@@ -1747,6 +1793,153 @@ def recent_free_paid_transitions(window_hours: int = 72) -> list[dict]:
             " FROM free_paid_transitions"
             " ORDER BY detected_at DESC"
         ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def recompute_loop_facts() -> int:
+    """Recompute all loop_facts from raw runs and tool_calls data.
+
+    Idempotent: clears the table and re-derives one row per session that is
+    part of or creates a loop. Returns the number of rows written.
+
+    Lifecycle status is determined per session:
+      - active:    last fire of the associated loop within 7 days
+      - expired:   last fire > 30 days ago
+      - cancelled: preserved if already set (external tombstone)
+      - unknown:   between 7-30 days, or no cron_job_id to track
+
+    For cron sessions (platform='cron' with cron_job_id), fire_count is the
+    number of sessions sharing that cron_job_id. For self-perpetuating
+    sessions, fire_count is 1.
+    """
+    conn = _get_conn()
+    now = _utcnow()
+    seven_days_ago = (datetime.fromisoformat(now) - timedelta(days=7)).isoformat()
+    thirty_days_ago = (datetime.fromisoformat(now) - timedelta(days=30)).isoformat()
+
+    # Preserve externally-set cancelled rows.
+    cancelled = {
+        row["session_id"]
+        for row in conn.execute(
+            "SELECT session_id FROM loop_facts WHERE status = 'cancelled'"
+        ).fetchall()
+    }
+
+    conn.execute("DELETE FROM loop_facts")
+
+    # Pass 1: cron-platform sessions with a cron_job_id.
+    cron_rows = conn.execute(
+        """SELECT r.session_id, r.cron_job_id, r.started_at, r.ended_at
+           FROM runs r
+           WHERE r.platform = 'cron' AND r.cron_job_id IS NOT NULL
+           ORDER BY r.started_at"""
+    ).fetchall()
+
+    # Compute fire_count per cron_job_id and per-session loop status.
+    job_runs: dict[str, list[dict[str, Any]]] = {}
+    for row in cron_rows:
+        job_runs.setdefault(row["cron_job_id"], []).append(dict(row))
+
+    inserted = 0
+    for cron_job_id, sessions in job_runs.items():
+        fire_count = len(sessions)
+        for s in sessions:
+            sid = s["session_id"]
+            last_seen = s["ended_at"] or s["started_at"]
+            if sid in cancelled:
+                status = "cancelled"
+            elif last_seen and last_seen >= seven_days_ago:
+                status = "active"
+            elif last_seen and last_seen < thirty_days_ago:
+                status = "expired"
+            else:
+                status = "unknown"
+
+            conn.execute(
+                """INSERT OR REPLACE INTO loop_facts
+                   (session_id, loop_type, detected_from, cron_job_id,
+                    status, first_seen_at, last_seen_at, fire_count,
+                    tool_call_count, detected_at, recomputed_at)
+                   VALUES (?, 'cron', 'cron_platform', ?, ?, ?, ?, ?, 0, ?, ?)""",
+                (sid, cron_job_id, status, s["started_at"], last_seen, fire_count, now, now),
+            )
+            inserted += 1
+
+    # Pass 2: sessions that used cronjob tool but are NOT already in loop_facts.
+    existing = {
+        row["session_id"] for row in conn.execute("SELECT session_id FROM loop_facts").fetchall()
+    }
+    sp_rows = conn.execute(
+        """SELECT DISTINCT tc.session_id, r.cron_job_id, r.started_at, r.ended_at
+           FROM tool_calls tc
+           LEFT JOIN runs r ON tc.session_id = r.session_id
+           WHERE tc.tool_name = 'cronjob'
+           ORDER BY tc.ts"""
+    ).fetchall()
+
+    for row in sp_rows:
+        sid = row["session_id"]
+        if sid in existing:
+            continue
+        existing.add(sid)
+        last_seen = row["ended_at"] or row["started_at"] or now
+
+        if sid in cancelled:
+            status = "cancelled"
+        elif last_seen >= seven_days_ago:
+            status = "active"
+        elif last_seen < thirty_days_ago:
+            status = "expired"
+        else:
+            status = "unknown"
+
+        # Tool call count for this session.
+        count_row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM tool_calls WHERE session_id = ? AND tool_name = 'cronjob'",
+            (sid,),
+        ).fetchone()
+
+        conn.execute(
+            """INSERT OR REPLACE INTO loop_facts
+               (session_id, loop_type, detected_from, cron_job_id,
+                status, first_seen_at, last_seen_at, fire_count,
+                tool_call_count, detected_at, recomputed_at)
+               VALUES (?, 'self_perpetuating', 'cronjob_tool', ?, ?,
+                       ?, ?, 1, ?, ?, ?)""",
+            (
+                sid,
+                row["cron_job_id"],
+                status,
+                row["started_at"] or last_seen,
+                last_seen,
+                count_row["cnt"] if count_row else 0,
+                now,
+                now,
+            ),
+        )
+        inserted += 1
+
+    # Restore cancelled status for any row that was preserved.
+    for sid in cancelled:
+        conn.execute(
+            "UPDATE loop_facts SET status = 'cancelled' WHERE session_id = ?",
+            (sid,),
+        )
+
+    return inserted
+
+
+def get_loop_fact(session_id: str) -> dict[str, Any] | None:
+    """Return the loop_facts row for *session_id*, or None."""
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM loop_facts WHERE session_id = ?", (session_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_loop_facts() -> list[dict[str, Any]]:
+    """Return all loop_facts rows, ordered by first_seen_at descending."""
+    conn = _get_conn()
+    rows = conn.execute("SELECT * FROM loop_facts ORDER BY first_seen_at DESC").fetchall()
     return [dict(r) for r in rows]
 
 

@@ -1187,6 +1187,34 @@ function renderForecast(data) {
   return html;
 }
 
+function renderLoops(data) {
+  if (!data || !data.tiles || !data.tiles.active_loops && !data.tiles.expired_loops && !data.loops?.length) return '';
+  const tiles = data.tiles;
+  const loops = data.loops || [];
+  let html = '<div class="budget-bar"><h3>Recurring Loops</h3>';
+  html += '<div class="stat-grid">';
+  html += renderStatCard('loopsActive', nf(tiles.active_loops), 'Active', 'green');
+  html += renderStatCard('loopsExpired', nf(tiles.expired_loops), 'Expired', 'red');
+  html += renderStatCard('loopsRuns', nf(tiles.total_runs), 'Total Runs', 'blue');
+  html += renderStatCard('loopsCost', fmtCost(tiles.total_cost_usd), 'Total Cost', 'yellow');
+  html += renderStatCard('loopsTokensIn', nf(tiles.total_tokens_in || 0), 'Tokens In', 'purple');
+  html += renderStatCard('loopsTokensOut', nf(tiles.total_tokens_out || 0), 'Tokens Out', 'orange');
+  html += '</div>';
+  if (loops.length) {
+    let t = '<table><thead><tr><th>Loop ID</th><th>Type</th><th>Status</th><th>Sessions</th><th>Fires</th><th>Cost</th><th>Tokens In</th><th>Tokens Out</th><th>First Seen</th><th>Last Seen</th></tr></thead><tbody>';
+    for (const row of loops) {
+      const lid = row.loop_id || '?';
+      const ltype = row.loop_type === 'self_perpetuating' ? 'self' : 'cron';
+      const status = row.status || 'unknown';
+      t += `<tr><td><code title="${escHtml(lid)}">${escHtml(lid.substring(0, 30))}</code></td><td>${escHtml(ltype)}</td><td>${statusBadge(status)}</td><td>${nf(row.session_count)}</td><td>${nf(row.fire_count)}</td><td>${fmtCost(row.total_cost_usd)}</td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td class="text-muted">${fmtLocalTs(row.first_seen)}</td><td class="text-muted">${fmtLocalTs(row.last_seen)}</td></tr>`;
+    }
+    t += '</tbody></table>';
+    html += t;
+  }
+  html += '</div>';
+  return html;
+}
+
 function renderModelTokensTable(rows) {
   if (!rows || !rows.length) return renderTableCard('modelTokensTable', 'Model Token Usage', '<div class="text-muted">No model token data for this range.</div>');
   let t = '<table><thead><tr><th>Model</th><th>Calls</th><th>In</th><th>Out</th><th>Cache Read</th><th>Cache Write</th><th>Reasoning</th><th>Total</th><th>Cost</th></tr></thead><tbody>';
@@ -1424,6 +1452,13 @@ function renderSessionDetail(data) {
   html += `<div class="insight-card"><div class="label">Provider</div><div class="value"><span class="inline-btn data-chip provider-chip" title="${escHtml(run.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${providerFilter}})'>${escHtml(run.provider || '—')}</span></div></div>`;
   html += `<div class="insight-card"><div class="label">Model</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(run.model || '—')}" onclick='closeSessionDetail(); addDrilldown({model:${modelFilter}})'>${escHtml(run.model || '—')}</span></div></div>`;
   html += `<div class="insight-card"><div class="label">Cost / Duration</div><div class="value">${fmtCost(run.cost_usd)} / ${fmtMs(run.duration_ms)}</div></div>`;
+
+  // Loop badge: surfaces when session is part of a cron or self-perpetuating loop.
+  if (data.loop && data.loop.session_id) {
+    const loopTypeIcon = data.loop.loop_type === 'cron' ? '&#9200;' : '&#128260;';
+    const statusColor = data.loop.status === 'active' ? '#3fb950' : (data.loop.status === 'expired' ? '#8b949e' : '#d29922');
+    html += `<div class="insight-card"><div class="label">Loop</div><div class="value" style=\"font-size:15px\"><span style=\"color:${statusColor};margin-right:4px\">${loopTypeIcon}</span>${escHtml(data.loop.loop_type)}</div></div>`;
+  }
   html += '</div></div>';
 
   html += '<div class="drawer-section"><h4>Run totals</h4>';
@@ -1434,6 +1469,24 @@ function renderSessionDetail(data) {
   html += `<tr><th>Cache read</th><td>${nf(run.cache_read_tokens || 0)}</td><th>Cache write</th><td>${nf(run.cache_write_tokens || 0)}</td></tr>`;
   html += `<tr><th>Started</th><td>${fmtLocalTs(run.started_at, {seconds:true})}</td><th>Ended</th><td>${fmtLocalTs(run.ended_at, {seconds:true})}</td></tr>`;
   html += '</tbody></table></div>';
+
+  // LoopCard: detailed loop facts when this session is part of a loop.
+  if (data.loop && data.loop.session_id) {
+    const l = data.loop;
+    const statusLabel = {active: 'Active', expired: 'Expired', cancelled: 'Cancelled', unknown: 'Unknown'}[l.status] || l.status;
+    const typeLabel = {cron: 'Cron job', self_perpetuating: 'Self-perpetuating'}[l.loop_type] || l.loop_type;
+    const fromLabel = {cron_platform: 'Platform=cron', cronjob_tool: 'Cronjob tool calls'}[l.detected_from] || l.detected_from;
+    html += '<div class="drawer-section"><h4>Loop details</h4>';
+    html += '<table><tbody>';
+    html += `<tr><th>Type</th><td>${escHtml(typeLabel)}</td><th>Status</th><td>${statusBadge(l.status)}</td></tr>`;
+    html += `<tr><th>Detected via</th><td colspan="3">${escHtml(fromLabel)}</td></tr>`;
+    if (l.cron_job_id) {
+      html += `<tr><th>Cron Job ID</th><td colspan="3">${escHtml(l.cron_job_id)}</td></tr>`;
+    }
+    html += `<tr><th>Fire count</th><td>${nf(l.fire_count || 0)}</td><th>Tool calls</th><td>${nf(l.tool_call_count || 0)}</td></tr>`;
+    html += `<tr><th>First seen</th><td>${fmtLocalTs(l.first_seen_at, {seconds:true})}</td><th>Last seen</th><td>${fmtLocalTs(l.last_seen_at, {seconds:true})}</td></tr>`;
+    html += '</tbody></table></div>';
+  }
 
   html += '<div class="drawer-section"><h4>LLM call summary</h4>';
   html += '<table><tbody>';
@@ -1954,7 +2007,7 @@ async function loadAll(options = {}) {
     const trendLimit = currentUsageGranularity === 'month' ? 18 : currentUsageGranularity === 'week' ? 24 : 21;
     // Model efficiency is loaded lazily on the Breakdown page. It is cache-backed,
     // but keeping it out of this first batch makes the dashboard responsive on a cold cache.
-    const [summary, cron, providers, providerHealth, runsData, budget, tokenBreakdown, modelTokens, dailyTokens, dailyTokenChart, dailyModelChart, modelPeriodTrends, modelShareComparison, cacheEfficiency, requestForensics, toolAnalytics, toolFailureHeatmap, errorCenter, cronFailureWaste, sessionEfficiency, smellsData, forecastData] = await Promise.all([
+    const [summary, cron, providers, providerHealth, runsData, budget, tokenBreakdown, modelTokens, dailyTokens, dailyTokenChart, dailyModelChart, modelPeriodTrends, modelShareComparison, cacheEfficiency, requestForensics, toolAnalytics, toolFailureHeatmap, errorCenter, cronFailureWaste, sessionEfficiency, smellsData, forecastData, loopsData] = await Promise.all([
       fetchJSON(`/api/summary?hours=${hours}`),
       fetchJSON(`/api/cron?hours=${hours}`),
       fetchJSON(`/api/providers?hours=${hours}`),
@@ -1977,6 +2030,7 @@ async function loadAll(options = {}) {
       fetchJSON(`/api/efficiency?hours=${hours}`),
       fetchJSON(`/api/smells?hours=${hours}`),
       fetchJSON(`/api/budget/forecast?window=monthly`),
+      fetchJSON(`/api/plugins/hermes-telemetry/loops?hours=720`),
     ]);
     if (requestId !== latestLoadRequestId) return;
 
@@ -2008,6 +2062,9 @@ async function loadAll(options = {}) {
 
       // --- burn-rate forecast ---
       html += renderForecast(forecastData);
+
+      // --- recurring loops ---
+      html += renderLoops(loopsData);
 
       // --- charts row 1: daily cost + top tools ---
       let dailyTitle;

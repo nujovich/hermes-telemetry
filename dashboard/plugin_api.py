@@ -20,6 +20,7 @@ stays in the runtime hooks.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 import threading
@@ -343,7 +344,18 @@ def session_detail(session_id: str) -> dict:
         """,
         (session_id,),
     )
-    return {"run": run, "llm_summary": llm_summary, "tool_summary": tool_summary}
+    # Loop detection: try to look up loop_facts for this session.
+    loop = None
+    with contextlib.suppress(Exception):
+        loop = _one(
+            """SELECT session_id, loop_type, detected_from, cron_job_id,
+                      status, first_seen_at, last_seen_at, fire_count,
+                      tool_call_count, detected_at, recomputed_at
+               FROM loop_facts WHERE session_id = ?""",
+            (session_id,),
+        )
+
+    return {"run": run, "llm_summary": llm_summary, "tool_summary": tool_summary, "loop": loop}
 
 
 # ---------------------------------------------------------------------------
@@ -842,4 +854,91 @@ def forecast(window: str = "monthly") -> dict:
         "status": status,
         "lookback_days": lookback_days,
         "est_days_to_breach": est_days_to_breach,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Recurring loops analytics
+# ---------------------------------------------------------------------------
+@router.get("/loops")
+def loops(window_hours: int = 720, profile: str = "") -> dict:
+    """Aggregate loop analytics: tiles (active/expired/runs/cost) and per-loop list.
+
+    Groups loop_facts by cron_job_id (for cron loops) or session_id (for
+    self-perpetuating), returning summary tiles and a per-loop detail list
+    ordered by last_seen_at descending.
+    """
+    rp, rp_params = _runs_profile_clause(profile)
+
+    # Tiles: count by status, total fire runs, total cost, and
+    # footprint attribution (tokens attributed to loop sessions).
+    # Join runs for cost and token data to stay read-only.
+    tiles_sql = """
+        SELECT
+            SUM(CASE WHEN lf.status = 'active' THEN 1 ELSE 0 END)    AS active_loops,
+            SUM(CASE WHEN lf.status = 'expired' THEN 1 ELSE 0 END)   AS expired_loops,
+            COALESCE(SUM(lf.fire_count), 0)                         AS total_runs,
+            ROUND(COALESCE(SUM(r.cost_usd), 0.0), 6)                AS total_cost_usd,
+            COALESCE(SUM(r.tokens_in), 0)                           AS total_tokens_in,
+            COALESCE(SUM(r.tokens_out), 0)                          AS total_tokens_out
+        FROM loop_facts lf
+        LEFT JOIN runs r ON lf.session_id = r.session_id
+        WHERE 1=1
+    """
+    tiles = _one(tiles_sql)
+
+    # Per-loop detail: group cron loops by cron_job_id; self-perpetuating
+    # loops stay one-per-session (fire_count is always 1 for them).
+    # Use a UNION: cron loops aggregated, self_perpetuating as-is.
+    # Footprint attribution: tokens_in / tokens_out reflect the loop's
+    # session-level token consumption (cron session IS the fire-response).
+    detail_sql = """
+        SELECT
+            COALESCE(lf.cron_job_id, lf.session_id) AS loop_id,
+            lf.loop_type,
+            MAX(lf.status)                          AS status,
+            COUNT(*)                                AS session_count,
+            ROUND(COALESCE(SUM(r.cost_usd), 0.0), 6) AS total_cost_usd,
+            COALESCE(SUM(r.tokens_in), 0)           AS tokens_in,
+            COALESCE(SUM(r.tokens_out), 0)          AS tokens_out,
+            MIN(lf.first_seen_at)                   AS first_seen,
+            MAX(lf.last_seen_at)                    AS last_seen,
+            COALESCE(MAX(lf.fire_count), 0)         AS fire_count
+        FROM loop_facts lf
+        LEFT JOIN runs r ON lf.session_id = r.session_id
+        WHERE lf.loop_type = 'cron'
+        GROUP BY COALESCE(lf.cron_job_id, lf.session_id)
+        UNION ALL
+        SELECT
+            lf.session_id                           AS loop_id,
+            lf.loop_type,
+            lf.status,
+            1                                       AS session_count,
+            ROUND(COALESCE(r2.cost_usd, 0.0), 6)   AS total_cost_usd,
+            COALESCE(r2.tokens_in, 0)              AS tokens_in,
+            COALESCE(r2.tokens_out, 0)             AS tokens_out,
+            lf.first_seen_at                        AS first_seen,
+            lf.last_seen_at                         AS last_seen,
+            lf.fire_count
+        FROM loop_facts lf
+        LEFT JOIN runs r2 ON lf.session_id = r2.session_id
+        WHERE lf.loop_type = 'self_perpetuating'
+        ORDER BY last_seen DESC
+    """
+
+    try:
+        detail = _rows(detail_sql)
+    except sqlite3.OperationalError:
+        detail = []
+
+    return {
+        "tiles": {
+            "active_loops": int(tiles.get("active_loops") or 0),
+            "expired_loops": int(tiles.get("expired_loops") or 0),
+            "total_runs": int(tiles.get("total_runs") or 0),
+            "total_cost_usd": float(tiles.get("total_cost_usd") or 0.0),
+            "total_tokens_in": int(tiles.get("total_tokens_in") or 0),
+            "total_tokens_out": int(tiles.get("total_tokens_out") or 0),
+        },
+        "loops": detail,
     }

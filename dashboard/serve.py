@@ -23,6 +23,7 @@ unreachable from other hosts. To view it from another machine, either:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -2686,6 +2687,17 @@ def api_session_detail(session_id: str):
         (session_id,),
     )
 
+    # Loop detection: check if this session is part of a loop pattern.
+    loop = None
+    with contextlib.suppress(Exception):
+        loop = _one(
+            """SELECT session_id, loop_type, detected_from, cron_job_id,
+                      status, first_seen_at, last_seen_at, fire_count,
+                      tool_call_count, detected_at, recomputed_at
+               FROM loop_facts WHERE session_id = ?""",
+            (session_id,),
+        )
+
     return {
         "run": run,
         "llm_summary": llm_summary,
@@ -2693,6 +2705,7 @@ def api_session_detail(session_id: str):
         "provider_models": provider_models,
         "tool_summary": tool_summary,
         "tool_calls": tool_calls,
+        "loop": loop,
     }
 
 

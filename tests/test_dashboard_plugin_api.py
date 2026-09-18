@@ -780,3 +780,161 @@ def test_budget_empty_profile_override_falls_back_to_default(plugin_api):
     out = plugin_api.budget()
     scopes = {s["scope"]: s for s in out["scopes"]}
     assert scopes["profile:coder/daily"]["limit_usd"] == 5.0
+
+
+def test_loops_endpoint_returns_tiles_and_loop_list(plugin_api):
+    """The /loops endpoint returns aggregate tiles and a per-loop detail list,
+    grouped by cron_job_id for cron loops."""
+    from datetime import datetime, timezone
+
+    import db as runtime_db
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[
+            {
+                "session_id": "cron-a1",
+                "model": "m",
+                "platform": "cron",
+                "cron_job_id": "job-alpha",
+            },
+            {
+                "session_id": "cron-a2",
+                "model": "m",
+                "platform": "cron",
+                "cron_job_id": "job-alpha",
+            },
+            {
+                "session_id": "cron-b1",
+                "model": "m",
+                "platform": "cron",
+                "cron_job_id": "job-beta",
+            },
+        ],
+        rows_llm=[
+            {
+                "session_id": "cron-a1",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 100,
+                "tokens_out": 200,
+                "cost_usd": 0.01,
+                "latency_ms": 100,
+            },
+            {
+                "session_id": "cron-a2",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 50,
+                "tokens_out": 100,
+                "cost_usd": 0.02,
+                "latency_ms": 80,
+            },
+            {
+                "session_id": "cron-b1",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 30,
+                "tokens_out": 60,
+                "cost_usd": 0.005,
+                "latency_ms": 60,
+            },
+        ],
+    )
+    runtime_db.end_run("cron-a1", "ok")
+    runtime_db.end_run("cron-a2", "ok")
+    runtime_db.end_run("cron-b1", "ok")
+    runtime_db.recompute_loop_facts()
+
+    out = plugin_api.loops()
+
+    # Tiles
+    tiles = out["tiles"]
+    assert tiles["active_loops"] >= 0
+    assert tiles["total_runs"] >= 0
+    assert tiles["total_cost_usd"] > 0
+    # Footprint attribution: token totals from loop sessions
+    assert tiles["total_tokens_in"] >= 0
+    assert tiles["total_tokens_out"] >= 0
+
+    # Loops list should have at least 2 entries (job-alpha, job-beta)
+    loops = out["loops"]
+    assert len(loops) >= 2
+    loop_ids = {lo["loop_id"] for lo in loops}
+    assert "job-alpha" in loop_ids
+    assert "job-beta" in loop_ids
+
+    # job-alpha should have session_count=2, fire_count=2
+    alpha = next(lo for lo in loops if lo["loop_id"] == "job-alpha")
+    assert alpha["session_count"] == 2
+    assert alpha["fire_count"] == 2
+    assert alpha["loop_type"] == "cron"
+    # Footprint attribution: tokens aggregated across both sessions
+    assert alpha["tokens_in"] == 150  # 100 + 50
+    assert alpha["tokens_out"] == 300  # 200 + 100
+
+
+def test_loops_endpoint_self_perpetuating(plugin_api):
+    """The /loops endpoint includes self-perpetuating loops (cronjob tool users)
+    as individual entries with loop_type='self_perpetuating'."""
+    from datetime import datetime, timezone
+
+    import db as runtime_db
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[
+            {
+                "session_id": "sp-loop",
+                "model": "m",
+                "platform": "cli",
+            },
+        ],
+        rows_llm=[
+            {
+                "session_id": "sp-loop",
+                "ts": now,
+                "model": "m",
+                "provider": "p",
+                "tokens_in": 10,
+                "tokens_out": 20,
+                "cost_usd": 0.001,
+                "latency_ms": 50,
+            },
+        ],
+        rows_tool=[
+            {
+                "session_id": "sp-loop",
+                "tool_name": "cronjob",
+                "ok": 1,
+                "ts": now,
+                "latency_ms": 10,
+            },
+        ],
+    )
+    runtime_db.end_run("sp-loop", "ok")
+    runtime_db.recompute_loop_facts()
+
+    out = plugin_api.loops()
+    loops = out["loops"]
+    sp_entries = [lo for lo in loops if lo["loop_type"] == "self_perpetuating"]
+    assert len(sp_entries) >= 1
+    sp = sp_entries[0]
+    assert sp["loop_id"] == "sp-loop"
+    assert sp["session_count"] == 1
+
+
+def test_loops_endpoint_empty_when_no_loop_data(plugin_api):
+    """The /loops endpoint returns zero tiles and empty list when no loops exist."""
+    out = plugin_api.loops()
+    tiles = out["tiles"]
+    assert tiles["active_loops"] == 0
+    assert tiles["expired_loops"] == 0
+    assert tiles["total_runs"] == 0
+    assert tiles["total_cost_usd"] == 0.0
+    assert tiles["total_tokens_in"] == 0
+    assert tiles["total_tokens_out"] == 0
+    assert out["loops"] == []
