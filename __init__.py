@@ -146,17 +146,41 @@ def _extract_cron_job_id(session_id: str, platform: str) -> str | None:
 
 
 def _is_tool_ok(result: Any) -> bool:
-    """Determine success/failure from a tool result string."""
-    if not isinstance(result, str):
+    """Determine success/failure from a tool result.
+
+    Tool results are usually JSON strings (sometimes already-parsed dicts). A result is a
+    failure when it carries a non-empty ``error``, a non-zero ``exit_code`` (terminal),
+    ``is_error``/``isError`` set, ``success`` false, or ``status`` in an error state.
+    A present-but-null ``error`` key (the terminal tool's success envelope) is NOT an
+    error. Plain text and unparseable results count as ok.
+    """
+    parsed: Any = result
+    if isinstance(result, str):
+        stripped = result.lstrip()
+        if not stripped.startswith("{"):
+            return True
+        try:
+            parsed = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            return True
+    if not isinstance(parsed, dict):
         return True
-    if result.startswith('{"error"'):
+    if parsed.get("error") not in (None, "", False):
         return False
-    try:
-        parsed = json.loads(result)
-        if isinstance(parsed, dict) and "error" in parsed:
-            return False
-    except (json.JSONDecodeError, ValueError):
-        pass
+    exit_code = parsed.get("exit_code")
+    if isinstance(exit_code, bool):
+        exit_code = int(exit_code)
+    if isinstance(exit_code, (int, float)) and exit_code != 0:
+        return False
+    if isinstance(exit_code, str) and exit_code.strip().lstrip("-").isdigit() and int(exit_code) != 0:
+        return False
+    if parsed.get("is_error") is True or parsed.get("isError") is True:
+        return False
+    if parsed.get("success") is False:
+        return False
+    status = parsed.get("status")
+    if isinstance(status, str) and status.lower() in {"error", "failed", "failure", "timeout", "timed_out"}:
+        return False
     return True
 
 
