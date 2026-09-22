@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
+import sqlite3
+import time
 from pathlib import Path
 
 import yaml
@@ -336,3 +339,176 @@ def test_model_unavailable_alert_increments_occurrences(tmp_path, monkeypatch):
 
     assert _init_mod._pending_model_unavailable_alerts["sess-bump"][3] == 3
     assert db.get_model_unavailable(model, provider)["occurrences"] == 3
+
+
+# ---------------------------------------------------------------------------
+# pre_tool_call hot-path budget gate
+# ---------------------------------------------------------------------------
+
+
+class _StubCtx:
+    """Minimal PluginContext stub capturing the hooks register() installs."""
+
+    profile_name = "test"
+
+    def __init__(self):
+        self.hooks = {}
+        self.commands = {}
+        self.cli_commands = {}
+
+    def register_hook(self, name, fn):
+        self.hooks[name] = fn
+
+    def register_command(self, name, fn, **_kw):
+        self.commands[name] = fn
+
+    def register_cli_command(self, name, **_kw):
+        self.cli_commands[name] = _kw
+
+
+def _registered_hooks(monkeypatch):
+    """Run register() against a stub ctx (no watcher, no pricing refresh, no
+    auto-setup) and return the captured hook map."""
+    import hermes_telemetry.budget as budget_mod
+
+    monkeypatch.setenv("HERMES_TELEMETRY_NO_SETUP", "1")
+    monkeypatch.setattr(_init_mod, "_try_pricing_refresh", lambda log: None)
+    monkeypatch.setattr(budget_mod, "start_budget_watcher", lambda: None)
+    # _init_mod is exec'd from a file location, so Python hands it
+    # __package__ = "hermes_telemetry._init_module" (the full dotted name) and
+    # register()'s relative imports resolve against that non-existent package.
+    # Point __package__ at the conftest-registered package instead.
+    monkeypatch.setattr(_init_mod, "__package__", "hermes_telemetry")
+    ctx = _StubCtx()
+    _init_mod.register(ctx)
+    return ctx.hooks
+
+
+def _reset_hook_throttle():
+    _init_mod._hook_error_log_state.clear()
+
+
+def test_pre_tool_call_evaluates_budget_gate(monkeypatch):
+    """The hook runs the DB-backed budget evaluation on every tool call."""
+    import hermes_telemetry.budget as budget_mod
+    import hermes_telemetry.db as db_mod
+
+    seen = []
+    monkeypatch.setattr(
+        db_mod,
+        "get_run",
+        lambda session_id: seen.append(session_id) or {"session_id": session_id},
+    )
+    monkeypatch.setattr(budget_mod, "evaluate_run", lambda run: [])
+    monkeypatch.setattr(budget_mod, "enforce_cron_pause", lambda verdicts: None)
+    monkeypatch.setattr(budget_mod, "block_message_for", lambda verdicts: None)
+    hooks = _registered_hooks(monkeypatch)
+    assert hooks["pre_tool_call"](session_id="sess-2") is None
+    assert seen == ["sess-2"]
+
+
+def test_pre_tool_call_blocks_on_hard_verdict(monkeypatch):
+    import hermes_telemetry.budget as budget_mod
+    import hermes_telemetry.db as db_mod
+
+    monkeypatch.setattr(
+        budget_mod, "load_config", lambda: {"budgets": {"global": {"daily_usd": 1.0}}}
+    )
+    monkeypatch.setattr(db_mod, "get_run", lambda session_id: {"session_id": session_id})
+    monkeypatch.setattr(budget_mod, "evaluate_run", lambda run: [])
+    monkeypatch.setattr(budget_mod, "enforce_cron_pause", lambda verdicts: None)
+    monkeypatch.setattr(budget_mod, "block_message_for", lambda verdicts: "[BUDGET] over limit")
+    hooks = _registered_hooks(monkeypatch)
+    assert hooks["pre_tool_call"](session_id="sess-3") == {
+        "action": "block",
+        "message": "[BUDGET] over limit",
+    }
+
+
+def test_pre_tool_call_fails_open_and_throttles_error_logging(monkeypatch, tmp_path):
+    """A raising DB layer never blocks tools (fail-open) and its error line is
+    rate-limited: one emit per interval, then a suppressed-count follow-up."""
+    import hermes_telemetry.budget as budget_mod
+    import hermes_telemetry.db as db_mod
+
+    monkeypatch.setattr(
+        budget_mod, "load_config", lambda: {"budgets": {"global": {"daily_usd": 1.0}}}
+    )
+
+    def _locked(session_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db_mod, "get_run", _locked)
+    _reset_hook_throttle()
+    hooks = _registered_hooks(monkeypatch)
+    pre = hooks["pre_tool_call"]
+    for _ in range(3):
+        assert pre(session_id="sess-4") is None  # fail-open, never blocks
+
+    log_file = tmp_path / "telemetry" / "telemetry.log"
+    prefix = "pre_tool_call (budget) hook failed"
+    lines = [ln for ln in log_file.read_text().splitlines() if prefix in ln]
+    assert len(lines) == 1, f"expected 1 throttled error line, got {len(lines)}"
+
+    # Age the throttle state past the interval -> next failure logs again and
+    # reports how many occurrences were suppressed meanwhile. The state key is
+    # (prefix, exception class).
+    _init_mod._hook_error_log_state[(prefix, "OperationalError")] = (
+        time.monotonic() - _init_mod._HOOK_ERROR_LOG_INTERVAL_S - 1.0,
+        2,
+    )
+    assert pre(session_id="sess-4") is None
+    lines = [ln for ln in log_file.read_text().splitlines() if prefix in ln]
+    assert len(lines) == 2
+    assert "suppressed" in lines[-1]
+
+
+def test_throttled_error_is_per_prefix(caplog):
+    """Throttling is per prefix: a different failing hook logs immediately."""
+    _reset_hook_throttle()
+    with caplog.at_level(logging.ERROR, logger="hermes_telemetry"):
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+        _init_mod._throttled_error("hook B failed", RuntimeError("y"))
+    recs = [r for r in caplog.records if r.name == "hermes_telemetry"]
+    assert len(recs) == 2
+
+
+def test_throttled_error_is_per_exception_class(caplog):
+    """A different exception class inside the window is surfaced immediately —
+    the state key is (prefix, exception class), not the prefix alone."""
+    _reset_hook_throttle()
+    with caplog.at_level(logging.ERROR, logger="hermes_telemetry"):
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+        _init_mod._throttled_error("hook A failed", sqlite3.OperationalError("locked"))
+    recs = [r for r in caplog.records if r.name == "hermes_telemetry"]
+    assert len(recs) == 2
+    assert "locked" in recs[-1].getMessage()
+
+
+def test_throttled_error_reports_elapsed_window(caplog):
+    """The suppressed-count message reports the actual elapsed window since the
+    last emit, not the configured interval."""
+    _reset_hook_throttle()
+    with caplog.at_level(logging.ERROR, logger="hermes_telemetry"):
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+        # Age the state well past the interval; the next emit must report the
+        # real elapsed time (~interval + 100s), not the configured interval.
+        _init_mod._hook_error_log_state[("hook A failed", "RuntimeError")] = (
+            time.monotonic() - _init_mod._HOOK_ERROR_LOG_INTERVAL_S - 100.0,
+            1,
+        )
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+    recs = [r for r in caplog.records if r.name == "hermes_telemetry"]
+    assert len(recs) == 2
+    msg = recs[-1].getMessage()
+    assert "suppressed" in msg
+    # Elapsed window is interval + ~100s -> the reported seconds exceed the
+    # configured interval (would be exactly 300 if it reported the constant).
+    import re
+
+    m = re.search(r"in the last (\d+)s", msg)
+    assert m is not None
+    assert float(m.group(1)) > _init_mod._HOOK_ERROR_LOG_INTERVAL_S
