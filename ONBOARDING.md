@@ -28,6 +28,7 @@
 17. [Valid Hooks Reference](#valid-hooks-reference)
 18. [Dashboard Plugin Surface](#dashboard-plugin-surface)
 19. [Hermes Session Storage (transcripts and artifacts)](#hermes-session-storage-transcripts-and-artifacts)
+20. [Dashboard i18n (EN/RU toggle)](#dashboard-i18n-enru-toggle)
 
 ---
 
@@ -2226,3 +2227,76 @@ promise and can change on any upgrade.
 - Keep the connection short-lived: a live Hermes is writing to the same WAL.
 - Cover schema drift in tests explicitly, the same way the migration tests cover
   upgrade paths.
+
+---
+
+## Dashboard i18n (EN/RU toggle)
+
+Standalone dashboard (`dashboard/index.html`) is EN-first with a deterministic
+EN→RU toggle (no backend, no build step, no new deps).
+
+### Source of truth
+
+- **Dictionary file:** `dashboard/i18n_ru.js` — EN keys (source), RU overlay.
+  Pretty-printed one key per line, loaded via `<script src="i18n_ru.js">`
+  before `dashboard/i18n.js` (shipped `i18n_t`/`__DYN`/`__RU` logic, shared by
+  the page and `dashboard/i18n.test.js` via `vm`). Served as static assets by
+  `serve.py` (its `Handler.do_GET` serves any file under `SCRIPT_DIR` via
+  `super().do_GET()`; no extra route needed). If `/i18n_ru.js` 404s, the
+  `__RU` guard (`(typeof i18nRU !== 'undefined' && i18nRU) || {}`) keeps the
+  dashboard working with the EN source itself as fallback.
+- **Key format:** EN string is the key, RU string is the value. Example:
+  `"Home": "Главная"`. Dynamic keys embed `${0}`, `${1}` placeholders:
+  `"Window: ${0} → ${1} (${2})": "Окно: ${0} → ${1} (${2})"`.
+- **Fallback:** missing RU entry → return the EN source verbatim (visible gap,
+  never silent). Do not add a RU-only key — every key must be a valid EN source.
+
+### Static vs dynamic
+
+- **Static keys** (`k.indexOf('${') === -1`): direct `__RU[en]` lookup.
+- **Dynamic keys** (`${N}`): regex fallback. The placeholder is escaped via
+  `k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\$\\\{[^}]*\\\}/g, '(.*)')`
+  — note the escaped `\$` (the unescaped `$` is a regex end-anchor and breaks the
+  fallback; the bug caused 89/297 dynamic strings to stay untranslated). Captured
+  groups are substituted with a **function** replacement
+  `out.replace('${' + i + '}', () => g)` so a literal `$&` in the provider/model
+  name does not expand to the whole match.
+- **Leaf text only:** translate inner text (`Model:`, `Tokens`, `Home`), not
+  HTML/SVG blobs. The 136 markup-keyed entries (notably the `<rect>` chart case)
+  were refactored to build structure once and translate leaves; `dashboard/i18n.test.js`
+  asserts no key contains `<` and checks a chart leaf (`Model: Other`).
+
+### Persistence and chrome
+
+- **Default:** `__dashLang = 'en'` (`document.documentElement.lang` synced on load
+  and on toggle). `<html lang="en">` and `<title>hermes-telemetry dashboard</title>`
+  are English by default — the EN source is the document language.
+- **Persistence key:** `hermes_telemetry_lang` in `localStorage` (un-namespaced
+  from the generic `dashboard_lang` to avoid collision). Survives reload.
+- **No `location.reload()`:** `__swapLang()` does an in-place re-render
+  (`__syncLangBtn()` → `__applyStaticI18n()` → `loadAll({showShell:false})`),
+  preserving drilldown/filters/scroll. `__applyStaticI18n` snapshots original
+  text/attr/title in `__staticI18nOrig` so switching EN→RU→EN restores verbatim.
+- **Badge class from raw value:** `badge(raw, map, label)` resolves `class` from the
+  raw status (`ok`/`error`/`interrupted`/`running`) and renders `label` separately.
+  `statusBadge(raw)` maps `ok:'OK'` (Latin, not Cyrillic `ОК`) via `statusLabelsRU`;
+  the EN path is identity (as on main) and RU is the only override, so casing
+  stays uniform. Extra statuses `timeout`/`failed`/`cancelled`
+  were removed — only the four real run statuses remain (subagent `child_status`
+  never reaches runs).
+
+### Tests
+
+`dashboard/i18n.test.js` (`node --test dashboard/i18n.test.js`, no deps) loads the
+shipped `dashboard/i18n.js` + `dashboard/i18n_ru.js` via `vm` (no local copy of
+`i18n_t` — drift fails CI by construction) and asserts: A1 (`OK`→`Успех` RU,
+`OK`→`OK` EN) and A2 (`Total: … tokens`→`Итого`), shadowing for every dynamic key
+(`V0`/`V1` substitution, most-specific-first), coverage of every static
+`i18n_t` literal in `index.html`, `$&` safety, and chart-leaf labels. CI runs it
+as `Dashboard i18n tests`.
+
+### Known limitation
+
+Only the standalone dashboard (`dashboard/index.html`) is localized; the plugin
+widget (`dashboard/dist/index.js`) stays English, so running both surfaces gives
+a mixed-language UI.

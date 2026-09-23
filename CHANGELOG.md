@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged. `hermes telemetry pricing drift`/`pricing backfill` remain useful
   for auditing `pricing.yaml` itself but are no longer required to keep costs
   accurate. See `ONBOARDING.md § Pricing Engine → Lookup priority chain`.
+### Added — Dashboard EN/RU language toggle (#92)
+
+- Standalone dashboard (`dashboard/index.html`) is EN-first with an EN↔RU toggle:
+  EN strings are the source of truth, `dashboard/i18n_ru.js` is the RU overlay
+  (one key per line, leaf text only), `dashboard/i18n.js` holds the shipped
+  `i18n_t`/`__DYN`/`__RU` logic shared by the page and `dashboard/i18n.test.js`.
+  Default `en` with `<html lang="en">`, `document.documentElement.lang` synced on
+  load and toggle, in-place re-render preserving drilldown/filters/scroll,
+  persistence key `hermes_telemetry_lang`. Status badge class resolves from the
+  raw value; EN path is identity, RU the only override. Known limitation: the
+  plugin widget (`dashboard/dist/index.js`) stays English.
 
 ## [0.8.0] - 2026-07-09
 
