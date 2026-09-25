@@ -1,11 +1,18 @@
 name: hermes-telemetry
 version: "0.8.0"
+manifest_version: 2
 description: >-
   Observability + budget guardrails for Hermes Agent — tokens, cost, latency,
   tool calls per session and cron job. Persists to local SQLite. Exposes /stats
   and /budget slash commands.
 author: nujovich
 kind: standalone
+config_schema:
+  mode:
+    type: str
+    choices: [observe, enforce]
+    default: observe
+    description: Observe records telemetry without blocking tools or pausing cron jobs; enforce enables budget controls.
 provides_hooks:
   - on_session_start
   - pre_api_request

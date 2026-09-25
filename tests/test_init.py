@@ -93,6 +93,21 @@ def test_is_tool_ok_none():
 # ---------------------------------------------------------------------------
 
 
+def test_observation_mode_is_the_manifest_default():
+    """The safe monitoring mode is explicit and discoverable in plugin settings."""
+    data = yaml.safe_load((_ROOT / "plugin.yaml").read_text())
+    mode = data["config_schema"]["mode"]
+    assert mode["default"] == "observe"
+    assert mode["choices"] == ["observe", "enforce"]
+
+
+def test_budget_tool_gate_is_opt_in():
+    """The monitoring path must not register a hook that can block tools."""
+    source = (_ROOT / "__init__.py").read_text()
+    assert "if enforce_budget:" in source
+    assert 'ctx.register_hook("pre_tool_call", pre_tool_call)' in source
+
+
 def test_plugin_yaml_uses_provides_hooks():
     """plugin.yaml must use provides_hooks: (official manifest schema), not hooks:."""
     manifest_path = _ROOT / "plugin.yaml"

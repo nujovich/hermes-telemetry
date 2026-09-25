@@ -166,10 +166,19 @@ def register(ctx) -> None:  # noqa: ANN001
 
     from . import budget, core_pricing, db, moa, pricing, setup, stats
 
+    get_config = getattr(ctx, "get_config", None)
+    mode = get_config("mode", default="observe") if callable(get_config) else "observe"
+    if mode not in {"observe", "enforce"}:
+        tele_log.warning("invalid telemetry mode %r; falling back to observe", mode)
+        mode = "observe"
+    enforce_budget = mode == "enforce"
+    tele_log.info("hermes-telemetry mode=%s", mode)
+
     # ------------------------------------------------------------------
     # Start budget file watcher (hot-reload on budget.yaml changes)
     # ------------------------------------------------------------------
-    budget.start_budget_watcher()
+    if enforce_budget:
+        budget.start_budget_watcher()
 
     # ------------------------------------------------------------------
     # Auto-refresh pricing from remote sources (once per 24h)
@@ -695,16 +704,16 @@ def register(ctx) -> None:  # noqa: ANN001
             if sender_id:
                 db.set_sender(session_id, sender_id)
             db.set_profile(session_id, getattr(ctx, "profile_name", None))
-            run = db.get_run(session_id)
-            if not run:
-                return None
-            verdicts = budget.evaluate_run(run)
-            budget.enforce_cron_pause(verdicts)
             ctx_parts: list[str] = []
-            ctx_text = budget.alert_context(verdicts)
-            if ctx_text:
-                tele_log.info("budget alert injected for session=%s", session_id)
-                ctx_parts.append(ctx_text)
+            if enforce_budget:
+                run = db.get_run(session_id)
+                if run:
+                    verdicts = budget.evaluate_run(run)
+                    budget.enforce_cron_pause(verdicts)
+                    ctx_text = budget.alert_context(verdicts)
+                    if ctx_text:
+                        tele_log.info("budget alert injected for session=%s", session_id)
+                        ctx_parts.append(ctx_text)
             with _pending_free_paid_lock:
                 alert = _pending_free_paid_alerts.pop(session_id, None)
             if alert:
@@ -749,31 +758,24 @@ def register(ctx) -> None:  # noqa: ANN001
 
     ctx.register_hook("pre_llm_call", pre_llm_call)
 
-    # ------------------------------------------------------------------
-    # pre_tool_call  — budget HARD enforcement (the real gate)
-    # Returning {"action":"block","message":...} aborts the tool call and
-    # returns an error to the model instead (see plugins.py:1666). Blocking
-    # every subsequent tool ends the agentic loop at the next boundary —
-    # bounding spend without a true mid-call abort (which Hermes doesn't
-    # expose). Cron jobs are additionally paused for future runs.
-    # kwargs: tool_name, args, task_id, session_id, tool_call_id
-    # ------------------------------------------------------------------
-    def pre_tool_call(session_id: str = "", **_kw):
-        try:
-            run = db.get_run(session_id)
-            if not run:
-                return None
-            verdicts = budget.evaluate_run(run)
-            budget.enforce_cron_pause(verdicts)
-            msg = budget.block_message_for(verdicts)
-            if msg:
-                tele_log.warning("budget hard-block for session=%s: %s", session_id, msg)
-                return {"action": "block", "message": msg}
-        except Exception as exc:
-            tele_log.error("pre_tool_call (budget) hook failed: %s", exc)
-        return None
+    if enforce_budget:
 
-    ctx.register_hook("pre_tool_call", pre_tool_call)
+        def pre_tool_call(session_id: str = "", **_kw):
+            try:
+                run = db.get_run(session_id)
+                if not run:
+                    return None
+                verdicts = budget.evaluate_run(run)
+                budget.enforce_cron_pause(verdicts)
+                msg = budget.block_message_for(verdicts)
+                if msg:
+                    tele_log.warning("budget hard-block for session=%s: %s", session_id, msg)
+                    return {"action": "block", "message": msg}
+            except Exception as exc:
+                tele_log.error("pre_tool_call (budget) hook failed: %s", exc)
+            return None
+
+        ctx.register_hook("pre_tool_call", pre_tool_call)
 
     # ------------------------------------------------------------------
     # /stats slash command
@@ -834,7 +836,7 @@ def register(ctx) -> None:  # noqa: ANN001
     # ------------------------------------------------------------------
     if os.environ.get("HERMES_TELEMETRY_NO_SETUP") != "1":
         try:
-            auto_msg = setup.run(interactive=False)
+            auto_msg = setup.run(interactive=False, include_budget=enforce_budget)
             # Log so the user sees it in telemetry.log on first load
             for line in auto_msg.splitlines():
                 tele_log.info(line)

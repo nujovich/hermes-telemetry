@@ -48,6 +48,18 @@ does two things:
 through hooks. The only user-facing surface is `/stats`, `/budget`, and `/setup`.
 Errors are swallowed in every hook — the plugin must never take down a session.
 
+### Runtime modes
+
+The plugin setting `plugins.entries.hermes-telemetry.settings.mode` controls
+whether budget behavior is active:
+
+- `observe` (default): collect and report telemetry; do not create budget.yaml
+  automatically, inject budget notices, block tools, or pause cron jobs.
+- `enforce`: enable the budget guardrails and setup behavior described below.
+
+The mode is read during plugin registration. Changing it requires restarting the
+Hermes process that owns the plugin.
+
 This plugin was built for the [Hermes Agent Challenge](https://dev.to/devteam/join-the-hermes-agent-challenge-1000-in-prizes-13cd)
 and addresses [NousResearch/hermes-agent#6642](https://github.com/NousResearch/hermes-agent/issues/6642).
 

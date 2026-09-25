@@ -81,6 +81,14 @@ class TestSetupPricing:
         pricing_file = tmp_telemetry / "telemetry" / "pricing.yaml"
         assert not pricing_file.exists()
 
+    def test_observation_mode_does_not_create_budget(self, tmp_telemetry):
+        """Observation mode may configure pricing without creating enforcement defaults."""
+        with patch.object(setup, "_fetch_openrouter_models", return_value={}):
+            setup.run(interactive=False, include_budget=False)
+
+        assert (tmp_telemetry / "telemetry" / "pricing.yaml").exists()
+        assert not (tmp_telemetry / "telemetry" / "budget.yaml").exists()
+
     def test_idempotent_when_pricing_exists(self, tmp_telemetry):
         """If pricing.yaml already exists, setup doesn't overwrite."""
         tele_dir = tmp_telemetry / "telemetry"

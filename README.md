@@ -512,18 +512,23 @@ See `ONBOARDING.md § Core-sourced pricing snapshots` for the full design ration
 ## Setup Wizard
 
 hermes-telemetry includes a first-time setup wizard that runs automatically on first
-plugin load when `pricing.yaml` and/or `budget.yaml` are missing. It can also be
-triggered manually at any time with the `/setup` slash command.
+plugin load when `pricing.yaml` is missing. It can also be triggered manually at
+any time with the `/setup` slash command.
+
+The plugin setting `mode` controls enforcement:
+
+- `observe` (default): collect and report telemetry only; do not create a budget
+  automatically, block tools, inject budget notices, or pause cron jobs.
+- `enforce`: enable the budget guardrails described below.
 
 ### Auto-setup (first load)
 
-On first load, if either config file is missing, the plugin auto-generates defaults:
+On first load in `observe` mode, the plugin auto-generates pricing defaults only:
 
 - **Pricing:** fetches all models with fixed pricing from the OpenRouter API and merges
   them with ~30 built-in defaults (Anthropic, OpenAI, DeepSeek, Google, Meta, Nous).
   New prices take effect immediately — no gateway restart needed.
-- **Budget:** writes a conservative global budget (`$5.00/day`, `$100.00/month`) with
-  an 80% soft warning and 100% hard cap.
+- **Budget:** no `budget.yaml` is created automatically in `observe` mode.
 
 ### `/setup` slash command
 
@@ -549,9 +554,12 @@ Use `/setup` to check configuration status or reconfigure individual files.
 
 #### Budget options
 
+These commands are reporting configuration only while `mode: observe` is active.
+Budget enforcement requires `mode: enforce`.
+
 | Option | Behavior |
 |--------|----------|
-| `default` | Global: `$5.00/day`, `$100.00/month`. Soft warning at 80%, hard block at 100% |
+| `default` | Global: `$5.00/day`, `$100.00/month`. Soft warning at 80%, hard block at 100% in `enforce` mode |
 | `custom` | Prints the `/budget set` commands for manual configuration |
 | `skip` | Costs tracked but never enforced |
 
@@ -879,7 +887,20 @@ one).
 
 ## Configuration
 
-Configuration lives in `~/.hermes/telemetry/`:
+Configuration lives in `~/.hermes/telemetry/`. Plugin behavior is configured
+through Hermes under `plugins.entries.hermes-telemetry.settings.mode`:
+
+```yaml
+plugins:
+  entries:
+    hermes-telemetry:
+      settings:
+        mode: observe
+```
+
+`observe` is the default. Use `enforce` only when budget blocking and cron
+pausing are explicitly wanted.
+
 
 ```
 ~/.hermes/telemetry/
@@ -1205,7 +1226,10 @@ Cron jobs run in a `ThreadPoolExecutor` (Hermes `cron/scheduler.py`). Multiple j
 
 ## Budget Enforcement
 
-> See the budget enforcement demo at the top of this README for an end-to-end walkthrough.
+Budget enforcement is disabled unless the plugin setting `mode` is `enforce`.
+The default `observe` mode records the same telemetry and exposes `/budget` for
+reporting, but it does not inject budget notices, block tool calls, or pause
+cron jobs.
 
 ### How It Works
 

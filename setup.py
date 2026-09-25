@@ -1,7 +1,9 @@
 """Interactive setup wizard for hermes-telemetry.
 
-Runs automatically on first plugin load when pricing.yaml and/or budget.yaml
-are missing. Also available as the /setup slash command for re-configuration.
+Runs automatically on first plugin load when pricing.yaml is missing. Also
+available as the /setup slash command for re-configuration. Observation mode
+never creates budget.yaml automatically; enforcement mode may create it when
+requested by the caller.
 
 Usage (programmatic):
     from hermes_telemetry import setup
@@ -275,14 +277,20 @@ def _write_budget(data: dict) -> Path:
 # ---------------------------------------------------------------------------
 # Public API — called from __init__.py or /setup command
 # ---------------------------------------------------------------------------
-def run(interactive: bool = True, daily_usd: float = 5.00, monthly_usd: float = 100.00) -> str:
+def run(
+    interactive: bool = True,
+    daily_usd: float = 5.00,
+    monthly_usd: float = 100.00,
+    include_budget: bool = True,
+) -> str:
     """Run the setup wizard.
 
     Args:
         interactive: If True, prints prompts and reads stdin.
                      If False, auto-generates defaults (used by first-load auto-setup).
-        daily_usd:   Default daily budget when non-interactive.
-        monthly_usd: Default monthly budget when non-interactive.
+        daily_usd:   Default daily budget when non-interactive and enabled.
+        monthly_usd: Default monthly budget when non-interactive and enabled.
+        include_budget: Whether setup may configure budget.yaml.
 
     Returns:
         A human-readable summary of what was configured.
@@ -331,41 +339,47 @@ def run(interactive: bool = True, daily_usd: float = 5.00, monthly_usd: float = 
             pricing_done = True
 
     # ---- Budget ----
-    budget_done = False
-    if _budget_path().exists():
-        lines.append(f"\n[Budget] Already configured: {_budget_path()}")
-        lines.append("  Skipping (delete the file to re-run budget setup).")
-        budget_done = True
-
-    if not budget_done:
-        lines.append("\n[Budget] No budget.yaml found.")
-        if interactive:
-            lines.append("  How do you want to configure budgets?")
-            lines.append("  1) Recommended: global budget ($5/day, $100/month)")
-            lines.append("  2) Custom: I'll set my own limits")
-            lines.append("  3) Skip: no budgets (costs still tracked, no enforcement)")
-            lines.append("")
-            lines.append("  Run /setup again and pass an option:")
-            lines.append("    /setup budget default   → option 1")
-            lines.append("    /setup budget custom    → option 2")
-            lines.append("    /setup budget skip      → option 3")
-            return "\n".join(lines)
+    if not include_budget:
+        if _budget_path().exists():
+            lines.append(f"\n[Budget] Existing file retained for reporting: {_budget_path()}")
         else:
-            # Non-interactive: write recommended defaults
-            bdata = {
-                "budgets": {
-                    "global": {
-                        "daily_usd": daily_usd,
-                        "monthly_usd": monthly_usd,
-                    },
-                },
-                "thresholds": {"soft_pct": 0.80, "hard_pct": 1.00},
-                "on_estimated": {"mode": "warn_only"},
-            }
-            path = _write_budget(bdata)
-            lines.append(f"  Wrote default budget to {path}")
-            lines.append(f"  Global: ${daily_usd:.2f}/day, ${monthly_usd:.2f}/month")
+            lines.append("\n[Budget] No budget.yaml created; observation mode is active.")
+        lines.append("  Budget limits are not enforced in observation mode.")
+    else:
+        budget_done = False
+        if _budget_path().exists():
+            lines.append(f"\n[Budget] Already configured: {_budget_path()}")
+            lines.append("  Skipping (delete the file to re-run budget setup).")
             budget_done = True
+
+        if not budget_done:
+            lines.append("\n[Budget] No budget.yaml found.")
+            if interactive:
+                lines.append("  How do you want to configure budgets?")
+                lines.append("  1) Recommended: global budget ($5/day, $100/month)")
+                lines.append("  2) Custom: I'll set my own limits")
+                lines.append("  3) Skip: no budgets (costs still tracked, no enforcement)")
+                lines.append("")
+                lines.append("  Run /setup again and pass an option:")
+                lines.append("    /setup budget default   → option 1")
+                lines.append("    /setup budget custom    → option 2")
+                lines.append("    /setup budget skip      → option 3")
+                return "\n".join(lines)
+            else:
+                bdata = {
+                    "budgets": {
+                        "global": {
+                            "daily_usd": daily_usd,
+                            "monthly_usd": monthly_usd,
+                        },
+                    },
+                    "thresholds": {"soft_pct": 0.80, "hard_pct": 1.00},
+                    "on_estimated": {"mode": "warn_only"},
+                }
+                path = _write_budget(bdata)
+                lines.append(f"  Wrote default budget to {path}")
+                lines.append(f"  Global: ${daily_usd:.2f}/day, ${monthly_usd:.2f}/month")
+                budget_done = True
 
     # ---- Summary ----
     lines.append("\n" + "=" * 50)
