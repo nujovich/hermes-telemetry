@@ -25,7 +25,8 @@ print(f"[PoC] HERMES_HOME = {tmp}\n")
 import importlib.util  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
-    "hermes_telemetry", REPO / "__init__.py", submodule_search_locations=[str(REPO)]
+    "hermes_telemetry", REPO / "hermes_telemetry" / "__init__.py",
+    submodule_search_locations=[str(REPO / "hermes_telemetry")],
 )
 plugin_mod = importlib.util.module_from_spec(_spec)
 sys.modules["hermes_telemetry"] = plugin_mod
