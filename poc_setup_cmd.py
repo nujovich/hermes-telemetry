@@ -18,9 +18,9 @@ print(f"[PoC] HERMES_HOME = {tmp}\n")
 
 # Register package
 _tele_pkg = types.ModuleType("hermes_telemetry")
-_tele_pkg.__path__ = [str(REPO)]
+_tele_pkg.__path__ = [str(REPO / "hermes_telemetry")]
 _tele_pkg.__package__ = "hermes_telemetry"
-_tele_pkg.__file__ = str(REPO / "__init__.py")
+_tele_pkg.__file__ = str(REPO / "hermes_telemetry" / "__init__.py")
 sys.modules.setdefault("hermes_telemetry", _tele_pkg)
 
 import importlib
