@@ -42,6 +42,11 @@ include = ["hermes_telemetry*"]
 [tool.setuptools.package-data]
 hermes_telemetry = ["*.yaml", "*.html"]
 
+# Hermes loads the plugin from this directory; uv only installs its dependencies.
+# setup.py is the /setup wizard, not a setuptools entry point.
+[tool.uv]
+package = false
+
 # ---------------------------------------------------------------------------
 # Linting & formatting (ruff)
 # ---------------------------------------------------------------------------
