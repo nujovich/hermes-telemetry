@@ -16,7 +16,7 @@ ROOT = Path(__file__).parent
 
 # Register 'hermes_telemetry' as a package pointing at this directory.
 pkg = types.ModuleType("hermes_telemetry")
-pkg.__path__ = [str(ROOT)]  # allows submodule discovery
+pkg.__path__ = [str(ROOT / "hermes_telemetry")]  # allows submodule discovery
 pkg.__package__ = "hermes_telemetry"
 pkg.__file__ = str(ROOT / "__init__.py")
 sys.modules["hermes_telemetry"] = pkg

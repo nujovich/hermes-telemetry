@@ -19,4 +19,4 @@ _detect_hermes_python() {
 
 PYTHON="${HERMES_PYTHON:-$(_detect_hermes_python || echo python3)}"
 
-exec "$PYTHON" "$PLUGIN_DIR/_cli_entrypoint.py" "$@"
+exec "$PYTHON" "$PLUGIN_DIR/hermes_telemetry/_cli_entrypoint.py" "$@"
