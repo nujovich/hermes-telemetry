@@ -2797,10 +2797,24 @@ def _budget_window_start_utc(window: str, tz_name: str | None = None) -> str:
     return _budget_window_bounds_utc(window, tz_name)["window_start_utc"]
 
 
+def _enforcement_mode() -> str:
+    """Active plugin mode for budget UI (sidecar written by register())."""
+    path = DB_PATH.parent / "enforcement_mode"
+    try:
+        if path.exists():
+            raw = path.read_text(encoding="utf-8").strip().lower()
+            if raw in {"observe", "enforce"}:
+                return raw
+    except Exception:
+        pass
+    return "enforce"
+
+
 def api_budget(tz_name: str | None = None):
     budget_path = DB_PATH.parent / "budget.yaml"
     if not budget_path.exists():
-        return {"enabled": False}
+        mode = _enforcement_mode()
+        return {"enabled": False, "mode": mode, "enforced": mode == "enforce"}
 
     try:
         import yaml
@@ -2848,7 +2862,14 @@ def api_budget(tz_name: str | None = None):
             }
         )
 
-    return {"enabled": True, "budgets": scopes, "on_estimated": on_est.get("mode", "warn_only")}
+    mode = _enforcement_mode()
+    return {
+        "enabled": True,
+        "budgets": scopes,
+        "on_estimated": on_est.get("mode", "warn_only"),
+        "mode": mode,
+        "enforced": mode == "enforce",
+    }
 
 
 MAX_BUDGET_PAYLOAD = 1_048_576  # 1 MiB

@@ -349,6 +349,25 @@ def session_detail(session_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # Budget (read-only, global scope)
 # ---------------------------------------------------------------------------
+
+
+def _enforcement_mode() -> str:
+    """Active plugin mode for budget UI (sidecar written by register()).
+
+    Defaults to enforce so upgrades never look enforced-off when the sidecar
+    is absent. observe means limits are reported but not enforced.
+    """
+    path = _db_path().parent / "enforcement_mode"
+    try:
+        if path.exists():
+            raw = path.read_text(encoding="utf-8").strip().lower()
+            if raw in {"observe", "enforce"}:
+                return raw
+    except Exception:
+        pass
+    return "enforce"
+
+
 def _budget_path() -> Path:
     hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
     return hermes_home / "telemetry" / "budget.yaml"
@@ -375,7 +394,8 @@ def budget() -> dict:
     """Read-only view of the global budget scope."""
     path = _budget_path()
     if not path.exists():
-        return {"enabled": False}
+        mode = _enforcement_mode()
+        return {"enabled": False, "mode": mode, "enforced": mode == "enforce"}
     try:
         import yaml
     except ImportError:
@@ -457,10 +477,13 @@ def budget() -> dict:
                     }
                 )
 
+    mode = _enforcement_mode()
     return {
         "enabled": True,
         "scopes": scopes,
         "on_estimated": (cfg.get("on_estimated", {}) or {}).get("mode", "warn_only"),
+        "mode": mode,
+        "enforced": mode == "enforce",
     }
 
 

@@ -761,6 +761,9 @@ function renderBudget(data) {
   const items = data.budgets || [];
   if (!items.length) return `<div class="budget-bar"><h3>${i18n_t('Budgets')}</h3><div class="budget-disabled">${i18n_t('No budget limits defined')}</div></div>`;
   let html = `<div class="budget-bar"><h3>${i18n_t('Budgets')}</h3>`;
+  if (data.enforced === false) {
+    html += `<div class="budget-disabled" style="margin-bottom:10px;color:#d29922">${i18n_t('MODE: observe — budget limits are NOT enforced')}</div>`;
+  }
   for (const s of items) {
     const cls = s.level === 'hard' ? 'hard' : s.level === 'soft' ? 'soft' : 'ok';
     const label = escHtml(s.scope);
