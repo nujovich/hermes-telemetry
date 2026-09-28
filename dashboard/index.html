@@ -10,6 +10,8 @@
     document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\\/script>');
   }
 </script>
+<script src="/i18n_ru.js"></script>
+<script src="/i18n.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #c9d1d9; min-height: 100vh; }
@@ -224,6 +226,7 @@
   <div class="actions">
     <span id="loadStatus" class="load-status">Idle</span>
     <button class="refresh-btn" onclick="loadAll({showShell:false})">&#x21bb; Refresh</button>
+<button id="langToggleBtn" class="refresh-btn" onclick="__swapLang()" title="Switch language" aria-label="Switch language">🇬🇧 EN</button>
     <div class="settings-menu">
       <button id="settingsToggle" class="settings-btn" onclick="toggleSettingsMenu(event)" aria-label="Dashboard settings" title="Dashboard settings">⚙</button>
       <div id="settingsPanel" class="settings-panel">
@@ -367,6 +370,65 @@
 </div>
 
 <script>
+const __staticI18nOrig = [];
+function __applyStaticI18n() {
+  while (__staticI18nOrig.length) {
+    const entry = __staticI18nOrig.pop();
+    try {
+      if (entry[0] === 'text') entry[1].data = entry[2];
+      else if (entry[0] === 'attr') entry[1].setAttribute(entry[3], entry[2]);
+      else if (entry[0] === 'title') document.title = entry[2];
+    } catch (e) {}
+  }
+  __syncLangBtn();
+  if (__dashLang !== 'ru') return;
+  try {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let t;
+    while ((t = walker.nextNode())) {
+      if (t.parentElement && t.parentElement.closest && t.parentElement.closest('#app')) continue;
+      const k = t.data.replace(/^\s+|\s+$/g, '');
+      if (k && __RU[k] != null) {
+        __staticI18nOrig.push(['text', t, t.data]);
+        t.data = t.data.replace(k, () => __RU[k]);
+      }
+    }
+  } catch (e) {}
+  try {
+    document.querySelectorAll('[title],[aria-label],[placeholder]').forEach((el) => {
+      if (el.closest && el.closest('#app')) return;
+      ['title', 'aria-label', 'placeholder'].forEach((a) => {
+        if (el.hasAttribute(a)) {
+          const v = el.getAttribute(a);
+          if (__RU[v] != null) {
+            __staticI18nOrig.push(['attr', el, v, a]);
+            el.setAttribute(a, __RU[v]);
+          }
+        }
+      });
+    });
+  } catch (e) {}
+  if (__RU[document.title] != null) {
+    __staticI18nOrig.push(['title', null, document.title]);
+    document.title = __RU[document.title];
+  }
+}
+function __syncLangBtn() {
+  const b = document.getElementById('langToggleBtn');
+  if (b) b.textContent = __dashLang === 'ru' ? '🇷🇺 RU' : '🇬🇧 EN';
+}
+function __swapLang() {
+  __dashLang = (__dashLang === 'ru') ? 'en' : 'ru';
+  document.documentElement.lang = __dashLang;
+  try { localStorage.setItem(__DASH_LANG_KEY, __dashLang); } catch (e) {}
+  __syncLangBtn();
+  __applyStaticI18n();
+  if (typeof loadAll === 'function') loadAll({showShell:false});
+}
+__syncLangBtn();
+__applyStaticI18n();
+/* ==== end i18n ==== */
+
 const API = '';
 let charts = {};
 if (window.Chart?.defaults) {
@@ -435,12 +497,12 @@ function fmtLocalTs(value, opts = {}) {
 }
 function fmtBudgetWindow(startUtc, endUtc, tzLabel) {
   if (!startUtc || !endUtc) return '';
-  return `Window: ${fmtLocalTs(startUtc)} → ${fmtLocalTs(endUtc)} (${escHtml(tzLabel || viewerTimeZone)})`;
+  return i18n_t(`Window: ${fmtLocalTs(startUtc)} → ${fmtLocalTs(endUtc)} (${escHtml(tzLabel || viewerTimeZone)})`);
 }
 function loadingShell() {
   return `<div class="loading-shell">
-    <div class="loading-title">Loading telemetry dashboard…</div>
-    <div>Reading SQLite telemetry, budget data, charts, and session filters. Keeping this visible so slow loads don't look broken.</div>
+    <div class="loading-title">${i18n_t('Loading telemetry dashboard…')}</div>
+    <div>${i18n_t("Reading SQLite telemetry, budget data, charts, and session filters. Keeping this visible so slow loads don't look broken.")}</div>
     <div class="loading-grid">
       <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
       <div class="skeleton wide"></div><div class="skeleton wide"></div>
@@ -455,9 +517,9 @@ function setLoadStatus(text, state = '') {
   el.className = `load-status ${statusState}`.trim();
 }
 function autoLabel(ms) {
-  if (!Number(ms)) return 'Auto off';
-  if (Number(ms) >= 60000) return `Auto ${Number(ms) / 60000}min`;
-  return `Auto ${Number(ms) / 1000}s`;
+  if (!Number(ms)) return i18n_t('Auto off');
+  if (Number(ms) >= 60000) return i18n_t(`Auto ${Number(ms) / 60000}min`);
+  return i18n_t(`Auto ${Number(ms) / 1000}s`);
 }
 function setAutoRefresh(value) {
   const ms = Number(value || 0);
@@ -466,7 +528,7 @@ function setAutoRefresh(value) {
   autoRefreshTimer = null;
   const select = $('#autoRefreshSelect');
   if (select) select.value = String(ms);
-  setLoadStatus(ms ? autoLabel(ms) : 'Auto off');
+  setLoadStatus(ms ? autoLabel(ms) : i18n_t('Auto off'));
   if (ms) {
     autoRefreshTimer = setInterval(() => loadAll({showShell:false, reason:'auto'}), ms);
   }
@@ -553,7 +615,7 @@ function autoHomeTrendGranularity(preset = $('#windowSelect')?.value || 'all') {
   return 'day';
 }
 function granularityLabel(g) {
-  return ({ minute: 'Minutely', hour: 'Hourly', day: 'Daily', week: 'Weekly', month: 'Monthly' }[g]) || 'Daily';
+  return ({ minute: i18n_t('Minutely'), hour: i18n_t('Hourly'), day: i18n_t('Daily'), week: i18n_t('Weekly'), month: i18n_t('Monthly') }[g]) || i18n_t('Daily');
 }
 function setUsageGranularity(g) {
   if (!['day', 'week', 'month'].includes(g) || g === currentUsageGranularity) return;
@@ -577,11 +639,18 @@ function setHomeTrendGranularity(g) {
   if (select) select.value = g;
   loadAll({showShell:false});
 }
-function badge(v, map) {
-  const cls = map[v] || 'cli';
-  return `<span class="badge ${cls}">${escHtml(v || '—')}</span>`;
+function badge(raw, map, label) {
+  const cls = map[raw] || 'cli';
+  const text = label != null ? label : raw;
+  return `<span class="badge ${cls}">${escHtml(text || '—')}</span>`;
 }
-const statusBadge = v => badge(v, { ok: 'ok', error: 'error', interrupted: 'error', running: 'running' });
+const statusLabelsRU = { ok:'OK', error:'Ошибка', interrupted:'Прервано', running:'Выполняется' };
+const statusBadge = v => {
+  const raw = v || '—';
+  // EN path is identity (main rendered raw values); RU is the only override.
+  const label = __dashLang === 'ru' ? (statusLabelsRU[raw] || raw) : raw;
+  return badge(raw, { ok: 'ok', error: 'error', interrupted: 'error', running: 'running' }, label);
+};
 const platformBadge = v => badge(v || 'cli', { cron: 'cron', cli: 'cli', telegram: 'cli', discord: 'cli' });
 
 async function fetchJSON(url) {
@@ -657,7 +726,7 @@ async function saveBudget() {
   };
 
   if (payload.limit_usd === undefined || isNaN(payload.limit_usd)) {
-    showModalError('Limit (USD) is required');
+    showModalError(i18n_t('Limit (USD) is required'));
     return;
   }
 
@@ -677,7 +746,7 @@ async function saveBudget() {
     closeBudgetModal();
     loadAll({showShell:false}); // refresh dashboard
   } catch (err) {
-    showModalError('Request failed: ' + err.message);
+    showModalError(i18n_t('Request failed: ') + err.message);
   }
 }
 
@@ -688,17 +757,17 @@ function showModalError(msg) {
 }
 
 function renderBudget(data) {
-  if (!data.enabled) return '<div class="budget-bar"><h3>Budgets</h3><div class="budget-disabled">No budget.yaml configured. Create ~/.hermes/telemetry/budget.yaml</div></div>';
+  if (!data.enabled) return `<div class="budget-bar"><h3>${i18n_t('Budgets')}</h3><div class="budget-disabled">${i18n_t('No budget.yaml configured. Create ~/.hermes/telemetry/budget.yaml')}</div></div>`;
   const items = data.budgets || [];
-  if (!items.length) return '<div class="budget-bar"><h3>Budgets</h3><div class="budget-disabled">No budget limits defined</div></div>';
-  let html = '<div class="budget-bar"><h3>Budgets</h3>';
+  if (!items.length) return `<div class="budget-bar"><h3>${i18n_t('Budgets')}</h3><div class="budget-disabled">${i18n_t('No budget limits defined')}</div></div>`;
+  let html = `<div class="budget-bar"><h3>${i18n_t('Budgets')}</h3>`;
   for (const s of items) {
     const cls = s.level === 'hard' ? 'hard' : s.level === 'soft' ? 'soft' : 'ok';
     const label = escHtml(s.scope);
     const safeScope = s.scope.replace(/'/g, "\\'");
     const windowText = fmtBudgetWindow(s.window_start_utc, s.window_end_utc, s.viewer_timezone);
     html += `<div class="budget-item">
-      <div class="info"><span>${label}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal('${safeScope}')">Edit</button></div>
+      <div class="info"><span>${label}</span><span>${fmtCost(s.spent)} / ${fmtCost(s.limit)} (${s.pct}%)</span><button class="budget-edit-btn" onclick="openBudgetModal('${safeScope}')">${i18n_t('Edit')}</button></div>
       <div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(s.pct, 100)}%"></div></div>
       ${windowText ? `<div class="subtle-note">${windowText}</div>` : ''}
     </div>`;
@@ -709,20 +778,20 @@ function renderBudget(data) {
 
 function renderTokenBreakdown(data) {
   const tb = data;
-  let html = '<div class="table-card"><h3>Token Breakdown</h3>';
-  html += '<table><thead><tr><th>Type</th><th class="text-right">Count</th><th class="text-right">%</th></tr></thead><tbody>';
+  let html = `<div class="table-card"><h3>${i18n_t('Token Breakdown')}</h3>`;
+  html += `<table><thead><tr><th>${i18n_t('Type')}</th><th class="text-right">${i18n_t('Count')}</th><th class="text-right">%</th></tr></thead><tbody>`;
   const types = [
-    { key: 'tokens_in', label: 'Input', color: '#58a6ff' },
-    { key: 'tokens_out', label: 'Output', color: '#3fb950' },
-    { key: 'cache_read_tokens', label: 'Cache', color: '#d29922' },
-    { key: 'reasoning_tokens', label: 'Reasoning', color: '#f85149' },
+    { key: 'tokens_in', label: i18n_t('Input'), color: '#58a6ff' },
+    { key: 'tokens_out', label: i18n_t('Output'), color: '#3fb950' },
+    { key: 'cache_read_tokens', label: i18n_t('Cache'), color: '#d29922' },
+    { key: 'reasoning_tokens', label: i18n_t('Reasoning'), color: '#f85149' },
   ];
   for (const t of types) {
     const val = tb[t.key] || 0;
     const pct = tb.total_tokens > 0 ? ((val / tb.total_tokens) * 100).toFixed(1) : '0.0';
     html += `<tr><td><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${t.color};margin-right:8px;vertical-align:middle"></span>${t.label}</td><td class="text-right">${nf(val)}</td><td class="text-right">${pct}%</td></tr>`;
   }
-  html += `<tr style="border-top:1px solid #30363d"><td><b>Total</b></td><td class="text-right"><b>${nf(tb.total_tokens)}</b></td><td class="text-right"><b>100%</b></td></tr>`;
+  html += `<tr style="border-top:1px solid #30363d"><td><b>${i18n_t('Total')}</b></td><td class="text-right"><b>${nf(tb.total_tokens)}</b></td><td class="text-right"><b>100%</b></td></tr>`;
   html += '</tbody></table></div>';
   return html;
 }
@@ -749,15 +818,15 @@ function renderSegmentedButtons(options, currentValue, handlerName) {
 
 function trendMetricMeta(metric) {
   return {
-    tokens: { label: 'Token usage', field: 'total_tokens', info: '', footer: 'Token usage', color: '#22d3ee' },
-    api_calls: { label: 'LLM calls', field: 'api_calls', info: '', footer: 'LLM calls', color: '#22d3ee' },
-    request_runs: { label: 'Sessions', field: 'request_runs', info: '', footer: 'Sessions', color: '#22d3ee' },
-    messages: { label: 'Messages', field: 'message_runs', info: '', footer: 'Messages', color: '#22d3ee' },
-    tool_calls: { label: 'Tool calls', field: 'tool_calls', info: '', footer: 'Tool calls', color: '#22d3ee' },
-    cron_job_runs: { label: 'Cron runs', field: 'cron_job_runs', info: '', footer: 'Cron runs', color: '#22d3ee' },
-    cost: { label: 'Cost', field: 'cost_usd', info: '', footer: 'Cost', color: '#22d3ee' },
-    savings: { label: 'Savings', field: 'estimated_savings_usd', info: '', footer: 'Savings', color: '#22d3ee' },
-  }[metric] || { label: 'Token usage', field: 'total_tokens', info: '', footer: 'Token usage', color: '#22d3ee' };
+    tokens: { label: i18n_t('Token usage'), field: 'total_tokens', info: '', footer: i18n_t('Token usage'), color: '#22d3ee' },
+    api_calls: { label: i18n_t('LLM calls'), field: 'api_calls', info: '', footer: i18n_t('LLM calls'), color: '#22d3ee' },
+    request_runs: { label: i18n_t('Sessions'), field: 'request_runs', info: '', footer: i18n_t('Sessions'), color: '#22d3ee' },
+    messages: { label: i18n_t('Messages'), field: 'message_runs', info: '', footer: i18n_t('Messages'), color: '#22d3ee' },
+    tool_calls: { label: i18n_t('Tool calls'), field: 'tool_calls', info: '', footer: i18n_t('Tool calls'), color: '#22d3ee' },
+    cron_job_runs: { label: i18n_t('Cron runs'), field: 'cron_job_runs', info: '', footer: i18n_t('Cron runs'), color: '#22d3ee' },
+    cost: { label: i18n_t('Cost'), field: 'cost_usd', info: '', footer: i18n_t('Cost'), color: '#22d3ee' },
+    savings: { label: i18n_t('Savings'), field: 'estimated_savings_usd', info: '', footer: i18n_t('Savings'), color: '#22d3ee' },
+  }[metric] || { label: i18n_t('Token usage'), field: 'total_tokens', info: '', footer: i18n_t('Token usage'), color: '#22d3ee' };
 }
 
 function fmtCompactMetricValue(metric, value) {
@@ -777,7 +846,7 @@ function fmtCompactMetricValue(metric, value) {
 function fmtTrendPointValue(metric, value) {
   const n = Number(value || 0);
   if (metric === 'cost' || metric === 'savings') return `$${n.toFixed(2)}`;
-  if (metric === 'tokens') return `${nf(n)} tokens`;
+  if (metric === 'tokens') return i18n_t(`${nf(n)} tokens`);
   return nf(n);
 }
 
@@ -879,7 +948,7 @@ function renderMetricTrendCard(rows, windowPreset, summaryOverrides = {}) {
   return `<div class="chart-card full-width-chart metric-trend-card">
     <div class="metric-trend-header">${stats}</div>
     <div class="metric-trend-body">
-      ${chartRows.length ? `<div class="metric-trend-canvas-wrap"><canvas id="home-metric-trend-chart"></canvas></div>` : `<div class="text-muted" style="padding:24px 0">No ${emptyLabel} trend data available yet.</div>`}
+      ${chartRows.length ? `<div class="metric-trend-canvas-wrap"><canvas id="home-metric-trend-chart"></canvas></div>` : `<div class="text-muted" style="padding:24px 0">${i18n_t(`No ${emptyLabel} trend data available yet.`)}</div>`}
     </div>
   </div>`;
 }
@@ -904,40 +973,40 @@ function getMetricTrendRows(rows, metric = currentMetricTrendMetric) {
 
 function renderModelUsageTrendCard(trendData, shareData) {
   const granularityOptions = [
-    { value: 'day', label: 'Daily' },
-    { value: 'week', label: 'Weekly' },
-    { value: 'month', label: 'Monthly' },
+    { value: 'day', label: i18n_t('Daily') },
+    { value: 'week', label: i18n_t('Weekly') },
+    { value: 'month', label: i18n_t('Monthly') },
   ];
   const metricOptions = [
-    { value: 'tokens', label: 'Tokens' },
-    { value: 'cost', label: 'Cost' },
-    { value: 'requests', label: 'Requests' },
-    { value: 'share', label: 'Share %' },
+    { value: 'tokens', label: i18n_t('Tokens') },
+    { value: 'cost', label: i18n_t('Cost') },
+    { value: 'requests', label: i18n_t('Requests') },
+    { value: 'share', label: i18n_t('Share %') },
   ];
   const currentLabel = shareData?.current_period || 'latest';
   const previousLabel = shareData?.previous_period || 'previous';
   const hasRows = !!(trendData?.rows || []).length;
   const hasPrevious = !!shareData?.previous_period;
   const note = !hasRows
-    ? `No ${granularityLabel(currentUsageGranularity).toLowerCase()} model usage data for this range yet.`
+    ? i18n_t(`No ${granularityLabel(currentUsageGranularity).toLowerCase()} model usage data for this range yet.`)
     : !hasPrevious
-      ? `${granularityLabel(currentUsageGranularity)} model usage trend for the latest available period. A previous period is needed before delta comparison appears below.`
+      ? i18n_t(`${granularityLabel(currentUsageGranularity)} model usage trend for the latest available period. A previous period is needed before delta comparison appears below.`)
       : currentUsageMetric === 'share'
-        ? `${granularityLabel(currentUsageGranularity)} model share by token volume. Compare ${escHtml(currentLabel)} vs ${escHtml(previousLabel)} below.`
-        : `${granularityLabel(currentUsageGranularity)} model usage trend. Compare ${escHtml(currentLabel)} vs ${escHtml(previousLabel)} below.`;
+        ? i18n_t(`${granularityLabel(currentUsageGranularity)} model share by token volume. Compare ${escHtml(currentLabel)} vs ${escHtml(previousLabel)} below.`)
+        : i18n_t(`${granularityLabel(currentUsageGranularity)} model usage trend. Compare ${escHtml(currentLabel)} vs ${escHtml(previousLabel)} below.`);
   return `<div class="chart-card full-width-chart">
     <div class="usage-toolbar">
       <div class="usage-toolbar-group">
-        <span class="usage-toolbar-label">Grouping</span>
+        <span class="usage-toolbar-label">${i18n_t('Grouping')}</span>
         ${renderSegmentedButtons(granularityOptions, currentUsageGranularity, 'setUsageGranularity')}
       </div>
       <div class="usage-toolbar-group">
-        <span class="usage-toolbar-label">Metric</span>
+        <span class="usage-toolbar-label">${i18n_t('Metric')}</span>
         ${renderSegmentedButtons(metricOptions, currentUsageMetric, 'setUsageMetric')}
       </div>
     </div>
-    <h3>Model Usage Trends</h3>
-    ${hasRows ? '<canvas id="model-usage-trend-chart"></canvas>' : '<div class="text-muted" style="padding:24px 0">No trend data available yet.</div>'}
+    <h3>${i18n_t('Model Usage Trends')}</h3>
+    ${hasRows ? '<canvas id="model-usage-trend-chart"></canvas>' : `<div class="text-muted" style="padding:24px 0">${i18n_t('No trend data available yet.')}</div>`}
     <div class="subtle-note">${note}</div>
   </div>`;
 }
@@ -958,16 +1027,16 @@ function renderModelShareComparisonCard(data) {
   const currentLabel = data?.current_period || 'latest';
   const previousLabel = data?.previous_period || 'previous';
   if (!rows.length) {
-    return renderTableCard('modelShareComparison', 'Model Share + Delta', '<div class="text-muted">Not enough period data yet for model share comparison.</div>');
+    return renderTableCard('modelShareComparison', i18n_t('Model Share + Delta'), `<div class="text-muted">${i18n_t('Not enough period data yet for model share comparison.')}</div>`);
   }
-  let t = '<table><thead><tr><th>Model</th><th>Tokens</th><th>Share</th><th>Prev Share</th><th>Δ Share</th><th>Cost</th><th>Cost Share</th><th>Calls</th></tr></thead><tbody>';
+  let t = `<table><thead><tr><th>${i18n_t('Model')}</th><th>${i18n_t('Tokens')}</th><th>${i18n_t('Share')}</th><th>${i18n_t('Prev Share')}</th><th>${i18n_t('Δ Share')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Cost Share')}</th><th>${i18n_t('Calls')}</th></tr></thead><tbody>`;
   for (const row of rows) {
     const model = row.model || '—';
     const tokenDeltaCls = deltaClass(row.token_share_delta_pct);
     t += `<tr class="clickable-row" onclick='addDrilldown({model:${jsAttr(model)}})'><td class="text-muted"><span class="inline-btn data-chip model-chip" title="${escHtml(model)}">${escHtml(model)}</span></td><td>${nf(row.current_tokens)}</td><td>${Number(row.current_token_share_pct || 0).toFixed(1)}%</td><td>${Number(row.previous_token_share_pct || 0).toFixed(1)}%</td><td class="${tokenDeltaCls}">${fmtSignedPct(row.token_share_delta_pct)}</td><td>${fmtCost(row.current_cost_usd)}</td><td>${Number(row.current_cost_share_pct || 0).toFixed(1)}%</td><td>${nf(row.current_api_calls)}</td></tr>`;
   }
-  t += `</tbody></table><div class="subtle-note">Current ${granularityLabel(data?.granularity || currentUsageGranularity).toLowerCase()} period: ${escHtml(currentLabel)} · previous: ${escHtml(previousLabel)}. Click a model row to drill into sessions.</div>`;
-  return renderTableCard('modelShareComparison', 'Model Share + Delta', t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t(`Current ${granularityLabel(data?.granularity || currentUsageGranularity).toLowerCase()} period: ${escHtml(currentLabel)} · previous: ${escHtml(previousLabel)}. Click a model row to drill into sessions.`)}</div>`;
+  return renderTableCard('modelShareComparison', i18n_t('Model Share + Delta'), t);
 }
 
 function hasDrilldown() {
@@ -976,14 +1045,14 @@ function hasDrilldown() {
 
 function drilldownLabel() {
   const parts = [];
-  if (currentDrilldown.day) parts.push(`Day: ${currentDrilldown.day}`);
-  if (currentDrilldown.model) parts.push(`Model: ${currentDrilldown.model}`);
-  if (currentDrilldown.provider) parts.push(`Provider: ${currentDrilldown.provider}`);
-  if (currentDrilldown.platform) parts.push(`Platform: ${currentDrilldown.platform}`);
-  if (currentDrilldown.status) parts.push(`Status: ${currentDrilldown.status}`);
-  if (currentDrilldown.cron_job_id) parts.push(`Cron: ${currentDrilldown.cron_job_id}`);
-  if (currentDrilldown.tool_name) parts.push(`Tool: ${currentDrilldown.tool_name}`);
-  if (currentDrilldown.q) parts.push(`Search: ${currentDrilldown.q}`);
+  if (currentDrilldown.day) parts.push(i18n_t(`Day: ${currentDrilldown.day}`));
+  if (currentDrilldown.model) parts.push(i18n_t(`Model: ${currentDrilldown.model}`));
+  if (currentDrilldown.provider) parts.push(i18n_t(`Provider: ${currentDrilldown.provider}`));
+  if (currentDrilldown.platform) parts.push(i18n_t(`Platform: ${currentDrilldown.platform}`));
+  if (currentDrilldown.status) parts.push(i18n_t(`Status: ${currentDrilldown.status}`));
+  if (currentDrilldown.cron_job_id) parts.push(i18n_t(`Cron: ${currentDrilldown.cron_job_id}`));
+  if (currentDrilldown.tool_name) parts.push(i18n_t(`Tool: ${currentDrilldown.tool_name}`));
+  if (currentDrilldown.q) parts.push(i18n_t(`Search: ${currentDrilldown.q}`));
   return parts.join(' · ');
 }
 
@@ -996,18 +1065,18 @@ function removeDrilldownKey(key) {
 
 function renderFilterChips() {
   const defs = [
-    ['provider', 'Provider'],
-    ['model', 'Model'],
-    ['day', 'Day'],
-    ['status', 'Status'],
-    ['platform', 'Platform'],
-    ['cron_job_id', 'Cron'],
-    ['tool_name', 'Tool'],
-    ['q', 'Search'],
+    ['provider', i18n_t('Provider')],
+    ['model', i18n_t('Model')],
+    ['day', i18n_t('Day')],
+    ['status', i18n_t('Status')],
+    ['platform', i18n_t('Platform')],
+    ['cron_job_id', i18n_t('Cron')],
+    ['tool_name', i18n_t('Tool')],
+    ['q', i18n_t('Search')],
   ];
   const chips = defs
     .filter(([key]) => currentDrilldown[key])
-    .map(([key, label]) => `<span class="filter-chip">${escHtml(label)}: ${escHtml(currentDrilldown[key])}<button class="chip-close" title="Remove ${escHtml(label)} filter" onclick="removeDrilldownKey('${key}')">×</button></span>`)
+    .map(([key, label]) => `<span class="filter-chip">${escHtml(label)}: ${escHtml(currentDrilldown[key])}<button class="chip-close" title="${i18n_t(`Remove ${escHtml(label)} filter`)}" onclick="removeDrilldownKey('${key}')">×</button></span>`)
     .join('');
   return chips ? `<div class="chip-list">${chips}</div>` : '';
 }
@@ -1069,19 +1138,19 @@ function homeTrendLimitFor(windowPreset, hours, granularity) {
 
 function selectedWindowLabel(windowPreset) {
   return {
-    all: 'all time',
-    today: 'today',
-    this_week: 'this week',
-    this_month: 'this month',
-    '15m': 'last 15m',
-    '30m': 'last 30m',
-    '1h': 'last 1h',
-    '3h': 'last 3h',
-    '24h': 'last 24h',
-    '2d': 'last 2 days',
-    '90d': 'last 90 days',
-    '1y': 'last 1 year',
-  }[windowPreset] || 'selected range';
+    all: i18n_t('all time'),
+    today: i18n_t('Today').toLowerCase(),
+    this_week: i18n_t('this week'),
+    this_month: i18n_t('this month'),
+    '15m': i18n_t('last 15m'),
+    '30m': i18n_t('last 30m'),
+    '1h': i18n_t('last 1h'),
+    '3h': i18n_t('last 3h'),
+    '24h': i18n_t('last 24h'),
+    '2d': i18n_t('last 2 days'),
+    '90d': i18n_t('last 90 days'),
+    '1y': i18n_t('last 1 year'),
+  }[windowPreset] || i18n_t('selected range');
 }
 
 function buildRunsQuery(windowPreset, limit = 30) {
@@ -1094,37 +1163,37 @@ function buildRunsQuery(windowPreset, limit = 30) {
 }
 
 function renderProviderBreakdownTable(rows) {
-  if (!rows || !rows.length) return renderTableCard('providerBreakdownTable', 'Provider Cost + Token Breakdown', '<div class="text-muted">No provider data for this range.</div>');
-  let t = '<table><thead><tr><th>Provider</th><th>Calls</th><th>Real</th><th>Est</th><th>Asm</th><th>In</th><th>Out</th><th>Cache Read</th><th>Reasoning</th><th>Total</th><th>Cost</th><th>Avg/Call</th></tr></thead><tbody>';
+  if (!rows || !rows.length) return renderTableCard('providerBreakdownTable', i18n_t('Provider Cost + Token Breakdown'), `<div class="text-muted">${i18n_t('No provider data for this range.')}</div>`);
+  let t = `<table><thead><tr><th>${i18n_t('Provider')}</th><th>${i18n_t('Calls')}</th><th>${i18n_t('Real')}</th><th>${i18n_t('Est')}</th><th>${i18n_t('Asm')}</th><th>${i18n_t('In')}</th><th>${i18n_t('Out')}</th><th>${i18n_t('Cache Read')}</th><th>${i18n_t('Reasoning')}</th><th>${i18n_t('Total')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Avg/Call')}</th></tr></thead><tbody>`;
   for (const row of rows) {
     const provider = row.provider || '—';
     const jsProvider = jsAttr(provider);
     t += `<tr class="clickable-row" onclick='addDrilldown({provider:${jsProvider}})'><td class="text-muted"><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}">${escHtml(provider)}</span></td><td>${nf(row.total_calls)}</td><td>${nf(row.real_calls)}</td><td>${nf(row.estimated_calls)}</td><td>${nf(row.provider_assumed_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtCost(row.avg_cost_per_call)}</td></tr>`;
   }
-  t += '</tbody></table><div class="subtle-note">Click a provider row to inspect the exact sessions behind it.</div>';
-  return renderTableCard('providerBreakdownTable', 'Provider Cost + Token Breakdown', t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t('Click a provider row to inspect the exact sessions behind it.')}</div>`;
+  return renderTableCard('providerBreakdownTable', i18n_t('Provider Cost + Token Breakdown'), t);
 }
 
 function renderProviderHealth(data) {
   const rows = data?.rows || [];
-  let t = '<table><thead><tr><th>Provider</th><th>Health</th><th>Signals</th><th>Calls</th><th>Prev</th><th>Traffic Δ</th><th>Est %</th><th>Fail %</th><th>Latency</th><th>Latency Δ</th><th>Cost</th></tr></thead><tbody>';
+  let t = `<table><thead><tr><th>${i18n_t('Provider')}</th><th>${i18n_t('Health')}</th><th>${i18n_t('Signals')}</th><th>${i18n_t('Calls')}</th><th>${i18n_t('Prev')}</th><th>${i18n_t('Traffic Δ')}</th><th>${i18n_t('Est %')}</th><th>${i18n_t('Fail %')}</th><th>${i18n_t('Latency')}</th><th>${i18n_t('Latency Δ')}</th><th>${i18n_t('Cost')}</th></tr></thead><tbody>`;
   if (!rows.length) {
-    t += '<tr><td colspan="11" class="text-muted">No provider health data yet.</td></tr>';
+    t += `<tr><td colspan="11" class="text-muted">${i18n_t('No provider health data yet.')}</td></tr>`;
   } else {
     for (const row of rows) {
       const provider = row.provider || '—';
       const healthBadge = row.health === 'warn' ? statusBadge('running') : statusBadge(row.health || 'ok');
-      const anomalies = (row.anomalies || []).length ? row.anomalies.join(', ') : 'normal';
+      const anomalies = (row.anomalies || []).length ? row.anomalies.join(', ') : i18n_t('normal');
       t += `<tr class="clickable-row" onclick='addDrilldown({provider:${jsAttr(provider)}})'><td class="text-muted"><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}">${escHtml(provider)}</span></td><td>${healthBadge}</td><td class="text-muted">${escHtml(anomalies)}</td><td>${nf(row.calls_current || 0)}</td><td>${nf(row.calls_previous || 0)}</td><td>${Number(row.traffic_delta_pct || 0).toFixed(1)}%</td><td>${Number(row.estimated_pct || 0).toFixed(1)}%</td><td>${Number(row.failure_pct || 0).toFixed(1)}%</td><td>${fmtMs(row.avg_latency_current)}</td><td>${Number(row.latency_delta_pct || 0).toFixed(1)}%</td><td>${fmtCost(row.cost_current)}</td></tr>`;
     }
   }
-  t += '</tbody></table><div class="subtle-note">Compares the current window against the previous equal window. Click a provider row to drill into its sessions.</div>';
-  return renderTableCard('providerHealthTable', 'Provider Health / Anomaly Signals', t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t('Compares the current window against the previous equal window. Click a provider row to drill into its sessions.')}</div>`;
+  return renderTableCard('providerHealthTable', i18n_t('Provider Health / Anomaly Signals'), t);
 }
 
 function renderModelEfficiency(rows) {
-  if (!rows || !rows.length) return renderTableCard('modelEfficiencyTable', 'Model Efficiency Score', '<div class="text-muted">No model efficiency data for this range.</div>');
-  let t = '<table><thead><tr><th>Score</th><th>Provider</th><th>Model</th><th>Calls</th><th>Tokens</th><th>$/1M</th><th>Out/In</th><th>Cache Hit</th><th>Tools/API</th><th>Fail %</th><th>Latency</th></tr></thead><tbody>';
+  if (!rows || !rows.length) return renderTableCard('modelEfficiencyTable', i18n_t('Model Efficiency Score'), `<div class="text-muted">${i18n_t('No model efficiency data for this range.')}</div>`);
+  let t = `<table><thead><tr><th>${i18n_t('Score')}</th><th>${i18n_t('Provider')}</th><th>${i18n_t('Model')}</th><th>${i18n_t('Calls')}</th><th>${i18n_t('Tokens')}</th><th>$/1M</th><th>${i18n_t('Out/In')}</th><th>${i18n_t('Cache Hit')}</th><th>${i18n_t('Tools/API')}</th><th>${i18n_t('Fail %')}</th><th>${i18n_t('Latency')}</th></tr></thead><tbody>`;
   for (const row of rows) {
     const provider = row.provider || '—';
     const modelRaw = row.model || '—';
@@ -1132,23 +1201,23 @@ function renderModelEfficiency(rows) {
     const scoreBadge = score >= 85 ? statusBadge('ok') : (score >= 60 ? statusBadge('running') : statusBadge('error'));
     t += `<tr class="clickable-row" onclick='addDrilldown({model:${jsAttr(modelRaw)},provider:${jsAttr(provider)}})'><td>${scoreBadge} <span class="text-muted">${score.toFixed(1)}</span></td><td><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}">${escHtml(provider)}</span></td><td class="text-muted" title="${escHtml(modelRaw)}"><span class="inline-btn data-chip model-chip">${escHtml(modelRaw)}</span></td><td>${nf(row.api_calls || 0)}</td><td>${nf(row.total_tokens || 0)}</td><td>${fmtCost(row.cost_per_1m)}</td><td>${Number(row.output_input_ratio || 0).toFixed(3)}</td><td>${Number(row.cache_hit_share_pct || 0).toFixed(1)}%</td><td>${Number(row.tool_calls_per_api || 0).toFixed(2)}</td><td>${Number(row.failure_pct || 0).toFixed(1)}%</td><td>${fmtMs(row.avg_latency_ms)}</td></tr>`;
   }
-  t += '</tbody></table><div class="subtle-note">Score penalizes failures, slow average latency, and estimated-heavy usage; cache efficiency gives a small bonus. Click a row to drill into sessions for that provider/model.</div>';
-  return renderTableCard('modelEfficiencyTable', 'Model Efficiency Score', t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t('Score penalizes failures, slow average latency, and estimated-heavy usage; cache efficiency gives a small bonus. Click a row to drill into sessions for that provider/model.')}</div>`;
+  return renderTableCard('modelEfficiencyTable', i18n_t('Model Efficiency Score'), t);
 }
 
 function renderEfficiency(data) {
   const rows = data?.sessions || [];
-  if (!rows.length) return renderTableCard('sessionEfficiencyTable', 'Session Efficiency Score', '<div class="text-muted">No completed sessions for this range.</div>');
-  let t = `<div class="subtle-note">Average: <b>${Number(data.average_score || 0).toFixed(1)}</b>/100 across ${nf(data.sessions_scored || rows.length)} session(s). 90+ Excellent · 70-89 Good · 50-69 Fair · &lt;50 Needs attention.</div>`;
-  t += '<table><thead><tr><th>Score</th><th>Status</th><th>API Calls</th><th>Tok In</th><th>Tok Out</th><th>Cost</th><th>Session</th></tr></thead><tbody>';
+  if (!rows.length) return renderTableCard('sessionEfficiencyTable', i18n_t('Session Efficiency Score'), `<div class="text-muted">${i18n_t('No completed sessions for this range.')}</div>`);
+  let t = `<div class="subtle-note">${i18n_t('Average')}: <b>${Number(data.average_score || 0).toFixed(1)}</b>${i18n_t(`/100 across ${nf(data.sessions_scored || rows.length)} session(s). 90+ Excellent · 70-89 Good · 50-69 Fair · &lt;50 Needs attention.`)}</div>`;
+  t += `<table><thead><tr><th>${i18n_t('Score')}</th><th>${i18n_t('Status')}</th><th>${i18n_t('API Calls')}</th><th>${i18n_t('Tok In')}</th><th>${i18n_t('Tok Out')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Session')}</th></tr></thead><tbody>`;
   for (const row of rows) {
     const score = Number(row.efficiency_score || 0);
     const scoreBadge = score >= 85 ? statusBadge('ok') : (score >= 50 ? statusBadge('running') : statusBadge('error'));
     const sid = (row.session_id || '').substring(0, 24);
     t += `<tr class="clickable-row" onclick='openSessionDetail(${jsAttr(row.session_id || '')})'><td>${scoreBadge} <span class="text-muted">${score.toFixed(1)}</span></td><td>${statusBadge(row.status || '—')}</td><td>${nf(row.api_calls || 0)}</td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml(sid)}</code></td></tr>`;
   }
-  t += '</tbody></table><div class="subtle-note">Score = base(40) + output ratio(0-60) − error penalty(0-30) − turn penalty(0-30). Ranks the 100 most recent completed sessions. Click a row for full session detail.</div>';
-  return renderTableCard('sessionEfficiencyTable', 'Session Efficiency Score', t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t('Score = base(40) + output ratio(0-60) − error penalty(0-30) − turn penalty(0-30). Ranks the 100 most recent completed sessions. Click a row for full session detail.')}</div>`;
+  return renderTableCard('sessionEfficiencyTable', i18n_t('Session Efficiency Score'), t);
 }
 
 function severityBadge(sev) {
@@ -1157,54 +1226,55 @@ function severityBadge(sev) {
 
 function renderSmells(data) {
   const rows = data?.smells || [];
-  if (!rows.length) return renderTableCard('smellsTable', 'AI Smell Detection', '<div class="text-muted">No AI smells detected for this range. 🎉</div>');
-  let t = `<div class="subtle-note"><b>${nf(data.count || rows.length)}</b> smell(s) detected. Severity: HIGH &gt; MED &gt; WARN.</div>`;
-  t += '<table><thead><tr><th>Severity</th><th>Smell</th><th>Session</th><th>Detail</th></tr></thead><tbody>';
+  if (!rows.length) return renderTableCard('smellsTable', i18n_t('AI Smell Detection'), `<div class="text-muted">${i18n_t('No AI smells detected for this range. 🎉')}</div>`);
+  let t = `<div class="subtle-note"><b>${nf(data.count || rows.length)}</b> ${i18n_t('smell(s) detected. Severity: HIGH &gt; MED &gt; WARN.')}</div>`;
+  t += `<table><thead><tr><th>${i18n_t('Severity')}</th><th>${i18n_t('Smell')}</th><th>${i18n_t('Session')}</th><th>${i18n_t('Detail')}</th></tr></thead><tbody>`;
   for (const row of rows) {
     const name = (row.smell || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
     const sid = (row.session_id || '').substring(0, 24);
     t += `<tr class="clickable-row" onclick='openSessionDetail(${jsAttr(row.session_id || '')})'><td>${severityBadge(row.severity)}</td><td>${escHtml(name)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml(sid)}</code></td><td class="text-muted">${escHtml(row.detail || '')}</td></tr>`;
   }
-  t += '</tbody></table><div class="subtle-note">Context Rotation · Loop Trap · Tool Thrashing · High Error Rate · Massive Session. Heuristics over existing telemetry. Click a row for full session detail.</div>';
-  return renderTableCard('smellsTable', 'AI Smell Detection', t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t('Context Rotation · Loop Trap · Tool Thrashing · High Error Rate · Massive Session. Heuristics over existing telemetry. Click a row for full session detail.')}</div>`;
+  return renderTableCard('smellsTable', i18n_t('AI Smell Detection'), t);
 }
 
 function renderForecast(data) {
-  if (!data || !data.enabled) return '<div class="budget-bar"><h3>Burn-rate Forecast</h3><div class="budget-disabled">No monthly budget configured for the global scope.</div></div>';
+  if (!data || !data.enabled) return `<div class="budget-bar"><h3>${i18n_t('Burn-rate Forecast')}</h3><div class="budget-disabled">${i18n_t('No monthly budget configured for the global scope.')}</div></div>`;
   const cls = data.status === 'hard' ? 'hard' : data.status === 'soft' ? 'soft' : 'ok';
   const pct = Number(data.projected_pct || 0) * 100;
-  const breach = data.est_days_to_breach == null ? '' : `<div class="subtle-note">At this rate: breach in ~${Number(data.est_days_to_breach).toFixed(1)} days</div>`;
-  let html = '<div class="budget-bar"><h3>Burn-rate Forecast</h3>';
+  const breach = data.est_days_to_breach == null ? '' : `<div class="subtle-note">${i18n_t(`At this rate: breach in ~${Number(data.est_days_to_breach).toFixed(1)} days`)}</div>`;
+  let html = `<div class="budget-bar"><h3>${i18n_t('Burn-rate Forecast')}</h3>`;
   html += '<div class="stat-grid">';
-  html += renderStatCard('forecastSpent', fmtCost(data.spent_so_far_usd), 'Spent so far', '');
-  html += renderStatCard('forecastAvg', fmtCost(data.avg_daily_usd), `Avg/day (${data.lookback_days || 14}d)`, 'blue');
-  html += renderStatCard('forecastProjected', fmtCost(data.projected_total_usd), 'Projected total', cls === 'hard' ? 'red' : cls === 'soft' ? 'yellow' : 'green');
-  html += renderStatCard('forecastLimit', fmtCost(data.limit_usd), `Limit (${escHtml(data.window || 'monthly')})`, '');
+  html += renderStatCard('forecastSpent', fmtCost(data.spent_so_far_usd), i18n_t('Spent so far'), '');
+  html += renderStatCard('forecastAvg', fmtCost(data.avg_daily_usd), i18n_t(`Avg/day (${data.lookback_days || 14}d)`), 'blue');
+  html += renderStatCard('forecastProjected', fmtCost(data.projected_total_usd), i18n_t('Projected total'), cls === 'hard' ? 'red' : cls === 'soft' ? 'yellow' : 'green');
+  const winLabel = i18n_t(data.window || 'monthly');
+  html += renderStatCard('forecastLimit', fmtCost(data.limit_usd), i18n_t(`Limit (${escHtml(winLabel)})`), '');
   html += '</div>';
-  html += `<div class="budget-item"><div class="info"><span>Projected usage</span><span>${pct.toFixed(0)}% of limit — ${(data.status || 'ok').toUpperCase()}</span></div><div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(pct, 100)}%"></div></div></div>`;
+  html += `<div class="budget-item"><div class="info"><span>${i18n_t('Projected usage')}</span><span>${pct.toFixed(0)}${i18n_t('% of limit —')} ${(data.status || 'ok').toUpperCase()}</span></div><div class="bar-bg"><div class="bar-fill ${cls}" style="width:${Math.min(pct, 100)}%"></div></div></div>`;
   html += breach;
   html += '</div>';
   return html;
 }
 
 function renderModelTokensTable(rows) {
-  if (!rows || !rows.length) return renderTableCard('modelTokensTable', 'Model Token Usage', '<div class="text-muted">No model token data for this range.</div>');
-  let t = '<table><thead><tr><th>Model</th><th>Calls</th><th>In</th><th>Out</th><th>Cache Read</th><th>Cache Write</th><th>Reasoning</th><th>Total</th><th>Cost</th></tr></thead><tbody>';
+  if (!rows || !rows.length) return renderTableCard('modelTokensTable', i18n_t('Model Token Usage'), `<div class="text-muted">${i18n_t('No model token data for this range.')}</div>`);
+  let t = `<table><thead><tr><th>${i18n_t('Model')}</th><th>${i18n_t('Calls')}</th><th>${i18n_t('In')}</th><th>${i18n_t('Out')}</th><th>${i18n_t('Cache Read')}</th><th>${i18n_t('Cache Write')}</th><th>${i18n_t('Reasoning')}</th><th>${i18n_t('Total')}</th><th>${i18n_t('Cost')}</th></tr></thead><tbody>`;
   for (const row of rows) {
     const modelRaw = row.model || '—';
     const model = escHtml(modelRaw.substring(0, 48));
     const jsModel = jsAttr(modelRaw);
     t += `<tr class="clickable-row" onclick='addDrilldown({model:${jsModel}})'><td class="text-muted" title="${escHtml(modelRaw)}">${model}</td><td>${nf(row.api_calls)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens)}</td><td>${nf(row.cache_write_tokens)}</td><td>${nf(row.reasoning_tokens)}</td><td>${nf(row.total_tokens)}</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
   }
-  t += '</tbody></table><div class="subtle-note">Click a model row to drill into the sessions that used it.</div>';
-  return renderTableCard('modelTokensTable', 'Model Token Usage', t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t('Click a model row to drill into the sessions that used it.')}</div>`;
+  return renderTableCard('modelTokensTable', i18n_t('Model Token Usage'), t);
 }
 
 function renderDailyTokensTable(data) {
   const rows = data?.rows || [];
-  let t = '<table><thead><tr><th>Day</th><th>Calls</th><th>In</th><th>Out</th><th>Cache Read</th><th>Cache Write</th><th>Reasoning</th><th>Total</th><th>Cost</th></tr></thead><tbody>';
+  let t = `<table><thead><tr><th>${i18n_t('Day')}</th><th>${i18n_t('Calls')}</th><th>${i18n_t('In')}</th><th>${i18n_t('Out')}</th><th>${i18n_t('Cache Read')}</th><th>${i18n_t('Cache Write')}</th><th>${i18n_t('Reasoning')}</th><th>${i18n_t('Total')}</th><th>${i18n_t('Cost')}</th></tr></thead><tbody>`;
   if (!rows.length) {
-    t += '<tr><td colspan="9" class="text-muted">No daily token data for this range.</td></tr>';
+    t += `<tr><td colspan="9" class="text-muted">${i18n_t('No daily token data for this range.')}</td></tr>`;
   } else {
     for (const row of rows) {
       const jsDay = jsAttr(row.day || '—');
@@ -1212,23 +1282,23 @@ function renderDailyTokensTable(data) {
     }
   }
   t += '</tbody></table>';
-  t += `<div class="table-actions"><div>Showing ${rows.length ? ((data.page - 1) * data.per_page + 1) : 0}-${Math.min(data.page * data.per_page, data.total_days)} of ${nf(data.total_days)} day(s)</div><div class="pager"><button class="pager-btn" onclick="changeDailyTokensPage(-1)" ${data.page <= 1 ? 'disabled' : ''}>Prev</button><span>Page ${nf(data.page)} / ${nf(data.total_pages)}</span><button class="pager-btn" onclick="changeDailyTokensPage(1)" ${data.page >= data.total_pages ? 'disabled' : ''}>Next</button></div></div>`;
-  t += '<div class="subtle-note">Click a day row to inspect sessions from that day.</div>';
-  return renderTableCard('dailyTokensTable', 'Daily Token Usage', t);
+  t += `<div class="table-actions"><div>${i18n_t(`Showing ${rows.length ? ((data.page - 1) * data.per_page + 1) : 0}-${Math.min(data.page * data.per_page, data.total_days)} of ${nf(data.total_days)} day(s)`)}</div><div class="pager"><button class="pager-btn" onclick="changeDailyTokensPage(-1)" ${data.page <= 1 ? 'disabled' : ''}>${i18n_t('Prev')}</button><span>${i18n_t('Page')} ${nf(data.page)} / ${nf(data.total_pages)}</span><button class="pager-btn" onclick="changeDailyTokensPage(1)" ${data.page >= data.total_pages ? 'disabled' : ''}>${i18n_t('Next')}</button></div></div>`;
+  t += `<div class="subtle-note">${i18n_t('Click a day row to inspect sessions from that day.')}</div>`;
+  return renderTableCard('dailyTokensTable', i18n_t('Daily Token Usage'), t);
 }
 
 function renderCacheEfficiency(data) {
   const overall = data?.overall || {};
   const models = data?.by_model || [];
   let html = '<div class="insight-grid">';
-  html += `<div class="insight-card"><div class="label">Cache hit share</div><div class="value">${Number(overall.cache_hit_share_pct || 0).toFixed(2)}%</div></div>`;
-  html += `<div class="insight-card"><div class="label">Calls with cache</div><div class="value">${nf(overall.calls_with_cache || 0)} <span style="font-size:12px;color:#8b949e">(${Number(overall.cache_calls_pct || 0).toFixed(2)}%)</span></div></div>`;
-  html += `<div class="insight-card"><div class="label">Sessions with cache</div><div class="value">${nf(overall.sessions_with_cache || 0)} / ${nf(overall.sessions || 0)}</div></div>`;
-  html += `<div class="insight-card"><div class="label">Estimated saved tokens</div><div class="value">${nf(overall.estimated_cache_saved_tokens || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Cache hit share')}</div><div class="value">${Number(overall.cache_hit_share_pct || 0).toFixed(2)}%</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Calls with cache')}</div><div class="value">${nf(overall.calls_with_cache || 0)} <span style="font-size:12px;color:#8b949e">(${Number(overall.cache_calls_pct || 0).toFixed(2)}%)</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Sessions with cache')}</div><div class="value">${nf(overall.sessions_with_cache || 0)} / ${nf(overall.sessions || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Estimated saved tokens')}</div><div class="value">${nf(overall.estimated_cache_saved_tokens || 0)}</div></div>`;
   html += '</div>';
-  let t = '<table><thead><tr><th>Model</th><th>Calls</th><th>Calls w/ Cache</th><th>Sessions</th><th>In</th><th>Cache Read</th><th>Hit Share</th><th>Cost</th></tr></thead><tbody>';
+  let t = `<table><thead><tr><th>${i18n_t('Model')}</th><th>${i18n_t('Calls')}</th><th>${i18n_t('Calls w/ Cache')}</th><th>${i18n_t('Sessions')}</th><th>${i18n_t('In')}</th><th>${i18n_t('Cache Read')}</th><th>${i18n_t('Hit Share')}</th><th>${i18n_t('Cost')}</th></tr></thead><tbody>`;
   if (!models.length) {
-    t += '<tr><td colspan="8" class="text-muted">No cache data for this range.</td></tr>';
+    t += `<tr><td colspan="8" class="text-muted">${i18n_t('No cache data for this range.')}</td></tr>`;
   } else {
     for (const row of models) {
       const modelRaw = row.model || '—';
@@ -1236,16 +1306,16 @@ function renderCacheEfficiency(data) {
       t += `<tr class="clickable-row" onclick='addDrilldown({model:${jsModel}})'><td class="text-muted" title="${escHtml(modelRaw)}">${escHtml(modelRaw.substring(0, 48))}</td><td>${nf(row.api_calls)}</td><td>${nf(row.calls_with_cache || 0)} <span class="text-muted">(${Number(row.cache_calls_pct || 0).toFixed(2)}%)</span></td><td>${nf(row.sessions || 0)}</td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${Number(row.cache_hit_share_pct || 0).toFixed(2)}%</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
     }
   }
-  t += '</tbody></table><div class="subtle-note">Click a model row to inspect sessions behind heavy cache use.</div>';
-  return renderTableCard('cacheEfficiencyTable', 'Cache Efficiency Stats', html + t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t('Click a model row to inspect sessions behind heavy cache use.')}</div>`;
+  return renderTableCard('cacheEfficiencyTable', i18n_t('Cache Efficiency Stats'), html + t);
 }
 
 function renderRequestForensics(data) {
   const rows = data?.rows || [];
   const hiddenDeleted = Number(data?.hidden_deleted_requests || 0);
-  let t = '<table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Platform</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Latency</th><th>Est</th><th>Asm</th><th>Request ID</th></tr></thead><tbody>';
+  let t = `<table><thead><tr><th>${i18n_t('Time')}</th><th>${i18n_t('Provider')}</th><th>${i18n_t('Model')}</th><th>${i18n_t('Platform')}</th><th>${i18n_t('Status')}</th><th>${i18n_t('In')}</th><th>${i18n_t('Out')}</th><th>${i18n_t('Cache')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Latency')}</th><th>${i18n_t('Est')}</th><th>${i18n_t('Asm')}</th><th>${i18n_t('Request ID')}</th></tr></thead><tbody>`;
   if (!rows.length) {
-    t += '<tr><td colspan="13" class="text-muted">No LLM requests match the current range and filters.</td></tr>';
+    t += `<tr><td colspan="13" class="text-muted">${i18n_t('No LLM requests match the current range and filters.')}</td></tr>`;
   } else {
     for (const row of rows) {
       const provider = row.provider || '—';
@@ -1255,14 +1325,14 @@ function renderRequestForensics(data) {
       t += `<tr class="clickable-row" onclick='openRequestDetail(${Number(row.id || 0)})'><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td><span class="inline-btn data-chip provider-chip" title="${escHtml(provider)}" onclick='event.stopPropagation(); addDrilldown({provider:${jsAttr(provider)}})'>${escHtml(provider)}</span></td><td class="text-muted" title="${escHtml(modelRaw)}"><span class="inline-btn data-chip model-chip" onclick='event.stopPropagation(); addDrilldown({model:${jsAttr(modelRaw)}})'>${escHtml(modelRaw)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${jsAttr(platform)}})'>${platformBadge(platform)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({status:${jsAttr(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td><td>${row.estimated ? statusBadge('running') : statusBadge('ok')}</td><td>${row.provider_assumed ? statusBadge('running') : statusBadge('ok')}</td><td><code>${nf(row.id || 0)}</code></td></tr>`;
     }
   }
-  t += `</tbody></table><div class="table-actions"><div>${nf(rows.length)} shown / ${nf(data?.total_requests || 0)} matching request(s)</div><div class="text-muted">${hiddenDeleted ? `${nf(hiddenDeleted)} request(s) hidden with deleted Hermes sessions.` : 'Click a request row for request-level forensics.'}</div></div>`;
-  return renderTableCard('requestForensicsTable', 'LLM Request Forensics', t);
+  t += `</tbody></table><div class="table-actions"><div>${i18n_t(`${nf(rows.length)} shown / ${nf(data?.total_requests || 0)} matching request(s)`)}</div><div class="text-muted">${hiddenDeleted ? i18n_t(`${nf(hiddenDeleted)} request(s) hidden with deleted Hermes sessions.`) : i18n_t('Click a request row for request-level forensics.')}</div></div>`;
+  return renderTableCard('requestForensicsTable', i18n_t('LLM Request Forensics'), t);
 }
 
 function renderToolFailureHeatmap(rows) {
-  let t = '<table><thead><tr><th>Tool</th><th>Model</th><th>Platform</th><th>Cron</th><th>Calls</th><th>Fail</th><th>Fail %</th><th>Avg Latency</th><th>Last Seen</th></tr></thead><tbody>';
+  let t = `<table><thead><tr><th>${i18n_t('Tool')}</th><th>${i18n_t('Model')}</th><th>${i18n_t('Platform')}</th><th>${i18n_t('Cron')}</th><th>${i18n_t('Calls')}</th><th>${i18n_t('Fail')}</th><th>${i18n_t('Fail %')}</th><th>${i18n_t('Avg Latency')}</th><th>${i18n_t('Last Seen')}</th></tr></thead><tbody>`;
   if (!rows || !rows.length) {
-    t += '<tr><td colspan="9" class="text-muted">No tool/model failure combinations for this range.</td></tr>';
+    t += `<tr><td colspan="9" class="text-muted">${i18n_t('No tool/model failure combinations for this range.')}</td></tr>`;
   } else {
     for (const row of rows) {
       const tool = row.tool_name || '—';
@@ -1273,47 +1343,47 @@ function renderToolFailureHeatmap(rows) {
       t += `<tr class="clickable-row" onclick='addDrilldown({tool_name:${jsAttr(tool)},model:${jsAttr(model)}})'><td class="text-muted">${escHtml(tool)}</td><td class="text-muted" title="${escHtml(model)}"><span class="inline-btn data-chip model-chip">${escHtml(model)}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${jsAttr(platform)}})'>${platformBadge(platform)}</span></td><td class="text-muted">${cron ? escHtml(cron.substring(0, 16)) : '—'}</td><td>${nf(row.calls || 0)}</td><td>${intensity} ${nf(row.failed_calls || 0)}</td><td>${Number(row.failure_pct || 0).toFixed(1)}%</td><td>${fmtMs(row.avg_latency_ms)}</td><td class="text-muted">${fmtLocalTs(row.last_seen, {seconds:true})}</td></tr>`;
     }
   }
-  t += '</tbody></table><div class="subtle-note">Heatmap rows group failures by tool × model × platform × cron. Click a row to inspect matching sessions.</div>';
-  return renderTableCard('toolFailureHeatmapTable', 'Tool Failure Heatmap', t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t('Heatmap rows group failures by tool × model × platform × cron. Click a row to inspect matching sessions.')}</div>`;
+  return renderTableCard('toolFailureHeatmapTable', i18n_t('Tool Failure Heatmap'), t);
 }
 
 function renderToolAnalytics(data) {
   const overall = data?.overall || {};
   const rows = data?.by_tool || [];
   let html = '<div class="insight-grid">';
-  html += `<div class="insight-card"><div class="label">Tool calls</div><div class="value">${nf(overall.tool_calls || 0)}</div></div>`;
-  html += `<div class="insight-card"><div class="label">Unique tools</div><div class="value">${nf(overall.unique_tools || 0)}</div></div>`;
-  html += `<div class="insight-card"><div class="label">Failed tool calls</div><div class="value">${nf(overall.failed_calls || 0)}</div></div>`;
-  html += `<div class="insight-card"><div class="label">Avg latency</div><div class="value">${fmtMs(overall.avg_latency_ms)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Tool calls')}</div><div class="value">${nf(overall.tool_calls || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Unique tools')}</div><div class="value">${nf(overall.unique_tools || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Failed tool calls')}</div><div class="value">${nf(overall.failed_calls || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Avg latency')}</div><div class="value">${fmtMs(overall.avg_latency_ms)}</div></div>`;
   html += '</div>';
-  let t = '<table><thead><tr><th>Tool</th><th>Calls</th><th>Sessions</th><th>OK</th><th>Fail</th><th>Fail %</th><th>Avg</th><th>Max</th><th>Last Seen</th></tr></thead><tbody>';
+  let t = `<table><thead><tr><th>${i18n_t('Tool')}</th><th>${i18n_t('Calls')}</th><th>${i18n_t('Sessions')}</th><th>${i18n_t('OK')}</th><th>${i18n_t('Fail')}</th><th>${i18n_t('Fail %')}</th><th>${i18n_t('Avg')}</th><th>${i18n_t('Max')}</th><th>${i18n_t('Last Seen')}</th></tr></thead><tbody>`;
   if (!rows.length) {
-    t += '<tr><td colspan="9" class="text-muted">No tool activity matches the current range and filters.</td></tr>';
+    t += `<tr><td colspan="9" class="text-muted">${i18n_t('No tool activity matches the current range and filters.')}</td></tr>`;
   } else {
     for (const row of rows) {
       const tool = row.tool_name || '—';
       t += `<tr class="clickable-row" onclick='addDrilldown({tool_name:${jsAttr(tool)}})'><td class="text-muted">${escHtml(tool)}</td><td>${nf(row.calls || 0)}</td><td>${nf(row.sessions || 0)}</td><td>${nf(row.ok_calls || 0)}</td><td>${nf(row.failed_calls || 0)}</td><td>${Number(row.failure_pct || 0).toFixed(2)}%</td><td>${fmtMs(row.avg_latency_ms)}</td><td>${fmtMs(row.max_latency_ms)}</td><td class="text-muted">${fmtLocalTs(row.last_seen, {seconds:true})}</td></tr>`;
     }
   }
-  t += '</tbody></table><div class="subtle-note">Click a tool row to filter the whole breakdown workspace to sessions that used it.</div>';
-  return renderTableCard('toolAnalyticsTable', 'Tool Analytics', html + t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t('Click a tool row to filter the whole breakdown workspace to sessions that used it.')}</div>`;
+  return renderTableCard('toolAnalyticsTable', i18n_t('Tool Analytics'), html + t);
 }
 
 function renderCronFailureWaste(rows) {
-  let t = '<table><thead><tr><th>Cron Job</th><th>Risk</th><th>Runs</th><th>Fail</th><th>Fail %</th><th>Timeout</th><th>Tool Fail</th><th>Wasted Tokens</th><th>Wasted Cost</th><th>Last Success</th><th>Avg Dur</th></tr></thead><tbody>';
+  let t = `<table><thead><tr><th>${i18n_t('Cron Job')}</th><th>${i18n_t('Risk')}</th><th>${i18n_t('Runs')}</th><th>${i18n_t('Fail')}</th><th>${i18n_t('Fail %')}</th><th>${i18n_t('Timeout')}</th><th>${i18n_t('Tool Fail')}</th><th>${i18n_t('Wasted Tokens')}</th><th>${i18n_t('Wasted Cost')}</th><th>${i18n_t('Last Success')}</th><th>${i18n_t('Avg Dur')}</th></tr></thead><tbody>`;
   if (!rows || !rows.length) {
-    t += '<tr><td colspan="11" class="text-muted">No cron waste/failure data for this range.</td></tr>';
+    t += `<tr><td colspan="11" class="text-muted">${i18n_t('No cron waste/failure data for this range.')}</td></tr>`;
   } else {
     for (const row of rows) {
       const job = row.cron_job_id || '—';
-      const risks = (row.risks || []).length ? row.risks.join(', ') : 'normal';
+      const risks = (row.risks || []).length ? row.risks.join(', ') : i18n_t('normal');
       const riskBadge = (row.risks || []).length ? statusBadge('error') : statusBadge('ok');
-      const age = row.last_success_age_hours == null ? 'never' : `${Number(row.last_success_age_hours).toFixed(1)}h`;
+      const age = row.last_success_age_hours == null ? i18n_t('never') : `${Number(row.last_success_age_hours).toFixed(1)}h`;
       t += `<tr class="clickable-row" onclick='addDrilldown({cron_job_id:${jsAttr(job)},platform:"cron"})'><td><code title="${escHtml(job)}">${escHtml(job.substring(0, 22))}</code></td><td>${riskBadge} <span class="text-muted">${escHtml(risks)}</span></td><td>${nf(row.runs || 0)}</td><td>${nf(row.failed_runs || 0)}</td><td>${Number(row.failure_pct || 0).toFixed(1)}%</td><td>${nf(row.timeout_runs || 0)}</td><td>${nf(row.failed_tool_calls || 0)}</td><td>${nf(row.wasted_tokens || 0)}</td><td>${fmtCost(row.wasted_cost_usd)}</td><td class="text-muted">${escHtml(age)}</td><td>${fmtMs(row.avg_duration_ms)}</td></tr>`;
     }
   }
-  t += '</tbody></table><div class="subtle-note">Waste estimates count tokens/cost from non-ok cron runs. Click a cron row to drill into sessions from that job.</div>';
-  return renderTableCard('cronFailureWasteTable', 'Cron Failure / Waste Center', t);
+  t += `</tbody></table><div class="subtle-note">${i18n_t('Waste estimates count tokens/cost from non-ok cron runs. Click a cron row to drill into sessions from that job.')}</div>`;
+  return renderTableCard('cronFailureWasteTable', i18n_t('Cron Failure / Waste Center'), t);
 }
 
 function renderErrorCenter(data) {
@@ -1323,37 +1393,37 @@ function renderErrorCenter(data) {
   const failedTools = data?.failed_tools || [];
   const incidents = data?.incidents || [];
   let html = '<div class="insight-grid">';
-  html += `<div class="insight-card"><div class="label">Failed runs</div><div class="value">${nf(runSummary.failed_runs || 0)}</div></div>`;
-  html += `<div class="insight-card"><div class="label">Interrupted runs</div><div class="value">${nf(runSummary.interrupted_runs || 0)}</div></div>`;
-  html += `<div class="insight-card"><div class="label">Failed tool calls</div><div class="value">${nf(toolSummary.failed_tool_calls || 0)}</div></div>`;
-  html += `<div class="insight-card"><div class="label">Sessions w/ tool failure</div><div class="value">${nf(toolSummary.sessions_with_failed_tools || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Failed runs')}</div><div class="value">${nf(runSummary.failed_runs || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Interrupted runs')}</div><div class="value">${nf(runSummary.interrupted_runs || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Failed tool calls')}</div><div class="value">${nf(toolSummary.failed_tool_calls || 0)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Sessions w/ tool failure')}</div><div class="value">${nf(toolSummary.sessions_with_failed_tools || 0)}</div></div>`;
   html += '</div>';
 
-  let statusTable = '<table><thead><tr><th>Status</th><th>Runs</th><th>Sessions</th><th>Cost</th><th>Last Seen</th></tr></thead><tbody>';
-  if (!statuses.length) statusTable += '<tr><td colspan="5" class="text-muted">No non-ok session statuses in this range.</td></tr>';
+  let statusTable = `<table><thead><tr><th>${i18n_t('Status')}</th><th>${i18n_t('Runs')}</th><th>${i18n_t('Sessions')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Last Seen')}</th></tr></thead><tbody>`;
+  if (!statuses.length) statusTable += `<tr><td colspan="5" class="text-muted">${i18n_t('No non-ok session statuses in this range.')}</td></tr>`;
   else for (const row of statuses) {
     statusTable += `<tr class="clickable-row" onclick='addDrilldown({status:${jsAttr(row.status || '—')}})'><td>${statusBadge(row.status || '—')}</td><td>${nf(row.runs || 0)}</td><td>${nf(row.sessions || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td class="text-muted">${fmtLocalTs(row.last_seen, {seconds:true})}</td></tr>`;
   }
   statusTable += '</tbody></table>';
 
-  let failedToolTable = '<table><thead><tr><th>Tool</th><th>Failed Calls</th><th>Sessions</th><th>Avg Latency</th><th>Last Seen</th></tr></thead><tbody>';
-  if (!failedTools.length) failedToolTable += '<tr><td colspan="5" class="text-muted">No failed tool calls in this range.</td></tr>';
+  let failedToolTable = `<table><thead><tr><th>${i18n_t('Tool')}</th><th>${i18n_t('Failed Calls')}</th><th>${i18n_t('Sessions')}</th><th>${i18n_t('Avg Latency')}</th><th>${i18n_t('Last Seen')}</th></tr></thead><tbody>`;
+  if (!failedTools.length) failedToolTable += `<tr><td colspan="5" class="text-muted">${i18n_t('No failed tool calls in this range.')}</td></tr>`;
   else for (const row of failedTools) {
     failedToolTable += `<tr class="clickable-row" onclick='addDrilldown({tool_name:${jsAttr(row.tool_name || '—')}})'><td class="text-muted">${escHtml(row.tool_name || '—')}</td><td>${nf(row.failed_calls || 0)}</td><td>${nf(row.sessions || 0)}</td><td>${fmtMs(row.avg_latency_ms)}</td><td class="text-muted">${fmtLocalTs(row.last_seen, {seconds:true})}</td></tr>`;
   }
   failedToolTable += '</tbody></table>';
 
-  let incidentTable = '<table><thead><tr><th>Time</th><th>Kind</th><th>Platform</th><th>Provider</th><th>Model / Tool</th><th>Status</th><th>Latency</th><th>Cost</th><th>Session</th></tr></thead><tbody>';
-  if (!incidents.length) incidentTable += '<tr><td colspan="9" class="text-muted">No recent incidents for this range.</td></tr>';
+  let incidentTable = `<table><thead><tr><th>${i18n_t('Time')}</th><th>${i18n_t('Kind')}</th><th>${i18n_t('Platform')}</th><th>${i18n_t('Provider')}</th><th>${i18n_t('Model / Tool')}</th><th>${i18n_t('Status')}</th><th>${i18n_t('Latency')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Session')}</th></tr></thead><tbody>`;
+  if (!incidents.length) incidentTable += `<tr><td colspan="9" class="text-muted">${i18n_t('No recent incidents for this range.')}</td></tr>`;
   else for (const row of incidents) {
     const label = row.kind === 'tool_failure' ? (row.tool_name || '—') : (row.model || '—');
     incidentTable += `<tr class="clickable-row" onclick='openSessionDetail(${jsAttr(row.session_id || '')})'><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td>${row.kind === 'tool_failure' ? statusBadge('error') : statusBadge(row.status || 'error')}</td><td>${platformBadge(row.platform || 'cli')}</td><td class="text-muted">${escHtml(row.provider || '—')}</td><td class="text-muted" title="${escHtml(label)}">${escHtml(label.substring(0, 36))}</td><td>${statusBadge(row.status || 'error')}</td><td>${fmtMs(row.latency_ms)}</td><td>${fmtCost(row.cost_usd)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml((row.session_id || '').substring(0, 24))}</code></td></tr>`;
   }
-  incidentTable += '</tbody></table><div class="subtle-note">Click status or tool rows to drill down. Click an incident row for full session detail.</div>';
-  return renderTableCard('errorCenterTable', 'Error Center', html + '<h3 style="margin-top:4px">Run Status Groups</h3>' + statusTable + '<div style="height:16px"></div><h3>Failed Tools</h3>' + failedToolTable + '<div style="height:16px"></div><h3>Recent Incidents</h3>' + incidentTable);
+  incidentTable += `</tbody></table><div class="subtle-note">${i18n_t('Click status or tool rows to drill down. Click an incident row for full session detail.')}</div>`;
+  return renderTableCard('errorCenterTable', i18n_t('Error Center'), html + `<h3 style="margin-top:4px">${i18n_t('Run Status Groups')}</h3>` + statusTable + `<div style="height:16px"></div><h3>${i18n_t('Failed Tools')}</h3>` + failedToolTable + `<div style="height:16px"></div><h3>${i18n_t('Recent Incidents')}</h3>` + incidentTable);
 }
 
-function renderRunsInvestigation(data, title = 'Session Investigation') {
+function renderRunsInvestigation(data, title = i18n_t('Session Investigation')) {
   const rows = data?.rows || [];
   let html = '';
   const activeSearch = currentDrilldown.q || '';
@@ -1361,15 +1431,15 @@ function renderRunsInvestigation(data, title = 'Session Investigation') {
   const hasOnlySearch = !!currentDrilldown.q && Object.keys(currentDrilldown).filter(k => k !== 'q').length === 0;
   let emptyReason = '';
   if (!rows.length) {
-    if (hasOnlySearch) emptyReason = `No sessions match search “${activeSearch}”.`;
-    else if (hasDrilldown()) emptyReason = `No sessions match the current filters${activeSearch ? ` and search “${activeSearch}”` : ''}.`;
-    else emptyReason = 'No sessions available for this time range.';
+    if (hasOnlySearch) emptyReason = i18n_t(`No sessions match search “${activeSearch}”.`);
+    else if (hasDrilldown()) emptyReason = activeSearch ? i18n_t(`No sessions match the current filters and search “${activeSearch}”.`) : i18n_t('No sessions match the current filters.');
+    else emptyReason = i18n_t('No sessions available for this time range.');
   }
-  html += `<div class="filter-bar"><div class="filter-bar-left">${filterChips || '<div class="subtle-note" style="margin:0">Click a provider, model, day, status, platform, tool, or chart segment to inspect exact sessions behind the totals.</div>'}${hasDrilldown() ? '<button class="inline-btn" onclick="clearDrilldown()">Clear filters</button>' : ''}</div><div class="search-inline"><input id="investigationSearch" type="text" value="${escHtml(activeSearch)}" placeholder="Search session / model / provider / cron / tool" onkeydown="if(event.key===\'Enter\'){applyInvestigationSearch()}" /><button class="inline-btn" onclick="applyInvestigationSearch()">Search</button><button class="inline-btn" onclick="clearInvestigationSearch()">Clear search</button></div></div>`;
+  html += `<div class="filter-bar"><div class="filter-bar-left">${filterChips || '<div class="subtle-note" style="margin:0">' + i18n_t('Click a provider, model, day, status, platform, tool, or chart segment to inspect exact sessions behind the totals.') + '</div>'}${hasDrilldown() ? '<button class="inline-btn" onclick="clearDrilldown()">' + i18n_t('Clear filters') + '</button>' : ''}</div><div class="search-inline"><input id="investigationSearch" type="text" value="${escHtml(activeSearch)}" placeholder="${i18n_t('Search session / model / provider / cron / tool')}" onkeydown="if(event.key===\'Enter\'){applyInvestigationSearch()}" /><button class="inline-btn" onclick="applyInvestigationSearch()">${i18n_t('Search')}</button><button class="inline-btn" onclick="clearInvestigationSearch()">${i18n_t('Clear search')}</button></div></div>`;
   const hiddenDeleted = Number(data?.hidden_deleted_runs || 0);
-  const hiddenNote = hiddenDeleted ? `${nf(hiddenDeleted)} deleted Hermes session(s) soft-hidden.` : 'Deleted Hermes sessions are hidden by default.';
-  html += `<div class="table-actions" style="margin-top:0;margin-bottom:12px"><div>${nf(rows.length)} shown / ${nf(data?.total_runs || 0)} matching session(s)</div><div class="text-muted">${escHtml(emptyReason)} ${escHtml(hiddenNote)}</div></div>`;
-  let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Provider</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
+  const hiddenNote = hiddenDeleted ? i18n_t(`${nf(hiddenDeleted)} deleted Hermes session(s) soft-hidden.`) : i18n_t('Deleted Hermes sessions are hidden by default.');
+  html += `<div class="table-actions" style="margin-top:0;margin-bottom:12px"><div>${i18n_t(`${nf(rows.length)} shown / ${nf(data?.total_runs || 0)} matching session(s)`)}</div><div class="text-muted">${escHtml(emptyReason)} ${escHtml(hiddenNote)}</div></div>`;
+  let t = `<table><thead><tr><th>${i18n_t('Time')}</th><th>${i18n_t('Platform')}</th><th>${i18n_t('Provider')}</th><th>${i18n_t('Model')}</th><th>${i18n_t('Status')}</th><th>${i18n_t('In')}</th><th>${i18n_t('Out')}</th><th>${i18n_t('Cache')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Duration')}</th><th>${i18n_t('Session ID')}</th></tr></thead><tbody>`;
   if (!rows.length) {
     t += `<tr><td colspan="11" class="text-muted">${escHtml(emptyReason)}</td></tr>`;
   } else {
@@ -1389,7 +1459,7 @@ function renderRunsInvestigation(data, title = 'Session Investigation') {
   }
   t += '</tbody></table>';
   html += t;
-  html += `<div class="table-actions"><div>${nf(rows.length)} shown / ${nf(data?.total_runs || 0)} matching session(s)</div><div class="text-muted">Click a row for full session detail.</div></div>`;
+  html += `<div class="table-actions"><div>${i18n_t(`${nf(rows.length)} shown / ${nf(data?.total_runs || 0)} matching session(s)`)}</div><div class="text-muted">${i18n_t('Click a row for full session detail.')}</div></div>`;
   return renderTableCard('runsInvestigationTable', title, html);
 }
 
@@ -1410,7 +1480,7 @@ function closeSessionDetail() {
 
 function renderSessionDetail(data) {
   if (!data || data.error) {
-    return `<div class="error-box">${escHtml(data?.error || 'Failed to load session detail')}</div>`;
+    return `<div class="error-box">${escHtml(data?.error || i18n_t('Failed to load session detail'))}</div>`;
   }
   const run = data.run || {};
   const llm = data.llm_summary || {};
@@ -1420,44 +1490,44 @@ function renderSessionDetail(data) {
   const platformFilter = jsAttr(run.platform || 'cli');
   const statusFilter = jsAttr(run.status || '—');
   let html = '<div class="drawer-section"><div class="insight-grid">';
-  html += `<div class="insight-card"><div class="label">Status</div><div class="value"><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({status:${statusFilter}})'>${escHtml(run.status || '—')}</span></div></div>`;
-  html += `<div class="insight-card"><div class="label">Provider</div><div class="value"><span class="inline-btn data-chip provider-chip" title="${escHtml(run.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${providerFilter}})'>${escHtml(run.provider || '—')}</span></div></div>`;
-  html += `<div class="insight-card"><div class="label">Model</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(run.model || '—')}" onclick='closeSessionDetail(); addDrilldown({model:${modelFilter}})'>${escHtml(run.model || '—')}</span></div></div>`;
-  html += `<div class="insight-card"><div class="label">Cost / Duration</div><div class="value">${fmtCost(run.cost_usd)} / ${fmtMs(run.duration_ms)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Status')}</div><div class="value"><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({status:${statusFilter}})'>${escHtml(run.status || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Provider')}</div><div class="value"><span class="inline-btn data-chip provider-chip" title="${escHtml(run.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${providerFilter}})'>${escHtml(run.provider || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Model')}</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(run.model || '—')}" onclick='closeSessionDetail(); addDrilldown({model:${modelFilter}})'>${escHtml(run.model || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Cost / Duration')}</div><div class="value">${fmtCost(run.cost_usd)} / ${fmtMs(run.duration_ms)}</div></div>`;
   html += '</div></div>';
 
-  html += '<div class="drawer-section"><h4>Run totals</h4>';
+  html += `<div class="drawer-section"><h4>${i18n_t('Run totals')}</h4>`;
   html += '<table><tbody>';
-  html += `<tr><th>Platform</th><td><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({platform:${platformFilter}})'>${escHtml(run.platform || 'cli')}</span></td><th>API calls</th><td>${nf(run.api_calls || 0)}</td></tr>`;
-  html += `<tr><th>Tool calls</th><td>${nf(run.tool_calls || 0)}</td><th>Estimated LLM calls</th><td>${nf(run.estimated_llm_calls || 0)}</td></tr>`;
-  html += `<tr><th>Tokens in</th><td>${nf(run.tokens_in || 0)}</td><th>Tokens out</th><td>${nf(run.tokens_out || 0)}</td></tr>`;
-  html += `<tr><th>Cache read</th><td>${nf(run.cache_read_tokens || 0)}</td><th>Cache write</th><td>${nf(run.cache_write_tokens || 0)}</td></tr>`;
-  html += `<tr><th>Started</th><td>${fmtLocalTs(run.started_at, {seconds:true})}</td><th>Ended</th><td>${fmtLocalTs(run.ended_at, {seconds:true})}</td></tr>`;
+  html += `<tr><th>${i18n_t('Platform')}</th><td><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({platform:${platformFilter}})'>${escHtml(run.platform || 'cli')}</span></td><th>${i18n_t('API calls')}</th><td>${nf(run.api_calls || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Tool calls')}</th><td>${nf(run.tool_calls || 0)}</td><th>${i18n_t('Estimated LLM calls')}</th><td>${nf(run.estimated_llm_calls || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Tokens in')}</th><td>${nf(run.tokens_in || 0)}</td><th>${i18n_t('Tokens out')}</th><td>${nf(run.tokens_out || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Cache read')}</th><td>${nf(run.cache_read_tokens || 0)}</td><th>${i18n_t('Cache write')}</th><td>${nf(run.cache_write_tokens || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Started')}</th><td>${fmtLocalTs(run.started_at, {seconds:true})}</td><th>${i18n_t('Ended')}</th><td>${fmtLocalTs(run.ended_at, {seconds:true})}</td></tr>`;
   html += '</tbody></table></div>';
 
-  html += '<div class="drawer-section"><h4>LLM call summary</h4>';
+  html += `<div class="drawer-section"><h4>${i18n_t('LLM call summary')}</h4>`;
   html += '<table><tbody>';
-  html += `<tr><th>API calls</th><td>${nf(llm.api_calls || 0)}</td><th>Estimated calls</th><td>${nf(llm.estimated_calls || 0)}</td></tr>`;
-  html += `<tr><th>Tokens in</th><td>${nf(llm.tokens_in || 0)}</td><th>Tokens out</th><td>${nf(llm.tokens_out || 0)}</td></tr>`;
-  html += `<tr><th>Cache read</th><td>${nf(llm.cache_read_tokens || 0)}</td><th>Reasoning</th><td>${nf(llm.reasoning_tokens || 0)}</td></tr>`;
-  html += `<tr><th>Cost</th><td>${fmtCost(llm.cost_usd)}</td><th>Avg latency</th><td>${fmtMs(llm.avg_latency_ms)}</td></tr>`;
+  html += `<tr><th>${i18n_t('API calls')}</th><td>${nf(llm.api_calls || 0)}</td><th>${i18n_t('Estimated calls')}</th><td>${nf(llm.estimated_calls || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Tokens in')}</th><td>${nf(llm.tokens_in || 0)}</td><th>${i18n_t('Tokens out')}</th><td>${nf(llm.tokens_out || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Cache read')}</th><td>${nf(llm.cache_read_tokens || 0)}</td><th>${i18n_t('Reasoning')}</th><td>${nf(llm.reasoning_tokens || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Cost')}</th><td>${fmtCost(llm.cost_usd)}</td><th>${i18n_t('Avg latency')}</th><td>${fmtMs(llm.avg_latency_ms)}</td></tr>`;
   html += '</tbody></table></div>';
 
-  let pm = '<div class="drawer-section"><h4>Provider / model mix</h4><table><thead><tr><th>Provider</th><th>Model</th><th>Calls</th><th>Total Tokens</th><th>Cost</th></tr></thead><tbody>';
+  let pm = `<div class="drawer-section"><h4>${i18n_t('Provider / model mix')}</h4><table><thead><tr><th>${i18n_t('Provider')}</th><th>${i18n_t('Model')}</th><th>${i18n_t('Calls')}</th><th>${i18n_t('Total Tokens')}</th><th>${i18n_t('Cost')}</th></tr></thead><tbody>`;
   for (const row of (data.provider_models || [])) {
     pm += `<tr><td><span class="inline-btn data-chip provider-chip" title="${escHtml(row.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${jsAttr(row.provider || '—')}})'>${escHtml(row.provider || '—')}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" onclick='closeSessionDetail(); addDrilldown({model:${jsAttr(row.model || '—')}})'>${escHtml(row.model || '—')}</span></td><td>${nf(row.api_calls || 0)}</td><td>${nf(row.total_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td></tr>`;
   }
   pm += '</tbody></table></div>';
   html += pm;
 
-  let llmRows = '<div class="drawer-section"><h4>Recent LLM calls</h4><table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cache</th><th>Reasoning</th><th>Cost</th><th>Latency</th></tr></thead><tbody>';
+  let llmRows = `<div class="drawer-section"><h4>${i18n_t('Recent LLM calls')}</h4><table><thead><tr><th>${i18n_t('Time')}</th><th>${i18n_t('Provider')}</th><th>${i18n_t('Model')}</th><th>${i18n_t('In')}</th><th>${i18n_t('Out')}</th><th>${i18n_t('Cache')}</th><th>${i18n_t('Reasoning')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Latency')}</th></tr></thead><tbody>`;
   for (const row of (data.llm_calls || [])) {
     llmRows += `<tr><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td><span class="inline-btn data-chip provider-chip" title="${escHtml(row.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${jsAttr(row.provider || '—')}})'>${escHtml(row.provider || '—')}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" onclick='closeSessionDetail(); addDrilldown({model:${jsAttr(row.model || '—')}})'>${escHtml(row.model || '—')}</span></td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${nf(row.reasoning_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
   }
   llmRows += '</tbody></table></div>';
   html += llmRows;
 
-  let toolRows = '<div class="drawer-section"><h4>Tool calls</h4><table><thead><tr><th>Time</th><th>Tool</th><th>Status</th><th>Latency</th></tr></thead><tbody>';
+  let toolRows = `<div class="drawer-section"><h4>${i18n_t('Tool calls')}</h4><table><thead><tr><th>${i18n_t('Time')}</th><th>${i18n_t('Tool')}</th><th>${i18n_t('Status')}</th><th>${i18n_t('Latency')}</th></tr></thead><tbody>`;
   for (const row of (data.tool_calls || [])) {
     toolRows += `<tr><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td><span class="inline-btn" onclick='closeSessionDetail(); addDrilldown({tool_name:${jsAttr(row.tool_name || '—')}})'>${escHtml(row.tool_name || '—')}</span></td><td>${row.ok ? statusBadge('ok') : statusBadge('error')}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
   }
@@ -1469,19 +1539,19 @@ function renderSessionDetail(data) {
 async function openSessionDetail(sessionId) {
   if (!sessionId) return;
   const requestId = ++latestDrawerRequestId;
-  $('#sessionDrawerTitle').textContent = 'Session detail';
+  $('#sessionDrawerTitle').textContent = i18n_t('Session detail');
   $('#sessionDrawerSubtitle').textContent = sessionId;
-  $('#sessionDrawerBody').innerHTML = '<div class="loading" style="padding:24px">Loading…</div>';
+  $('#sessionDrawerBody').innerHTML = `<div class="loading" style="padding:24px">${i18n_t('Loading…')}</div>`;
   $('#sessionDrawer')?.classList.add('open');
   try {
     const data = await fetchJSON(`/api/session-detail?session_id=${encodeURIComponent(sessionId)}`);
     if (requestId !== latestDrawerRequestId) return;
-    $('#sessionDrawerTitle').textContent = `Session detail · ${data?.run?.platform || 'session'}`;
+    $('#sessionDrawerTitle').textContent = i18n_t('Session detail') + ' · ' + (data?.run?.platform || i18n_t('session'));
     $('#sessionDrawerSubtitle').textContent = sessionId;
     $('#sessionDrawerBody').innerHTML = renderSessionDetail(data);
   } catch (err) {
     if (requestId !== latestDrawerRequestId) return;
-    $('#sessionDrawerBody').innerHTML = `<div class="error-box">Failed to load session detail: ${escHtml(err.message)}</div>`;
+    $('#sessionDrawerBody').innerHTML = `<div class="error-box">${i18n_t('Failed to load session detail')}: ${escHtml(err.message)}</div>`;
   }
 }
 
@@ -1491,42 +1561,42 @@ function closeRequestDetail() {
 
 function renderRequestDetail(data) {
   if (!data || data.error) {
-    return `<div class="error-box">${escHtml(data?.error || 'Failed to load request detail')}</div>`;
+    return `<div class="error-box">${escHtml(data?.error || i18n_t('Failed to load request detail'))}</div>`;
   }
   const req = data.request || {};
   const totals = data.session_totals || {};
   let html = '<div class="drawer-section"><div class="insight-grid">';
-  html += `<div class="insight-card"><div class="label">Provider</div><div class="value"><span class="inline-btn data-chip provider-chip" title="${escHtml(req.provider || '—')}" onclick='closeRequestDetail(); addDrilldown({provider:${jsAttr(req.provider || '—')}})'>${escHtml(req.provider || '—')}</span></div></div>`;
-  html += `<div class="insight-card"><div class="label">Model</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(req.model || '—')}" onclick='closeRequestDetail(); addDrilldown({model:${jsAttr(req.model || '—')}})'>${escHtml(req.model || '—')}</span></div></div>`;
-  html += `<div class="insight-card"><div class="label">Cost / Latency</div><div class="value">${fmtCost(req.cost_usd)} / ${fmtMs(req.latency_ms)}</div></div>`;
-  html += `<div class="insight-card"><div class="label">Estimated</div><div class="value">${req.estimated ? 'Yes' : 'No'}</div></div>`;
-  html += `<div class="insight-card"><div class="label">Provider-assumed rate</div><div class="value">${req.provider_assumed ? 'Yes' : 'No'}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Provider')}</div><div class="value"><span class="inline-btn data-chip provider-chip" title="${escHtml(req.provider || '—')}" onclick='closeRequestDetail(); addDrilldown({provider:${jsAttr(req.provider || '—')}})'>${escHtml(req.provider || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Model')}</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(req.model || '—')}" onclick='closeRequestDetail(); addDrilldown({model:${jsAttr(req.model || '—')}})'>${escHtml(req.model || '—')}</span></div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Cost / Latency')}</div><div class="value">${fmtCost(req.cost_usd)} / ${fmtMs(req.latency_ms)}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Estimated')}</div><div class="value">${req.estimated ? i18n_t('Yes') : i18n_t('No')}</div></div>`;
+  html += `<div class="insight-card"><div class="label">${i18n_t('Provider-assumed rate')}</div><div class="value">${req.provider_assumed ? i18n_t('Yes') : i18n_t('No')}</div></div>`;
   html += '</div></div>';
 
-  html += '<div class="drawer-section"><h4>Request metrics</h4><table><tbody>';
-  html += `<tr><th>Request ID</th><td><code>${nf(req.id || 0)}</code></td><th>Time</th><td>${fmtLocalTs(req.ts, {seconds:true})}</td></tr>`;
-  html += `<tr><th>Session</th><td><span class="inline-btn" onclick='closeRequestDetail(); openSessionDetail(${jsAttr(req.session_id || '')})'>${escHtml(req.session_id || '—')}</span></td><th>Platform</th><td>${platformBadge(req.platform || 'cli')}</td></tr>`;
-  html += `<tr><th>Status</th><td>${statusBadge(req.status || 'running')}</td><th>Cron Job</th><td>${escHtml(req.cron_job_id || '—')}</td></tr>`;
-  html += `<tr><th>Input</th><td>${nf(req.tokens_in || 0)}</td><th>Output</th><td>${nf(req.tokens_out || 0)}</td></tr>`;
-  html += `<tr><th>Cache Read</th><td>${nf(req.cache_read_tokens || 0)}</td><th>Cache Write</th><td>${nf(req.cache_write_tokens || 0)}</td></tr>`;
-  html += `<tr><th>Reasoning</th><td>${nf(req.reasoning_tokens || 0)}</td><th>Session Tools</th><td>${nf(req.tool_calls || 0)}</td></tr>`;
+  html += `<div class="drawer-section"><h4>${i18n_t('Request metrics')}</h4><table><tbody>`;
+  html += `<tr><th>${i18n_t('Request ID')}</th><td><code>${nf(req.id || 0)}</code></td><th>${i18n_t('Time')}</th><td>${fmtLocalTs(req.ts, {seconds:true})}</td></tr>`;
+  html += `<tr><th>${i18n_t('Session')}</th><td><span class="inline-btn" onclick='closeRequestDetail(); openSessionDetail(${jsAttr(req.session_id || '')})'>${escHtml(req.session_id || '—')}</span></td><th>${i18n_t('Platform')}</th><td>${platformBadge(req.platform || 'cli')}</td></tr>`;
+  html += `<tr><th>${i18n_t('Status')}</th><td>${statusBadge(req.status || 'running')}</td><th>${i18n_t('Cron Job')}</th><td>${escHtml(req.cron_job_id || '—')}</td></tr>`;
+  html += `<tr><th>${i18n_t('Input')}</th><td>${nf(req.tokens_in || 0)}</td><th>${i18n_t('Output')}</th><td>${nf(req.tokens_out || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Cache Read')}</th><td>${nf(req.cache_read_tokens || 0)}</td><th>${i18n_t('Cache Write')}</th><td>${nf(req.cache_write_tokens || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Reasoning')}</th><td>${nf(req.reasoning_tokens || 0)}</td><th>${i18n_t('Session Tools')}</th><td>${nf(req.tool_calls || 0)}</td></tr>`;
   html += '</tbody></table></div>';
 
-  html += '<div class="drawer-section"><h4>Session totals</h4><table><tbody>';
-  html += `<tr><th>API calls</th><td>${nf(totals.api_calls || 0)}</td><th>Estimated calls</th><td>${nf(totals.estimated_calls || 0)}</td></tr>`;
-  html += `<tr><th>Tokens in</th><td>${nf(totals.tokens_in || 0)}</td><th>Tokens out</th><td>${nf(totals.tokens_out || 0)}</td></tr>`;
-  html += `<tr><th>Cache read</th><td>${nf(totals.cache_read_tokens || 0)}</td><th>Reasoning</th><td>${nf(totals.reasoning_tokens || 0)}</td></tr>`;
-  html += `<tr><th>Cost</th><td>${fmtCost(totals.cost_usd)}</td><th>Avg latency</th><td>${fmtMs(totals.avg_latency_ms)}</td></tr>`;
+  html += `<div class="drawer-section"><h4>${i18n_t('Session totals')}</h4><table><tbody>`;
+  html += `<tr><th>${i18n_t('API calls')}</th><td>${nf(totals.api_calls || 0)}</td><th>${i18n_t('Estimated calls')}</th><td>${nf(totals.estimated_calls || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Tokens in')}</th><td>${nf(totals.tokens_in || 0)}</td><th>${i18n_t('Tokens out')}</th><td>${nf(totals.tokens_out || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Cache read')}</th><td>${nf(totals.cache_read_tokens || 0)}</td><th>${i18n_t('Reasoning')}</th><td>${nf(totals.reasoning_tokens || 0)}</td></tr>`;
+  html += `<tr><th>${i18n_t('Cost')}</th><td>${fmtCost(totals.cost_usd)}</td><th>${i18n_t('Avg latency')}</th><td>${fmtMs(totals.avg_latency_ms)}</td></tr>`;
   html += '</tbody></table></div>';
 
-  let siblingRows = '<div class="drawer-section"><h4>Session LLM calls</h4><table><thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Latency</th></tr></thead><tbody>';
+  let siblingRows = `<div class="drawer-section"><h4>${i18n_t('Session LLM calls')}</h4><table><thead><tr><th>${i18n_t('Time')}</th><th>${i18n_t('Provider')}</th><th>${i18n_t('Model')}</th><th>${i18n_t('In')}</th><th>${i18n_t('Out')}</th><th>${i18n_t('Cache')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Latency')}</th></tr></thead><tbody>`;
   for (const row of (data.sibling_requests || [])) {
     siblingRows += `<tr class="clickable-row" onclick='openRequestDetail(${Number(row.id || 0)})'><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td>${escHtml(row.provider || '—')}</td><td class="text-muted" title="${escHtml(row.model || '—')}">${escHtml((row.model || '—').substring(0, 34))}</td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
   }
   siblingRows += '</tbody></table></div>';
   html += siblingRows;
 
-  let toolRows = '<div class="drawer-section"><h4>Session tool activity</h4><table><thead><tr><th>Time</th><th>Tool</th><th>Status</th><th>Latency</th></tr></thead><tbody>';
+  let toolRows = `<div class="drawer-section"><h4>${i18n_t('Session tool activity')}</h4><table><thead><tr><th>${i18n_t('Time')}</th><th>${i18n_t('Tool')}</th><th>${i18n_t('Status')}</th><th>${i18n_t('Latency')}</th></tr></thead><tbody>`;
   for (const row of (data.session_tools || [])) {
     toolRows += `<tr><td class="text-muted">${fmtLocalTs(row.ts, {seconds:true})}</td><td><span class="inline-btn" onclick='closeRequestDetail(); addDrilldown({tool_name:${jsAttr(row.tool_name || '—')}})'>${escHtml(row.tool_name || '—')}</span></td><td>${row.ok ? statusBadge('ok') : statusBadge('error')}</td><td>${fmtMs(row.latency_ms)}</td></tr>`;
   }
@@ -1538,19 +1608,19 @@ function renderRequestDetail(data) {
 async function openRequestDetail(requestId) {
   if (!requestId) return;
   const requestSeq = ++latestRequestDrawerRequestId;
-  $('#requestDrawerTitle').textContent = 'Request detail';
+  $('#requestDrawerTitle').textContent = i18n_t('Request detail');
   $('#requestDrawerSubtitle').textContent = `#${requestId}`;
-  $('#requestDrawerBody').innerHTML = '<div class="loading" style="padding:24px">Loading…</div>';
+  $('#requestDrawerBody').innerHTML = `<div class="loading" style="padding:24px">${i18n_t('Loading…')}</div>`;
   $('#requestDrawer')?.classList.add('open');
   try {
     const data = await fetchJSON(`/api/request-detail?id=${encodeURIComponent(requestId)}`);
     if (requestSeq !== latestRequestDrawerRequestId) return;
-    $('#requestDrawerTitle').textContent = `Request detail · ${data?.request?.provider || 'provider'}`;
+    $('#requestDrawerTitle').textContent = i18n_t('Request detail') + ' · ' + (data?.request?.provider || i18n_t('provider'));
     $('#requestDrawerSubtitle').textContent = `#${requestId} · ${data?.request?.session_id || ''}`;
     $('#requestDrawerBody').innerHTML = renderRequestDetail(data);
   } catch (err) {
     if (requestSeq !== latestRequestDrawerRequestId) return;
-    $('#requestDrawerBody').innerHTML = `<div class="error-box">Failed to load request detail: ${escHtml(err.message)}</div>`;
+    $('#requestDrawerBody').innerHTML = `<div class="error-box">${i18n_t('Failed to load request detail')}: ${escHtml(err.message)}</div>`;
   }
 }
 
@@ -1584,15 +1654,15 @@ function drawMetricTrendChart(canvasId, rows) {
   const fullLabels = chartRows.map(row => {
     if (effectiveGranularity === 'minute') return fmtMinuteLabel(row.day, { full: true });
     if (effectiveGranularity === 'hour') return fmtHourLabel(row.day, { full: true });
-    if (effectiveGranularity === 'week') return `Week of ${row.day}`;
+    if (effectiveGranularity === 'week') return i18n_t(`Week of ${row.day}`);
     if (effectiveGranularity === 'month') return fmtTrendPeriodLabel(row.day, 'month');
     return row.day || fmtTrendPeriodLabel(row.day, 'day');
   });
   const tokenDatasets = [
-    { key: 'total_tokens', label: 'Total', borderColor: '#22d3ee', backgroundColor: 'rgba(34,211,238,0.16)', fill: true, tension: 0.32, pointRadius: 3, pointHoverRadius: 5, borderWidth: 3, yAxisID: 'y' },
-    { key: 'tokens_in', label: 'Input', borderColor: '#4f8cff', backgroundColor: 'rgba(79,140,255,0)', fill: false, tension: 0.28, pointRadius: 2, pointHoverRadius: 4, borderWidth: 2.5, yAxisID: 'y1' },
-    { key: 'tokens_out', label: 'Output', borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0)', fill: false, tension: 0.24, pointRadius: 2, pointHoverRadius: 4, borderWidth: 2.5, yAxisID: 'y1', borderDash: [6, 4] },
-    { key: 'cache_read_tokens', label: 'Cache read', borderColor: '#7dd3a0', backgroundColor: 'rgba(125,211,160,0)', fill: false, tension: 0.26, pointRadius: 2, pointHoverRadius: 4, borderWidth: 2.5, yAxisID: 'y', borderDash: [10, 5] },
+    { key: 'total_tokens', label: i18n_t('Total'), borderColor: '#22d3ee', backgroundColor: 'rgba(34,211,238,0.16)', fill: true, tension: 0.32, pointRadius: 3, pointHoverRadius: 5, borderWidth: 3, yAxisID: 'y' },
+    { key: 'tokens_in', label: i18n_t('Input'), borderColor: '#4f8cff', backgroundColor: 'rgba(79,140,255,0)', fill: false, tension: 0.28, pointRadius: 2, pointHoverRadius: 4, borderWidth: 2.5, yAxisID: 'y1' },
+    { key: 'tokens_out', label: i18n_t('Output'), borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0)', fill: false, tension: 0.24, pointRadius: 2, pointHoverRadius: 4, borderWidth: 2.5, yAxisID: 'y1', borderDash: [6, 4] },
+    { key: 'cache_read_tokens', label: i18n_t('Cache Read'), borderColor: '#7dd3a0', backgroundColor: 'rgba(125,211,160,0)', fill: false, tension: 0.26, pointRadius: 2, pointHoverRadius: 4, borderWidth: 2.5, yAxisID: 'y', borderDash: [10, 5] },
   ];
   const chosen = currentMetricTrendMetric === 'tokens'
     ? tokenDatasets
@@ -1754,9 +1824,9 @@ function drawModelUsageTrendChart(canvasId, trendData) {
     return value;
   });
   if (otherSeries.some(v => v > 0)) {
-    datasets.push({ label: 'Other', data: otherSeries, backgroundColor: '#8b949e', borderWidth: 0, borderRadius: 4 });
+    datasets.push({ label: i18n_t('Other'), data: otherSeries, backgroundColor: '#8b949e', borderWidth: 0, borderRadius: 4 });
   }
-  const yLabel = currentUsageMetric === 'cost' ? 'USD' : currentUsageMetric === 'requests' ? 'API calls' : currentUsageMetric === 'share' ? 'Share %' : 'Tokens';
+  const yLabel = currentUsageMetric === 'cost' ? 'USD' : currentUsageMetric === 'requests' ? i18n_t('API calls') : currentUsageMetric === 'share' ? i18n_t('Share %') : i18n_t('Tokens');
   const ctx = canvas.getContext('2d');
   charts[canvasId] = new Chart(ctx, {
     type: 'bar',
@@ -1771,14 +1841,14 @@ function drawModelUsageTrendChart(canvasId, trendData) {
             label: (context) => {
               const raw = Number(context.raw || 0);
               if (currentUsageMetric === 'cost') return `${context.dataset.label}: ${fmtCost(raw)}`;
-              if (currentUsageMetric === 'requests') return `${context.dataset.label}: ${nf(raw)} calls`;
+              if (currentUsageMetric === 'requests') return i18n_t(`${context.dataset.label}: ${nf(raw)} calls`);
               if (currentUsageMetric === 'share') return `${context.dataset.label}: ${raw.toFixed(1)}%`;
-              return `${context.dataset.label}: ${nf(raw)} tokens`;
+              return i18n_t(`${context.dataset.label}: ${nf(raw)} tokens`);
             },
             footer: (items) => {
               if (!items?.length) return '';
               const idx = items[0].dataIndex;
-              if (currentUsageMetric === 'share') return `Total: ${nf(totals[idx])} tokens`;
+              if (currentUsageMetric === 'share') return i18n_t(`Total: ${nf(totals[idx])} tokens`);
               return '';
             },
           },
@@ -1789,7 +1859,8 @@ function drawModelUsageTrendChart(canvasId, trendData) {
         const point = elements[0];
         const period = chart.data.labels[point.index];
         const model = chart.data.datasets[point.datasetIndex]?.label;
-        const next = model && model !== 'Other' ? { model } : {};
+        const otherLabel = i18n_t('Other');
+        const next = model && model !== otherLabel ? { model } : {};
         next.day = period;
         addDrilldown(next);
       },
@@ -1842,10 +1913,10 @@ function renderDailyCombinedSvg(hostId, dailyTokenChart, dailyModelChart) {
   const modelNames = dailyModelChart?.models || [];
   const modelColors = ['#bc8cff', '#8b949e', '#58a6ff', '#3fb950', '#d29922', '#f85149'];
   const tokenSeries = [
-    { label: 'Input', color: '#58a6ff', key: 'tokens_in' },
-    { label: 'Output', color: '#3fb950', key: 'tokens_out' },
-    { label: 'Cache Read', color: '#d29922', key: 'cache_read_tokens' },
-    { label: 'Reasoning', color: '#f85149', key: 'reasoning_tokens' },
+    { label: i18n_t('Input'), color: '#58a6ff', key: 'tokens_in' },
+    { label: i18n_t('Output'), color: '#3fb950', key: 'tokens_out' },
+    { label: i18n_t('Cache Read'), color: '#d29922', key: 'cache_read_tokens' },
+    { label: i18n_t('Reasoning'), color: '#f85149', key: 'reasoning_tokens' },
   ];
   const rowTotal = (row) => {
     const tokenTotal = tokenSeries.reduce((sum, s) => sum + Number(row?.[s.key] || 0), 0);
@@ -1857,12 +1928,12 @@ function renderDailyCombinedSvg(hostId, dailyTokenChart, dailyModelChart) {
   const rows = firstActiveIdx <= 1 ? rawRows : rawRows.slice(firstActiveIdx - 1);
   const legendItems = [
     ...tokenSeries.map(s => ({ label: s.label, color: s.color })),
-    ...modelNames.map((m, i) => ({ label: `Model: ${(m || '—').replace(/^openrouter\//, '').substring(0, 18)}`, color: modelColors[i % modelColors.length] })),
+    ...modelNames.map((m, i) => ({ label: i18n_t(`Model: ${(m || '—').replace(/^openrouter\//, '').substring(0, 18)}`), color: modelColors[i % modelColors.length] })),
   ];
-  if ((dailyModelChart?.rows || []).some(r => (r.other || 0) > 0)) legendItems.push({ label: 'Model: Other', color: '#8b949e' });
+  if ((dailyModelChart?.rows || []).some(r => (r.other || 0) > 0)) legendItems.push({ label: i18n_t('Model: Other'), color: '#8b949e' });
 
   if (!rows.length) {
-    host.innerHTML = '<div class="text-muted">No chart data.</div>';
+    host.innerHTML = `<div class="text-muted">${i18n_t('No chart data.')}</div>`;
     return;
   }
 
@@ -1910,20 +1981,20 @@ function renderDailyCombinedSvg(hostId, dailyTokenChart, dailyModelChart) {
       if (!v) return;
       const h = (v / maxY) * plotH;
       const yy = y(acc + v);
-      svg += `<rect x="${rightX(i)}" y="${yy}" width="${barW}" height="${h}" fill="${modelColors[idx % modelColors.length]}" style="cursor:pointer" onclick='addDrilldown({day:${dayJs},model:${jsAttr(model)}})'><title>${row.day} · Model: ${escHtml(model)}: ${nf(v)}</title></rect>`;
+      svg += `<rect x="${rightX(i)}" y="${yy}" width="${barW}" height="${h}" fill="${modelColors[idx % modelColors.length]}" style="cursor:pointer" onclick='addDrilldown({day:${dayJs},model:${jsAttr(model)}})'><title>${row.day} · ${i18n_t('Model')}: ${escHtml(model)}: ${nf(v)}</title></rect>`;
       acc += v;
     });
     const other = modelRowsByDay[row.day]?.other || 0;
     if (other) {
       const h = (other / maxY) * plotH;
       const yy = y(acc + other);
-      svg += `<rect x="${rightX(i)}" y="${yy}" width="${barW}" height="${h}" fill="#8b949e" style="cursor:pointer" onclick='addDrilldown({day:${dayJs}})'><title>${row.day} · Model: Other: ${nf(other)}</title></rect>`;
+      svg += `<rect x="${rightX(i)}" y="${yy}" width="${barW}" height="${h}" fill="#8b949e" style="cursor:pointer" onclick='addDrilldown({day:${dayJs}})'><title>${row.day} · ${i18n_t('Model: Other')}: ${nf(other)}</title></rect>`;
     }
 
     svg += `<text x="${pad.left + groupW * i + groupW/2}" y="${height - 16}" text-anchor="middle" fill="#8b949e" font-size="11">${row.day}</text>`;
   });
 
-  svg += `<text x="20" y="${pad.top + plotH / 2}" fill="#8b949e" font-size="12" transform="rotate(-90 20 ${pad.top + plotH / 2})">Tokens</text>`;
+  svg += `<text x="20" y="${pad.top + plotH / 2}" fill="#8b949e" font-size="12" transform="rotate(-90 20 ${pad.top + plotH / 2})">${i18n_t('Tokens')}</text>`;
   svg += `</svg>`;
   host.innerHTML = svg;
 }
@@ -1944,7 +2015,7 @@ async function loadAll(options = {}) {
     currentDailyTokensPage = 1;
     lastWindowPreset = windowPreset;
   }
-  setLoadStatus(options.reason === 'auto' ? 'Auto loading…' : 'Loading…', 'loading');
+  setLoadStatus(options.reason === 'auto' ? i18n_t('Auto loading…') : i18n_t('Loading…'), 'loading');
   const startedAt = performance.now();
   if (showShell || !app.dataset.loaded) app.innerHTML = loadingShell();
 
@@ -1992,12 +2063,12 @@ async function loadAll(options = {}) {
     if (currentPage === 'home') {
       // --- stat cards ---
       html += '<div class="stat-grid">';
-      html += renderStatCard('sessions', nf(r.total_runs), 'Sessions', 'blue');
-      html += renderStatCard('ok', nf(r.ok_runs), 'OK', 'green');
-      html += renderStatCard('failed', nf(r.failed_runs), 'Failed', 'red');
-      html += renderStatCard('api', nf(l.api_calls), 'API Calls', 'purple');
-      html += renderStatCard('tokens', nf(r.tokens_in), 'Tokens In', '');
-      html += renderStatCard('cost', fmtCost(r.cost_usd), 'Cost', 'yellow');
+      html += renderStatCard('sessions', nf(r.total_runs), i18n_t('Sessions'), 'blue');
+      html += renderStatCard('ok', nf(r.ok_runs), i18n_t('OK'), 'green');
+      html += renderStatCard('failed', nf(r.failed_runs), i18n_t('Failed'), 'red');
+      html += renderStatCard('api', nf(l.api_calls), i18n_t('API calls'), 'purple');
+      html += renderStatCard('tokens', nf(r.tokens_in), i18n_t('Tokens In'), '');
+      html += renderStatCard('cost', fmtCost(r.cost_usd), i18n_t('Cost'), 'yellow');
       html += '</div>';
 
       const cronSummaryRuns = (cron || []).reduce((sum, row) => sum + Number(row.runs || 0), 0);
@@ -2011,44 +2082,44 @@ async function loadAll(options = {}) {
 
       // --- charts row 1: daily cost + top tools ---
       let dailyTitle;
-      dailyTitle = `Daily Cost (${selectedWindowLabel(windowPreset)})`;
+      dailyTitle = i18n_t(`Daily Cost (${selectedWindowLabel(windowPreset)})`);
       html += '<div class="chart-row">';
       html += renderChartCard('dailyCost', dailyTitle, 'chart-daily');
-      html += renderChartCard('topTools', 'Top Tools by Calls', 'chart-tools');
+      html += renderChartCard('topTools', i18n_t('Top Tools by Calls'), 'chart-tools');
       html += '</div>';
 
       // --- charts row 2: cron cost + providers ---
       html += '<div class="chart-row">';
-      html += renderChartCard('cronCost', 'Cost by Cron Job', 'chart-cron');
-      html += renderChartCard('providers', 'Provider Distribution', 'chart-providers');
+      html += renderChartCard('cronCost', i18n_t('Cost by Cron Job'), 'chart-cron');
+      html += renderChartCard('providers', i18n_t('Provider Distribution'), 'chart-providers');
       html += '</div>';
       html += '<div style="font-size:11px;color:#8b949e;margin-top:-16px;margin-bottom:24px;padding:0 4px">';
-      html += '<b>Provider key:</b> <code>openrouter</code> = model with <code>openrouter/</code> prefix · <code>nous</code> = model without prefix (direct to Nous Research) · <code>anthropic</code> = direct to Anthropic';
+      html += `<b>${i18n_t('Provider key')}:</b> <code>openrouter</code> ${i18n_t('= model with')} <code>openrouter/</code> ${i18n_t('prefix ·')} <code>nous</code> ${i18n_t('= model without prefix (direct to Nous Research) ·')} <code>anthropic</code> ${i18n_t('= direct to Anthropic')}`;
       html += '</div>';
 
       // --- cron table ---
       if (cron.length) {
-        let t = '<table><thead><tr><th>Job</th><th>Schedule</th><th>Runs</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Avg Dur</th><th>Last Run</th></tr></thead><tbody>';
+        let t = `<table><thead><tr><th>${i18n_t('Job')}</th><th>${i18n_t('Schedule')}</th><th>${i18n_t('Runs')}</th><th>${i18n_t('Status')}</th><th>${i18n_t('In')}</th><th>${i18n_t('Out')}</th><th>${i18n_t('Cache')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Avg Dur')}</th><th>${i18n_t('Last Run')}</th></tr></thead><tbody>`;
         for (const row of cron) {
           const jid = row.cron_job_id || '?';
           const jobLabel = row.job_name || jid;
           const status = row.last_status || '—';
           t += `<tr class="clickable-row" onclick='addDrilldown({cron_job_id:${jsAttr(row.cron_job_id || '')},platform:"cron"})'><td><div style="display:flex;flex-direction:column;gap:3px"><code title="${escHtml(jid)}">${escHtml(jid.substring(0, 20))}</code><span class="text-muted" title="${escHtml(jobLabel)}">${escHtml(jobLabel)}</span></div></td><td class="text-muted">${escHtml(row.schedule_display || '—')}</td><td>${nf(row.runs)}</td><td>${statusBadge(status)}</td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.avg_duration_ms)}</td><td class="text-muted">${fmtLocalTs(row.last_run)}</td></tr>`;
         }
-        t += '</tbody></table><div class="subtle-note">Runs now follow Hermes scheduler history, so script-only cron jobs count too. Token and cost columns still show telemetry-backed usage only.</div>';
-        html += renderTableCard('cronTable', 'Cron Jobs', t);
+        t += `</tbody></table><div class="subtle-note">${i18n_t('Runs now follow Hermes scheduler history, so script-only cron jobs count too. Token and cost columns still show telemetry-backed usage only.')}</div>`;
+        html += renderTableCard('cronTable', i18n_t('Cron Jobs'), t);
       }
 
       // --- runs table ---
-      let t = '<table><thead><tr><th>Time</th><th>Platform</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Cache</th><th>Cost</th><th>Duration</th><th>Session ID</th></tr></thead><tbody>';
+      let t = `<table><thead><tr><th>${i18n_t('Time')}</th><th>${i18n_t('Platform')}</th><th>${i18n_t('Model')}</th><th>${i18n_t('Status')}</th><th>${i18n_t('In')}</th><th>${i18n_t('Out')}</th><th>${i18n_t('Cache')}</th><th>${i18n_t('Cost')}</th><th>${i18n_t('Duration')}</th><th>${i18n_t('Session ID')}</th></tr></thead><tbody>`;
       for (const row of runs) {
         const sid = (row.session_id || '').substring(0, 24);
         const platform = row.platform || 'cli';
         const status = row.status || '—';
         t += `<tr class="clickable-row" onclick='openSessionDetail(${jsAttr(row.session_id || '')})'><td class="text-muted">${fmtLocalTs(row.started_at)}</td><td><span onclick='event.stopPropagation(); addDrilldown({platform:${jsAttr(platform)}})'>${platformBadge(platform)}</span></td><td class="text-muted" title="${escHtml(row.model || '—')}"><span class="inline-btn data-chip model-chip" title="${escHtml(row.model || '—')}">${escHtml(row.model || '—')}</span></td><td><span onclick='event.stopPropagation(); addDrilldown({status:${jsAttr(status)}})'>${statusBadge(status)}</span></td><td>${nf(row.tokens_in)}</td><td>${nf(row.tokens_out)}</td><td>${nf(row.cache_read_tokens || 0)}</td><td>${fmtCost(row.cost_usd)}</td><td>${fmtMs(row.duration_ms)}</td><td><code title="${escHtml(row.session_id || '')}">${escHtml(sid)}</code></td></tr>`;
       }
-      t += '</tbody></table><div class="subtle-note">Click platform or status for a filtered breakdown view. Click row for full session detail.</div>';
-      html += renderTableCard('runsTable', 'Recent Sessions', t);
+      t += `</tbody></table><div class="subtle-note">${i18n_t('Click platform or status for a filtered breakdown view. Click row for full session detail.')}</div>`;
+      html += renderTableCard('runsTable', i18n_t('Recent Sessions'), t);
     } else if (currentPage === 'breakdown') {
       if (tokenBreakdown && tokenBreakdown.total_tokens > 0) {
         html += renderTokenBreakdown(tokenBreakdown);
@@ -2057,15 +2128,15 @@ async function loadAll(options = {}) {
       html += renderCacheEfficiency(cacheEfficiency);
       // Model efficiency is loaded lazily below — render a placeholder here
       // and replace it once the cache-backed request completes.
-      const modelEfficiencyMount = `<div id="modelEfficiencyMount" class="loading-shell" style="min-height:120px">Loading model efficiency…</div>`;
-      html += renderTableCard('modelEfficiencyTable', 'Model Efficiency Score', modelEfficiencyMount);
+      const modelEfficiencyMount = `<div id="modelEfficiencyMount" class="loading-shell" style="min-height:120px">${i18n_t('Loading model efficiency…')}</div>`;
+      html += renderTableCard('modelEfficiencyTable', i18n_t('Model Efficiency Score'), modelEfficiencyMount);
       html += renderEfficiency(sessionEfficiency);
       html += renderModelUsageTrendCard(modelPeriodTrends, modelShareComparison);
       html += renderModelShareComparisonCard(modelShareComparison);
       html += renderModelTokensTable(modelTokens);
       html += renderDailyTokensTable(dailyTokens);
-      html += renderWideSvgCard(hours === '0' ? 'Daily Token + Model Breakdown (last 90 days)' : 'Daily Token + Model Breakdown', 'daily-combined-svg');
-      html += renderRunsInvestigation(investigationRuns, hasDrilldown() ? 'Session Investigation' : 'Investigation Workspace');
+      html += renderWideSvgCard(hours === '0' ? i18n_t('Daily Token + Model Breakdown (last 90 days)') : i18n_t('Daily Token + Model Breakdown'), 'daily-combined-svg');
+      html += renderRunsInvestigation(investigationRuns, hasDrilldown() ? i18n_t('Session Investigation') : i18n_t('Investigation Workspace'));
     } else if (currentPage === 'requests') {
       html += renderProviderHealth(providerHealth);
       html += renderRequestForensics(requestForensics);
@@ -2083,32 +2154,32 @@ async function loadAll(options = {}) {
     app.dataset.loaded = '1';
     const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
     const autoMs = Number($('#autoRefreshSelect')?.value || 0);
-    setLoadStatus(`Loaded ${elapsed}s${autoMs ? ` · ${autoLabel(autoMs)}` : ''}`);
+    setLoadStatus(i18n_t(`Loaded ${elapsed}s${autoMs ? ` · ${autoLabel(autoMs)}` : ''}`));
 
     // --- render charts (after DOM is ready) ---
     if (currentPage === 'home') {
       const dc = summary.daily_cost || [];
       drawMetricTrendChart('home-metric-trend-chart', dailyTokenChart);
       drawLineChart('chart-daily', dc.map(d => d.day), [{
-        label: 'Cost ($)', data: dc.map(d => d.cost),
+        label: i18n_t('Cost ($)'), data: dc.map(d => d.cost),
         borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.15)', fill: true, tension: 0.3, pointRadius: 4,
       }], 'USD');
 
       const tools = (summary.top_tools || []).slice(0, 8);
-      drawBarChart('chart-tools', tools.map(t => t.tool_name.split('_').pop().substring(0, 12)), tools.map(t => t.calls), '#3fb950', 'Calls');
+      drawBarChart('chart-tools', tools.map(t => t.tool_name.split('_').pop().substring(0, 12)), tools.map(t => t.calls), '#3fb950', i18n_t('Calls'));
 
       if (cron.length) {
-        drawBarChart('chart-cron', cron.map(c => (c.cron_job_id || '?').substring(0, 16)), cron.map(c => c.cost_usd), '#bc8cff', 'Cost ($)');
+        drawBarChart('chart-cron', cron.map(c => (c.cron_job_id || '?').substring(0, 16)), cron.map(c => c.cost_usd), '#bc8cff', i18n_t('Cost ($)'));
       }
 
       if (providers.length) {
         const colors = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#8b949e'];
         drawDoughnutChart(
           'chart-providers',
-          providers.map(p => p.provider || '(unknown)'),
+          providers.map(p => p.provider || i18n_t('(unknown)')),
           providers.map(p => p.total_calls),
           colors,
-          (label) => addDrilldown({ provider: label === '(unknown)' ? '—' : label })
+          (label) => addDrilldown({ provider: label === i18n_t('(unknown)') ? '—' : label })
         );
 
       }
@@ -2125,7 +2196,7 @@ async function loadAll(options = {}) {
           if (!mount) return;
           const tableCard = mount.closest('.table-card');
           if (!tableCard) return;
-          const newHtml = renderTableCard('modelEfficiencyTable', 'Model Efficiency Score', renderModelEfficiency(rows));
+          const newHtml = renderTableCard('modelEfficiencyTable', i18n_t('Model Efficiency Score'), renderModelEfficiency(rows));
           const tmp = document.createElement('div');
           tmp.innerHTML = newHtml;
           tableCard.replaceWith(tmp.firstElementChild);
@@ -2133,14 +2204,14 @@ async function loadAll(options = {}) {
         .catch((err) => {
           if (requestId !== latestLoadRequestId) return;
           const mount = document.getElementById('modelEfficiencyMount');
-          if (mount) mount.innerHTML = `<div class="text-muted">Model efficiency unavailable: ${err.message}</div>`;
+          if (mount) mount.innerHTML = `<div class="text-muted">${i18n_t('Model efficiency unavailable')}: ${err.message}</div>`;
         });
     }
 
   } catch (err) {
     if (requestId !== latestLoadRequestId) return;
-    app.innerHTML = `<div class="error-box">Error loading data: ${err.message}<br><br>Make sure the dashboard server is running and telemetry DB exists.</div>`;
-    setLoadStatus('Load error', 'error');
+    app.innerHTML = `<div class="error-box">${i18n_t('Error loading data')}: ${err.message}<br><br>${i18n_t('Make sure the dashboard server is running and telemetry DB exists.')}</div>`;
+    setLoadStatus(i18n_t('Load error'), 'error');
   } finally {
     if (requestId === latestLoadRequestId) isLoading = false;
   }
