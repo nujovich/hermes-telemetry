@@ -1319,7 +1319,12 @@ def stats_by_provider(
             SUM(CASE WHEN estimated = 0 THEN 1 ELSE 0 END)    AS real_calls,
             SUM(CASE WHEN estimated = 1 THEN 1 ELSE 0 END)    AS estimated_calls,
             SUM(CASE WHEN provider_assumed = 1 THEN 1 ELSE 0 END) AS provider_assumed_calls,
-            ROUND(SUM(cost_usd), 6)                            AS cost_usd
+            ROUND(SUM(cost_usd), 6)                            AS cost_usd,
+            COALESCE(SUM(tokens_in), 0)                        AS tokens_in,
+            COALESCE(SUM(tokens_out), 0)                       AS tokens_out,
+            COALESCE(SUM(cache_read_tokens), 0)                AS cache_read_tokens,
+            COALESCE(SUM(cache_write_tokens), 0)               AS cache_write_tokens,
+            COALESCE(SUM(reasoning_tokens), 0)                 AS reasoning_tokens
         FROM llm_calls
         WHERE {where_sql}
         GROUP BY COALESCE(provider, '(unknown)')
@@ -1364,7 +1369,12 @@ def stats_by_model(
             SUM(CASE WHEN estimated = 0 THEN 1 ELSE 0 END)   AS real_calls,
             SUM(CASE WHEN estimated = 1 THEN 1 ELSE 0 END)   AS estimated_calls,
             SUM(CASE WHEN provider_assumed = 1 THEN 1 ELSE 0 END) AS provider_assumed_calls,
-            ROUND(SUM(cost_usd), 6)                           AS cost_usd
+            ROUND(SUM(cost_usd), 6)                           AS cost_usd,
+            COALESCE(SUM(tokens_in), 0)                       AS tokens_in,
+            COALESCE(SUM(tokens_out), 0)                      AS tokens_out,
+            COALESCE(SUM(cache_read_tokens), 0)               AS cache_read_tokens,
+            COALESCE(SUM(cache_write_tokens), 0)              AS cache_write_tokens,
+            COALESCE(SUM(reasoning_tokens), 0)                AS reasoning_tokens
         FROM llm_calls
         WHERE {where_sql}
         GROUP BY COALESCE(provider, '(unknown)'), COALESCE(model, '(unknown)')

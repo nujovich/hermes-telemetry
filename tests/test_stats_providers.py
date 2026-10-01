@@ -89,6 +89,29 @@ def test_stats_by_provider_real_vs_estimated():
     assert n["estimated_pct"] == 1.0
 
 
+def test_stats_by_provider_token_aggregates():
+    """Token columns (in/out/cache read/write/reasoning) are summed per provider."""
+    now = db._utcnow()
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call(
+        "s1", now, "m", "openai", 100, 50, 0.001, 50,
+        cache_read_tokens=1000, cache_write_tokens=20, reasoning_tokens=10,
+    )
+    db.record_llm_call(
+        "s1", now, "m", "openai", 60, 30, 0.002, 50,
+        cache_read_tokens=500, cache_write_tokens=10, reasoning_tokens=5,
+    )
+
+    rows = db.stats_by_provider(window_hours=24)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["tokens_in"] == 160
+    assert r["tokens_out"] == 80
+    assert r["cache_read_tokens"] == 1500
+    assert r["cache_write_tokens"] == 30
+    assert r["reasoning_tokens"] == 15
+
+
 def test_stats_by_provider_mixed_estimated():
     now = db._utcnow()
     db.start_run("s1", model="m", platform="cli")

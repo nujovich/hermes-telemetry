@@ -55,6 +55,29 @@ def test_stats_by_model_groups_by_provider_and_model():
     assert gem["cost_usd"] == 0.0  # the dated $0.00 case made visible
 
 
+def test_stats_by_model_token_aggregates():
+    """Token columns (in/out/cache read/write/reasoning) are summed and surfaced."""
+    now = db._utcnow()
+    db.start_run("s1", model="m", platform="cli")
+    db.record_llm_call(
+        "s1", now, "modelA", "openai", 100, 50, 0.001, 50,
+        cache_read_tokens=1000, cache_write_tokens=200, reasoning_tokens=30,
+    )
+    db.record_llm_call(
+        "s1", now, "modelA", "openai", 40, 10, 0.002, 50,
+        cache_read_tokens=500, cache_write_tokens=0, reasoning_tokens=10,
+    )
+
+    rows = db.stats_by_model(window_hours=24)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["tokens_in"] == 140
+    assert r["tokens_out"] == 60
+    assert r["cache_read_tokens"] == 1500
+    assert r["cache_write_tokens"] == 200
+    assert r["reasoning_tokens"] == 40
+
+
 def test_stats_by_model_real_vs_estimated_split():
     now = db._utcnow()
     db.start_run("s1", model="m", platform="cli")
