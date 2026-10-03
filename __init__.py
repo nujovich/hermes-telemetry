@@ -11,7 +11,6 @@ from __future__ import annotations
 
 __version__ = "0.8.0"
 
-import json
 import logging
 import os
 import re
@@ -143,21 +142,6 @@ def _extract_cron_job_id(session_id: str, platform: str) -> str | None:
         session_id,
     )
     return None
-
-
-def _is_tool_ok(result: Any) -> bool:
-    """Determine success/failure from a tool result string."""
-    if not isinstance(result, str):
-        return True
-    if result.startswith('{"error"'):
-        return False
-    try:
-        parsed = json.loads(result)
-        if isinstance(parsed, dict) and "error" in parsed:
-            return False
-    except (json.JSONDecodeError, ValueError):
-        pass
-    return True
 
 
 def register(ctx) -> None:  # noqa: ANN001
@@ -538,12 +522,15 @@ def register(ctx) -> None:  # noqa: ANN001
         **_kw,
     ) -> None:
         try:
-            ok = _is_tool_ok(result)
+            status = _kw.get("status")
+            if status not in {"ok", "error"}:
+                tele_log.debug("Skipping unclassified tool outcome: %s", status)
+                return
             db.record_tool_call(
                 session_id=session_id,
                 ts=_utcnow(),
                 tool_name=tool_name,
-                ok=ok,
+                ok=status == "ok",
                 latency_ms=duration_ms,
             )
         except Exception as exc:

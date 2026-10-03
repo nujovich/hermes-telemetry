@@ -59,36 +59,6 @@ def test_cron_session_id_non_cron_platform():
 
 
 # ---------------------------------------------------------------------------
-# _is_tool_ok
-# ---------------------------------------------------------------------------
-
-
-def test_is_tool_ok_json_error():
-    """A JSON response with an 'error' key is not ok."""
-    assert _init_mod._is_tool_ok('{"error": "some error"}') is False
-
-
-def test_is_tool_ok_success():
-    """A JSON response without 'error' key is ok."""
-    assert _init_mod._is_tool_ok('{"result": "ok"}') is True
-
-
-def test_is_tool_ok_non_json():
-    """Plain text (non-JSON) result is treated as ok."""
-    assert _init_mod._is_tool_ok("some plain text") is True
-
-
-def test_is_tool_ok_nested_error():
-    """Any dict with 'error' key at top level is not ok."""
-    assert _init_mod._is_tool_ok('{"error": null, "data": 1}') is False
-
-
-def test_is_tool_ok_none():
-    """None result is treated as ok (not a string)."""
-    assert _init_mod._is_tool_ok(None) is True
-
-
-# ---------------------------------------------------------------------------
 # plugin.yaml manifest schema
 # ---------------------------------------------------------------------------
 
