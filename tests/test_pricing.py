@@ -73,6 +73,20 @@ def test_zero_tokens():
     assert cost == 0.0
 
 
+def test_is_free_model():
+    """is_free_model is True only for models priced at input=0 AND output=0 (issue #89)."""
+    # Genuinely free: explicit $0/$0 rates.
+    assert pricing.is_free_model("owl-alpha", "nous") is True
+    # Paid models: nonzero input/output rates must never be treated as free.
+    assert pricing.is_free_model("deepseek-chat", "nous") is False
+    assert pricing.is_free_model("claude-sonnet-4-6", "nous") is False
+    assert pricing.is_free_model("gpt-4o", "nous") is False
+    # Unknown model: no explicit pricing → not free.
+    assert pricing.is_free_model("nvidia/totally-unknown-model", "nvidia") is False
+    # ":free" suffix rule resolves to $0 → free.
+    assert pricing.is_free_model("nvidia/nemotron-3-super-120b-a12b:free", "nvidia") is True
+
+
 def test_deepseek_pricing():
     cost = pricing.estimate_cost(
         {"input_tokens": 1_000_000, "output_tokens": 1_000_000}, "deepseek-chat"

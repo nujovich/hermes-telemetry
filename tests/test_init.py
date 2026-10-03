@@ -167,6 +167,53 @@ def test_unknown_model_does_not_queue_free_to_paid_alert(tmp_path, monkeypatch):
     assert not db.is_known_free_model(model, provider)
 
 
+def test_paid_model_zero_token_call_is_not_recorded_free(tmp_path, monkeypatch):
+    """A paid model that happens to cost $0 for a zero-token call is not free (issue #89)."""
+    import db
+    import pricing
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    db.close_thread_conn()
+    pricing.reload_custom_pricing()
+
+    # Paid model with nonzero input/output rates.
+    model = "deepseek-chat"
+    provider = "nous"
+
+    assert pricing.is_explicitly_priced(model, provider)
+    assert not pricing.is_free_model(model, provider)
+
+    # Simulate what post_api_request does for a $0 call.
+    cost = 0.0
+    if cost == 0.0 and pricing.is_free_model(model, provider):
+        db.record_free_model(model, provider)
+
+    assert not db.is_known_free_model(model, provider)
+
+
+def test_free_model_zero_token_call_is_recorded_free(tmp_path, monkeypatch):
+    """A genuinely-free model (input=0 AND output=0) at $0 is recorded as free."""
+    import db
+    import pricing
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    db.close_thread_conn()
+    pricing.reload_custom_pricing()
+
+    model = "owl-alpha"
+    provider = "nous"
+
+    assert pricing.is_free_model(model, provider)
+
+    cost = 0.0
+    if cost == 0.0 and pricing.is_free_model(model, provider):
+        db.record_free_model(model, provider)
+
+    assert db.is_known_free_model(model, provider)
+
+
 def test_free_to_paid_transition_is_persisted_for_dashboard(tmp_path, monkeypatch):
     """Detecting a free→paid flip also writes to free_paid_transitions."""
     import db
