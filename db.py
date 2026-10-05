@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 16
+_SCHEMA_VERSION = 17
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -177,6 +177,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v14(conn)
     _migrate_v15(conn)
     _migrate_v16(conn)
+    _migrate_v17(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -626,6 +627,57 @@ def _migrate_v16(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (16, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v17(conn: sqlite3.Connection) -> None:
+    """Data repair: drop known_free_models rows poisoned by issue #89.
+
+    Before the fix, post_api_request recorded any explicitly-priced model whose
+    call cost $0 as "known free" — including paid models on zero-token calls.
+    ``is_known_free_model`` reads the raw table, so every later paid call to
+    such a model queued a false free→paid alert, forever.
+
+    A row is kept only if there is evidence it was genuinely free:
+      * provider = ''  — wildcard sentinel written by ``backfill_known_free_models``
+        from explicit input=0 AND output=0 pricing; or
+      * an ``llm_calls`` row for the same (model, provider) with cost_usd = 0 AND
+        tokens > 0 (a real call that consumed tokens at no charge).
+    Everything else is deleted, plus the ``free_paid_transitions`` rows for the
+    deleted pairs (unless a wildcard row for the model still vouches for it).
+    Data-only: no shape change. Idempotent (re-running deletes nothing more).
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 17")
+    if cur.fetchone() is not None:
+        return
+
+    poisoned = conn.execute(
+        """
+        SELECT k.model, k.provider FROM known_free_models k
+        WHERE k.provider != ''
+          AND NOT EXISTS (
+              SELECT 1 FROM llm_calls c
+              WHERE c.model = k.model
+                AND COALESCE(c.provider, '') = k.provider
+                AND COALESCE(c.cost_usd, 0) = 0
+                AND COALESCE(c.tokens_in, 0) + COALESCE(c.tokens_out, 0) > 0
+          )
+        """
+    ).fetchall()
+    for model, provider in poisoned:
+        conn.execute(
+            "DELETE FROM known_free_models WHERE model = ? AND provider = ?",
+            (model, provider),
+        )
+        conn.execute(
+            "DELETE FROM free_paid_transitions WHERE model = ? AND provider = ?"
+            " AND NOT EXISTS (SELECT 1 FROM known_free_models WHERE model = ? AND provider = '')",
+            (model, provider, model),
+        )
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (17, ?)",
         (_utcnow(),),
     )
 

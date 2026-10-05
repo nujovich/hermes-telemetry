@@ -442,6 +442,7 @@ table before applying.
 | v14 | New table: `pricing_snapshots` (append-per-change history of the tariffs Hermes core resolves per `(provider, model)`, with provenance: `source` / `source_url` / `pricing_version` / `fetched_at`). Captured from `agent.usage_pricing.get_pricing_entry` via `core_pricing.py` in the `post_api_request` hook; storage-only (no surface yet). + `idx_pricing_snapshots_model`. |
 | v15 | `pricing_snapshots.resolved_model` — Canonical model name captured when a dated id was normalized to resolve against the core `/models` catalog; NULL when the raw name resolved directly. |
 | v16 | New tables: `endpoint_payload_cache` and `model_efficiency_cache` for standalone-dashboard caches; cache writers share the plugin DB's WAL + 30s busy-timeout posture. |
+| v17 | Data-only repair (issue #89): deletes `known_free_models` rows with no evidence of being genuinely free (no wildcard `provider=''`, and no `llm_calls` row for the same model+provider with `cost_usd = 0` AND tokens > 0), plus their `free_paid_transitions` rows. No shape change. |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -979,8 +980,8 @@ the operator is aware of the change.
 
 ### Detection flow (live)
 
-1. `post_api_request` fires with `cost == 0.0` AND `is_explicitly_priced(model,
-   provider)` returns `True` → `record_free_model(model, provider)` inserts the
+1. `post_api_request` fires with `cost == 0.0` AND `is_free_model(model,
+   provider)` returns `True` (explicit input=0 AND output=0; a paid model's zero-token $0 call no longer qualifies — issue #89) → `record_free_model(model, provider)` inserts the
    pair into `known_free_models` (INSERT OR IGNORE).
 2. A later `post_api_request` fires with `cost > 0.0`. The plugin checks
    `is_known_free_model(model, provider)` — if `True`, it queues a pending alert
