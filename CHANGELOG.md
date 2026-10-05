@@ -75,6 +75,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `date_to` field (now `null` instead of an auto-filled timestamp) reflect
   the real input.
 
+### Fixed — Paid models recorded as free on zero-token calls, then raising false free→paid alerts (#89)
+
+- `post_api_request` added a model to `known_free_models` whenever a call cost
+  $0 and the model had any explicit price. A paid model (e.g. `deepseek-v4-pro`)
+  whose call happened to use zero tokens therefore qualified, and every later
+  real call to it queued a false free→paid alert. Detection now goes through
+  the new `pricing.is_free_model()`, which is true only for a model priced at
+  input=0 AND output=0.
+- Schema v17 is a data-only repair of installs that were already affected. It
+  deletes `known_free_models` rows unless there is evidence the model was
+  genuinely free: a `provider=''` wildcard row, or an `llm_calls` row for the
+  same model and provider at $0 that used tokens. It also deletes the
+  `free_paid_transitions` rows those false entries produced. No columns or
+  tables change, and on an unaffected install the migration deletes nothing.
+
 ## [0.8.0] - 2026-07-09
 
 ### Fixed — `/stats models` mislabeled known-free $0 rows as "no price entry"
