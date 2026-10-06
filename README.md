@@ -14,7 +14,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 634 passing](https://img.shields.io/badge/Tests-634%20passing-green.svg)](https://img.shields.io/badge/Tests-634%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 636 passing](https://img.shields.io/badge/Tests-636%20passing-green.svg)](https://img.shields.io/badge/Tests-636%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -769,12 +769,22 @@ recent daily spend rate (moving average over the last 14 days), projects spend
 to the end of the current window at that rate, and flags whether the scope is on
 track to breach. It is a read-only projection — it never mutates budget state.
 
+The status block also lists per-`cron_job`/`sender`/`profile` scopes it has seen
+activity for in the last 30 days, alongside `global`, so `set` / `forecast` /
+status stay consistent for every scope — including `profile`. A scope with a
+configured limit but no recent runs simply does not get a section; it is not
+silently dropped, there is just nothing to report yet.
+
 **Example output (`/budget`):**
 
 ```
 hermes-telemetry — budget status
 ============================================================
   global                       $   0.1812 / $    2.00      9%  [daily]
+
+  Profiles:
+    faro                         $   3.0000 / $   20.00     15%  [monthly]
+    default                      $   0.5000 / $    5.00     10%  [daily]
 
   Legend:  (blank)=ok  !=soft (≥80%)  █=hard (≥100%)  ~est=estimated data
 ```
@@ -1345,7 +1355,7 @@ global    $0.1812 / $2.00    9%  [daily]
 |Pricing auto-refresh (OpenRouter API)|✅ 320 models fetched, manual overrides preserved   |
 |Estimated-price model handling       |✅ Negative prices → $0.00, budget degradation      |
 |Dashboard (HTML, auto-refresh 30s)   |✅ Charts, tables, budget bar, provider distribution|
-|634 tests pass                       |✅                                                  |
+|636 tests pass                       |✅                                                  |
 
 -----
 
@@ -1372,7 +1382,7 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (640 tests, 634 passing + 6 skipped):**
+**Test suite (642 tests, 636 passing + 6 skipped):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
@@ -1380,7 +1390,7 @@ pytest tests/ -v
 |`test_pricing.py`                |84   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds (incl. `nemotron-3-ultra` paid + `:free` suffix → $0 rule), subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`, `snapshot_to_price`/`core_price` priority (core-pricing-primary)|
 |`test_dashboard.py`              |47   |HTML dashboard rendering, auto-refresh, chart data endpoints, viewer-timezone budget windows, cache layer (TTL / serve-stale)  |
 |`test_telemetry_cli.py`          |48   |CLI subcommands (stats/budget/pricing/sync-profiles), all window variants, text + `--json` output, entry point smoke test, tracked exec bit on the standalone binary and the pre-commit hook, date-range label edge cases|
-|`test_budget.py`                 |34   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` (default + per-profile/id override) hot-reload|
+|`test_budget.py`                 |36   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` (default + per-profile/id override) hot-reload|
 |`test_dashboard_plugin_api.py`   |33   |Plugin dashboard API: per-profile scoping clauses, efficiency/smells/budget endpoints                                          |
 |`test_pricing_drift.py`          |32   |Drift vs core snapshots: threshold, subscription skip, canonical collapse, provider-assumed routing, `--apply` write-back, multi-provider recency, malformed-YAML safety, CLI|
 |`test_sync_profiles.py`          |29   |Profile consolidation via `HERMES_TELEMETRY_HOME`: `.env` upsert, name scoping, template preservation                          |
