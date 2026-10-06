@@ -159,6 +159,7 @@ var i18nRU = {
 "Loading telemetry dashboard…": "Загрузка панели телеметрии…",
 "Loading…": "Загрузка…",
 "Local time": "Местное время",
+"MODE: observe — budget limits are NOT enforced": "РЕЖИМ: наблюдение — лимиты бюджета НЕ применяются",
 "Make sure the dashboard server is running and telemetry DB exists.": "Убедитесь, что сервер панели запущен и база телеметрии существует.",
 "Max": "Макс.",
 "Messages": "Сообщения",
