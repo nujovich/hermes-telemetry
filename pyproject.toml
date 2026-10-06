@@ -28,6 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "watchdog>=3.0",  # budget.yaml file watcher for hot-reload
+    "pyyaml>=6.0",  # pricing/budget/stats loaders read YAML configs
 ]
 
 [project.urls]
