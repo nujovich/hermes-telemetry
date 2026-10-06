@@ -160,6 +160,54 @@ def _is_tool_ok(result: Any) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Throttled error logging for the hot-path hooks
+# ---------------------------------------------------------------------------
+# pre_tool_call / post_tool_call / pre_llm_call fire on every tool call, and a
+# failing hook used to log (and lock) once per call, amplifying itself under
+# exactly the conditions where logging is most expensive. Emit at most once
+# per (prefix, exception class) per interval, reporting how many occurrences
+# were suppressed on the next emit.
+#
+# Deliberately NOT 60s: the Hermes core's own hook-timeout suppression window
+# (_HOOK_TIMEOUT_SUPPRESSION_SECONDS in hermes_cli/plugins_dispatch.py) is 60s;
+# equal windows would beat against each other and make the suppressed count
+# meaningless.
+_HOOK_ERROR_LOG_INTERVAL_S = 300.0
+_hook_error_log_state: dict[tuple[str, str], tuple[float, int]] = {}
+_hook_error_log_lock = threading.Lock()
+
+
+def _throttled_error(prefix: str, exc: BaseException) -> None:
+    """Log a hot-path hook failure at most once per interval.
+
+    The state key is (prefix, exception class) so a *different* failure raised
+    inside the window is surfaced immediately instead of being swallowed by
+    the previous one's suppression.
+    """
+    now = time.monotonic()
+    key = (prefix, type(exc).__name__)
+    with _hook_error_log_lock:
+        entry = _hook_error_log_state.get(key)
+        if entry is not None and (now - entry[0]) < _HOOK_ERROR_LOG_INTERVAL_S:
+            _hook_error_log_state[key] = (entry[0], entry[1] + 1)
+            return
+        suppressed = entry[1] if entry is not None else 0
+        elapsed = (now - entry[0]) if entry is not None else 0.0
+        _hook_error_log_state[key] = (now, 0)
+    log = logging.getLogger("hermes_telemetry")
+    if suppressed:
+        log.error(
+            "%s: %s (+%d occurrences suppressed in the last %.0fs)",
+            prefix,
+            exc,
+            suppressed,
+            elapsed,
+        )
+    else:
+        log.error("%s: %s", prefix, exc)
+
+
 def register(ctx) -> None:  # noqa: ANN001
     _setup_log_file()
     tele_log = logging.getLogger("hermes_telemetry")
@@ -547,7 +595,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 latency_ms=duration_ms,
             )
         except Exception as exc:
-            tele_log.error("post_tool_call hook failed: %s", exc)
+            _throttled_error("post_tool_call hook failed", exc)
 
     ctx.register_hook("post_tool_call", post_tool_call)
 
@@ -744,7 +792,7 @@ def register(ctx) -> None:  # noqa: ANN001
             if ctx_parts:
                 return {"context": "\n\n".join(ctx_parts)}
         except Exception as exc:
-            tele_log.error("pre_llm_call (budget) hook failed: %s", exc)
+            _throttled_error("pre_llm_call (budget) hook failed", exc)
         return None
 
     ctx.register_hook("pre_llm_call", pre_llm_call)
@@ -770,7 +818,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 tele_log.warning("budget hard-block for session=%s: %s", session_id, msg)
                 return {"action": "block", "message": msg}
         except Exception as exc:
-            tele_log.error("pre_tool_call (budget) hook failed: %s", exc)
+            _throttled_error("pre_tool_call (budget) hook failed", exc)
         return None
 
     ctx.register_hook("pre_tool_call", pre_tool_call)
