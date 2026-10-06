@@ -172,9 +172,12 @@ def register(ctx) -> None:  # noqa: ANN001
     # upgrades never silently drop blocking.
     # ------------------------------------------------------------------
     get_config = getattr(ctx, "get_config", None)
-    mode = get_config("mode", default="enforce") if callable(get_config) else "enforce"
+    raw_mode = get_config("mode", default="enforce") if callable(get_config) else "enforce"
+    # Normalise first so lists/dicts/None in YAML can't raise TypeError on
+    # the set membership check — anything unrecognised falls back to enforce.
+    mode = str(raw_mode).strip().lower()
     if mode not in {"observe", "enforce"}:
-        tele_log.warning("invalid telemetry mode %r; falling back to enforce", mode)
+        tele_log.warning("invalid telemetry mode %r; falling back to enforce", raw_mode)
         mode = "enforce"
     enforce_budget = mode == "enforce"
     budget.set_enforcement_mode(mode)

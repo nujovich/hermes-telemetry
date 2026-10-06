@@ -165,3 +165,22 @@ def test_invalid_mode_falls_back_to_enforce(tmp_path, monkeypatch):
     _init_mod.register(ctx)
     assert "pre_tool_call" in ctx.hooks
     assert budget.get_enforcement_mode() == "enforce"
+
+
+@pytest.mark.parametrize("raw", [["observe"], {"mode": "observe"}, None, 42])
+def test_non_string_mode_falls_back_to_enforce(tmp_path, monkeypatch, raw):
+    """Lists/dicts/None in YAML must not raise TypeError — fall back to enforce."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ctx = MockPluginContext(settings={"mode": raw})
+    _init_mod.register(ctx)
+    assert "pre_tool_call" in ctx.hooks
+    assert budget.get_enforcement_mode() == "enforce"
+
+
+def test_mode_is_normalised_before_check(tmp_path, monkeypatch):
+    """Whitespace/case variants of a valid mode are accepted."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ctx = MockPluginContext(settings={"mode": "  Observe \n"})
+    _init_mod.register(ctx)
+    assert "pre_tool_call" not in ctx.hooks
+    assert budget.get_enforcement_mode() == "observe"

@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   choices `enforce` (default) and `observe`. Observation mode keeps collecting
   and reporting telemetry but does not auto-create `budget.yaml`, inject budget
   notices, block tools via `pre_tool_call`, or pause cron jobs. Existing
-  installs keep today's guardrails on upgrade: missing `mode`, invalid values,
-  and older Hermes hosts without `ctx.get_config` all resolve to `enforce`.
+  installs keep today's guardrails on upgrade: missing `mode`, invalid or
+  non-string values, and older Hermes hosts without `ctx.get_config` all resolve to `enforce`.
   The budget file watcher still runs in both modes so `/budget` stays fresh.
   When observe is active with a `budget.yaml` present, `/budget` and the
   dashboard budget panel plainly say limits are **not enforced**.

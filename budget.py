@@ -111,9 +111,9 @@ _VERDICT_TTL_S = 5.0
 _verdict_cache: dict[tuple, tuple] = {}
 _verdict_lock = threading.Lock()
 
-# Runtime enforcement mode. Default preserve today's guardrail behavior.
-# register() sets this from the plugin setting; dashboards read the sidecar
-# file so they stay accurate outside the Hermes process.
+# Runtime enforcement mode. Default preserves today's guardrail behavior.
+# register() sets this from the plugin setting; the in-memory value is the
+# only source of truth inside the Hermes process.
 _VALID_MODES = frozenset({"observe", "enforce"})
 _DEFAULT_MODE = "enforce"
 _enforcement_mode: str = _DEFAULT_MODE
@@ -124,7 +124,13 @@ def _enforcement_mode_path() -> Path:
 
 
 def set_enforcement_mode(mode: str) -> None:
-    """Record the active plugin mode for /budget + dashboard surfaces."""
+    """Record the active plugin mode for /budget + dashboard surfaces.
+
+    The ``enforcement_mode`` file is write-only from this process: it exists
+    solely so the out-of-process dashboards (``dashboard/serve.py`` and
+    ``dashboard/plugin_api.py``) can show the observe notice. Nothing in the
+    plugin reads it back.
+    """
     global _enforcement_mode
     resolved = mode if mode in _VALID_MODES else _DEFAULT_MODE
     _enforcement_mode = resolved
@@ -137,18 +143,8 @@ def set_enforcement_mode(mode: str) -> None:
 
 
 def get_enforcement_mode() -> str:
-    """Return the active mode (in-memory, else sidecar file, else enforce)."""
-    if _enforcement_mode in _VALID_MODES:
-        return _enforcement_mode
-    try:
-        path = _enforcement_mode_path()
-        if path.exists():
-            raw = path.read_text(encoding="utf-8").strip().lower()
-            if raw in _VALID_MODES:
-                return raw
-    except Exception:
-        pass
-    return _DEFAULT_MODE
+    """Return the active mode set by register() (enforce until told otherwise)."""
+    return _enforcement_mode
 
 
 def is_enforcing() -> bool:

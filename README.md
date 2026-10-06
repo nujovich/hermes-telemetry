@@ -14,7 +14,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 647 passing](https://img.shields.io/badge/Tests-647%20passing-green.svg)](https://img.shields.io/badge/Tests-647%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 652 passing](https://img.shields.io/badge/Tests-652%20passing-green.svg)](https://img.shields.io/badge/Tests-652%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -1182,7 +1182,7 @@ subagent_stop             Record delegate_task proxy on parent
 on_session_end            Set final status (ok/error/interrupted)
 on_session_finalize       Safety net: ensure run is closed
 pre_llm_call              Soft budget alerts, free→paid model transition alerts + capture sender_id
-pre_tool_call             Hard budget enforcement (tool-gate)
+pre_tool_call             Hard budget enforcement (tool-gate; enforce mode only)
 ```
 
 **Why `post_api_request` is the primary hook for tokens:** The Hermes conversation loop can make multiple API calls per turn (retries, reasoning models, tool calls). Only `post_api_request` carries the canonical `usage` dict with token counts and cost data. `pre_llm_call` fires once per turn with no token data. `post_llm_call` fires after the tool loop with no token data.
@@ -1386,7 +1386,7 @@ global    $0.1812 / $2.00    9%  [daily]
 |Pricing auto-refresh (OpenRouter API)|✅ 320 models fetched, manual overrides preserved   |
 |Estimated-price model handling       |✅ Negative prices → $0.00, budget degradation      |
 |Dashboard (HTML, auto-refresh 30s)   |✅ Charts, tables, budget bar, provider distribution|
-|647 tests pass                       |✅                                                  |
+|652 tests pass                       |✅                                                  |
 
 -----
 
@@ -1413,7 +1413,7 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (647 tests, 647 passing):**
+**Test suite (652 tests, 652 passing):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
@@ -1428,7 +1428,7 @@ pytest tests/ -v
 |`test_stats_smells.py`           |22   |Anti-pattern (smell) detection and scoring                                                                                     |
 |`test_setup.py`                  |22   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |
 |`test_pricing_snapshots.py`      |24   |Core-sourced pricing snapshots: append-per-change, `resolved_model` canonicalization, capture throttle, incomplete-snapshot fallback|
-|`test_observation_mode.py`       |5    |Enforce-default mode, upgrade path (no get_config still blocks), observe opt-in, watcher always on, /budget not-enforced notice|
+|`test_observation_mode.py`       |10   |Enforce-default mode, upgrade path (no get_config still blocks), observe opt-in, watcher always on, /budget not-enforced notice, mode normalisation (case/whitespace, non-string → enforce)|
 |`test_init.py`                   |19   |Cron session ID regex, tool success/failure parsing, free→paid transition alert (detection, queueing, injection, backfill)     |
 |`test_stats_models.py`           |18   |Per-model breakdown, `/stats models` output format                                                                             |
 |`test_subagent_reconciliation.py`|15   |Parent + child hook sequence, token reconciliation, no double-counting                                                         |
@@ -1460,7 +1460,7 @@ No live Hermes is required — all tests are self-contained with in-memory SQLit
 ├── telemetry.log       ← Plugin log (errors, debug, one-time warnings)
 ├── pricing.yaml        ← Your model price overrides
 ├── budget.yaml         ← Your spend guardrails
-└── enforcement_mode    ← sidecar written at register() (enforce|observe)
+└── enforcement_mode    ← mode sidecar written at register(), read by the dashboards (enforce|observe)
 ```
 
 The DB grows over time. For high-frequency cron jobs, consider periodic cleanup of old rows (not yet automated — see [Known Limitations](#known-limitations)).

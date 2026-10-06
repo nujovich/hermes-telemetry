@@ -199,13 +199,15 @@ on_session_finalize     Safety net for true session teardown (CLI atexit, gatewa
 
 pre_llm_call            (1) Attaches sender_id to the run for per-sender budgets.
                         (2) Injects one-time-per-window soft budget alert into
-                        the conversation context.
+                        the conversation context (`enforce` mode only).
                         (3) Injects one-shot free→paid transition warning when
                         the current model was previously seen as free but is
                         now incurring cost.
 
 pre_tool_call           Hard budget enforcement. Returns {"action":"block",...}
                         if any scope is in hard breach. Also triggers cron pause.
+                        Only registered in `enforce` mode (the default); in
+                        `observe` mode the hook is never registered.
 ```
 
 **Why `post_api_request` is the primary token hook:** Hermes can make multiple
