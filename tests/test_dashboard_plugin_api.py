@@ -216,7 +216,10 @@ def test_session_detail_missing(plugin_api):
 
 
 def test_budget_missing_yaml(plugin_api):
-    assert plugin_api.budget() == {"enabled": False}
+    out = plugin_api.budget()
+    assert out["enabled"] is False
+    assert out["mode"] == "enforce"
+    assert out["enforced"] is True
 
 
 def test_budget_with_yaml(plugin_api, tmp_path, monkeypatch):
@@ -240,6 +243,27 @@ def test_budget_with_yaml(plugin_api, tmp_path, monkeypatch):
     assert "global/daily" in scopes and "global/monthly" in scopes
     assert scopes["global/daily"]["limit_usd"] == 1.0
     assert scopes["global/daily"]["level"] == "ok"  # no spend
+
+    assert out["mode"] == "enforce"
+    assert out["enforced"] is True
+
+
+def test_budget_reports_observe_mode_not_enforced(plugin_api):
+    """When register() wrote observe into the sidecar, /budget says so."""
+    import os
+
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    tele = hermes_home / "telemetry"
+    tele.mkdir(parents=True, exist_ok=True)
+    (tele / "budget.yaml").write_text(
+        "budgets:\n  global:\n    daily_usd: 1.0\n",
+        encoding="utf-8",
+    )
+    (tele / "enforcement_mode").write_text("observe\n", encoding="utf-8")
+    out = plugin_api.budget()
+    assert out["enabled"] is True
+    assert out["mode"] == "observe"
+    assert out["enforced"] is False
 
 
 def test_tier_transitions_empty(plugin_api):

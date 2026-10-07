@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -110,6 +111,57 @@ _config_lock = threading.Lock()
 _VERDICT_TTL_S = 5.0
 _verdict_cache: dict[tuple, tuple] = {}
 _verdict_lock = threading.Lock()
+
+# Runtime enforcement mode. Default preserves today's guardrail behavior.
+# register() sets this from the plugin setting; the in-memory value is the
+# only source of truth inside the Hermes process.
+_VALID_MODES = frozenset({"observe", "enforce"})
+_DEFAULT_MODE = "enforce"
+_enforcement_mode: str = _DEFAULT_MODE
+
+
+def _enforcement_mode_path() -> Path:
+    return paths.get_telemetry_home() / "enforcement_mode"
+
+
+def set_enforcement_mode(mode: str) -> None:
+    """Record the active plugin mode for /budget + dashboard surfaces.
+
+    The ``enforcement_mode`` file is write-only from this process: it exists
+    solely so the out-of-process dashboards (``dashboard/serve.py`` and
+    ``dashboard/plugin_api.py``) can show the observe notice. Nothing in the
+    plugin reads it back.
+    """
+    global _enforcement_mode
+    resolved = mode if mode in _VALID_MODES else _DEFAULT_MODE
+    _enforcement_mode = resolved
+    try:
+        path = _enforcement_mode_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic replace so a concurrent dashboard read never sees a truncated
+        # empty file when several profiles share one telemetry home.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".enforcement_mode.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(resolved + "\n")
+            os.replace(tmp_name, path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
+    except Exception as exc:
+        logger.debug("could not persist enforcement_mode: %s", exc)
+
+
+def get_enforcement_mode() -> str:
+    """Return the active mode set by register() (enforce until told otherwise)."""
+    return _enforcement_mode
+
+
+def is_enforcing() -> bool:
+    return get_enforcement_mode() == "enforce"
 
 
 def _budget_path() -> Path:
@@ -531,6 +583,10 @@ def _fmt_verdict_line(label: str, v: BudgetVerdict | None) -> str:
 
 def _status_block() -> str:
     lines = ["hermes-telemetry — budget status", "=" * 60]
+    if get_enforcement_mode() == "observe" and _budget_path().exists():
+        lines.append("  MODE: observe — budget limits are NOT enforced")
+        lines.append("  (tool blocking, alerts, and cron pauses are disabled)")
+        lines.append("")
     g = check("global", "")
     lines.append(_fmt_verdict_line("global", g))
 

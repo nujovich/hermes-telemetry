@@ -49,6 +49,24 @@ does two things:
 through hooks. The only user-facing surface is `/stats`, `/budget`, and `/setup`.
 Errors are swallowed in every hook — the plugin must never take down a session.
 
+### Runtime modes
+
+The plugin setting `plugins.entries.hermes-telemetry.settings.mode` controls
+whether budget behavior is active:
+
+- `enforce` (default): enable the budget guardrails and setup behavior described
+  below. Missing `mode`, invalid values, and older Hermes hosts without
+  `ctx.get_config` all resolve to `enforce` so upgrades never silently drop
+  blocking.
+- `observe`: collect and report telemetry; do not create budget.yaml
+  automatically, inject budget notices, block tools, or pause cron jobs. The
+  budget file watcher still runs so `/budget` hot-reloads. When a `budget.yaml`
+  is present, `/budget` and the dashboard budget panel say limits are not
+  enforced.
+
+The mode is read during plugin registration. Changing it requires restarting the
+Hermes process that owns the plugin.
+
 This plugin was built for the [Hermes Agent Challenge](https://dev.to/devteam/join-the-hermes-agent-challenge-1000-in-prizes-13cd)
 and addresses [NousResearch/hermes-agent#6642](https://github.com/NousResearch/hermes-agent/issues/6642).
 
@@ -181,13 +199,15 @@ on_session_finalize     Safety net for true session teardown (CLI atexit, gatewa
 
 pre_llm_call            (1) Attaches sender_id to the run for per-sender budgets.
                         (2) Injects one-time-per-window soft budget alert into
-                        the conversation context.
+                        the conversation context (`enforce` mode only).
                         (3) Injects one-shot free→paid transition warning when
                         the current model was previously seen as free but is
                         now incurring cost.
 
 pre_tool_call           Hard budget enforcement. Returns {"action":"block",...}
                         if any scope is in hard breach. Also triggers cron pause.
+                        Only registered in `enforce` mode (the default); in
+                        `observe` mode the hook is never registered.
 ```
 
 **Why `post_api_request` is the primary token hook:** Hermes can make multiple

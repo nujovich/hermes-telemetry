@@ -238,6 +238,11 @@
       return h(Card, null, h(CardContent, { className: "py-4 text-sm text-muted-foreground" },
         "Budget enabled but no global daily/monthly limit set."));
     }
+    const observeNotice = data.enforced === false
+      ? h(Card, { key: "__observe" },
+          h(CardContent, { className: "py-3 text-sm text-muted-foreground" },
+            "MODE: observe — budget limits are NOT enforced"))
+      : null;
     const scopeTitle = (s) => (s.scope_id ? `Profile '${s.scope_id}' · ${s.window}` : s.scope);
     const scopeCards = data.scopes.map((s) =>
       h(Card, { key: s.scope },
@@ -269,7 +274,7 @@
               : "")),
         )
       : null;
-    return h("div", { className: "grid gap-3" }, [...scopeCards, forecastCard]);
+    return h("div", { className: "grid gap-3" }, [observeNotice, ...scopeCards, forecastCard].filter(Boolean));
   }
 
   function EfficiencyPanel({ profile }) {

@@ -91,6 +91,14 @@ class TestSetupPricing:
         setup.run(interactive=False)
         assert existing.read_text() == "# my custom pricing\nmodels: {}\n"
 
+    def test_observation_mode_does_not_create_budget(self, tmp_telemetry):
+        """Observation mode may configure pricing without creating enforcement defaults."""
+        with patch.object(setup, "_fetch_openrouter_models", return_value={}):
+            setup.run(interactive=False, include_budget=False)
+
+        assert (tmp_telemetry / "telemetry" / "pricing.yaml").exists()
+        assert not (tmp_telemetry / "telemetry" / "budget.yaml").exists()
+
 
 # ---------------------------------------------------------------------------
 # Tests: Budget
