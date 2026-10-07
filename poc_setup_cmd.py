@@ -25,7 +25,7 @@ sys.modules.setdefault("hermes_telemetry", _tele_pkg)
 
 import importlib
 
-from hermes_telemetry import setup as setup_mod
+from hermes_telemetry import setup_wizard as setup_mod
 
 importlib.reload(setup_mod)
 

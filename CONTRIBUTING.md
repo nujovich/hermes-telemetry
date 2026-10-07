@@ -225,7 +225,7 @@ hermes-telemetry/
 ├── pricing_refresh.py   # Auto-refresh pricing from OpenRouter API
 ├── budget.py            # Budget enforcement logic
 ├── stats.py             # /stats command implementation
-├── setup.py             # /setup command, PoC flow
+├── setup_wizard.py      # /setup command, PoC flow
 ├── setup_cmd.py         # Setup command helpers
 ├── plugin.yaml          # Plugin metadata (name, version, hooks)
 ├── config.example.yaml  # Example configuration

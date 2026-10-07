@@ -1,4 +1,4 @@
-"""Tests for the setup wizard (hermes_telemetry.setup).
+"""Tests for the setup wizard (hermes_telemetry.setup_wizard).
 
 Covers:
   - Non-interactive auto-generate (mocked OpenRouter fetch)
@@ -23,7 +23,7 @@ ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hermes_telemetry import setup  # noqa: E402
+from hermes_telemetry import setup_wizard as setup  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

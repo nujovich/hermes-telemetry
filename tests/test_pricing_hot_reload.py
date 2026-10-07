@@ -11,7 +11,7 @@ import textwrap
 from unittest.mock import patch
 
 import hermes_telemetry.pricing as pricing
-import hermes_telemetry.setup as setup
+import hermes_telemetry.setup_wizard as setup
 import pytest
 
 
