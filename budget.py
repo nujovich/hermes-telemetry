@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -137,7 +138,19 @@ def set_enforcement_mode(mode: str) -> None:
     try:
         path = _enforcement_mode_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(resolved + "\n", encoding="utf-8")
+        # Atomic replace so a concurrent dashboard read never sees a truncated
+        # empty file when several profiles share one telemetry home.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".enforcement_mode.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(resolved + "\n")
+            os.replace(tmp_name, path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
     except Exception as exc:
         logger.debug("could not persist enforcement_mode: %s", exc)
 
