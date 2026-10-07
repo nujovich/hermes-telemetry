@@ -6,9 +6,9 @@ never creates budget.yaml automatically; enforcement mode may create it when
 requested by the caller.
 
 Usage (programmatic):
-    from hermes_telemetry import setup
-    setup.run(interactive=True)   # full wizard
-    setup.run(interactive=False)  # auto-generate defaults, no prompts
+    from hermes_telemetry import setup_wizard
+    setup_wizard.run(interactive=True)   # full wizard
+    setup_wizard.run(interactive=False)  # auto-generate defaults, no prompts
 """
 
 from __future__ import annotations

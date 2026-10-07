@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   When observe is active with a `budget.yaml` present, `/budget` and the
   dashboard budget panel plainly say limits are **not enforced**.
 
+### Fixed — `pyyaml` declared as a runtime dependency (#113)
+
+- `pyyaml` is imported at runtime by the pricing, budget, and stats loaders but
+  was missing from `[project].dependencies`, so a clean `pip install` broke on
+  first load. It is now declared (`pyyaml>=6.0`). Package discovery was also
+  fixed for non-uv build frontends by mapping the repo root to
+  `hermes_telemetry` explicitly, and the wizard module was renamed from
+  `setup.py` to `setup_wizard.py` so setuptools no longer tries to exec it as a
+  build script. `tests/test_packaging.py` guards all three.
+
 ### Fixed — `/budget` status block did not list per-profile budgets (#70)
 
 - `/budget set profile <id> ...` and `/budget forecast ... profile <id>` already

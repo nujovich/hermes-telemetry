@@ -103,7 +103,7 @@ hermes-telemetry/
 │                          "moa"` virtual-provider preset to its aggregator's
 │                          real provider/model so the call is priced/attributed
 │                          correctly. See `§ Mixture of Agents (MoA)`.
-├── setup.py             ← /setup command + auto-setup on first load. Generates
+├── setup_wizard.py      ← /setup command + auto-setup on first load. Generates
 │                          pricing.yaml and budget.yaml with defaults.
 ├── plugin.yaml          ← Plugin metadata: name, version, declared hooks.
 │                          `provides_hooks` is declarative only (the loader does

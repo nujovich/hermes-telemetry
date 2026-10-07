@@ -164,7 +164,7 @@ def register(ctx) -> None:  # noqa: ANN001
     _setup_log_file()
     tele_log = logging.getLogger("hermes_telemetry")
 
-    from . import budget, core_pricing, db, moa, pricing, setup, stats
+    from . import budget, core_pricing, db, moa, pricing, setup_wizard, stats
 
     # ------------------------------------------------------------------
     # Runtime mode: enforce (default) keeps today's guardrails; observe is
@@ -821,7 +821,7 @@ def register(ctx) -> None:  # noqa: ANN001
     # ------------------------------------------------------------------
     ctx.register_command(
         "setup",
-        setup.handle_command,
+        setup_wizard.handle_command,
         description="First-time setup wizard for pricing and budgets",
         args_hint="[pricing|budget] [auto|minimal|skip|default|custom]",
     )
@@ -855,7 +855,7 @@ def register(ctx) -> None:  # noqa: ANN001
     # ------------------------------------------------------------------
     if os.environ.get("HERMES_TELEMETRY_NO_SETUP") != "1":
         try:
-            auto_msg = setup.run(interactive=False, include_budget=enforce_budget)
+            auto_msg = setup_wizard.run(interactive=False, include_budget=enforce_budget)
             # Log so the user sees it in telemetry.log on first load
             for line in auto_msg.splitlines():
                 tele_log.info(line)

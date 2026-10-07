@@ -28,6 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "watchdog>=3.0",  # budget.yaml file watcher for hot-reload
+    "pyyaml>=6.0",  # pricing/budget/stats loaders read YAML configs
 ]
 
 [project.urls]
@@ -36,8 +37,11 @@ Repository = "https://github.com/nujovich/hermes-telemetry"
 Issues = "https://github.com/nujovich/hermes-telemetry/issues"
 Changelog = "https://github.com/nujovich/hermes-telemetry/blob/main/CHANGELOG.md"
 
-[tool.setuptools.packages.find]
-include = ["hermes_telemetry*"]
+[tool.setuptools]
+packages = ["hermes_telemetry"]
+
+[tool.setuptools.package-dir]
+hermes_telemetry = "."
 
 [tool.setuptools.package-data]
 hermes_telemetry = ["*.yaml", "*.html"]
