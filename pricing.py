@@ -585,6 +585,21 @@ def is_explicitly_priced(model: str, provider: str = "", core_price: dict | None
     return _resolve_pricing(model, provider, core_price) is not None
 
 
+def is_free_model(model: str, provider: str = "", core_price: dict | None = None) -> bool:
+    """Return True if *model* is explicitly priced at input=0 AND output=0.
+
+    This is the genuine "free model" condition (issue #89): a model with a
+    nonzero rate that happens to cost $0 for a zero-token call must NOT be
+    treated as free. Only models whose actual rates are $0/$0 are recorded in
+    known_free_models and can trigger the free-to-paid transition alert. Mirrors
+    the input==0 AND output==0 filter in get_known_free_models().
+    """
+    resolved = _resolve_pricing(model, provider, core_price)
+    if resolved is None:
+        return False
+    return float(resolved.get("input", -1.0)) == 0.0 and float(resolved.get("output", -1.0)) == 0.0
+
+
 def is_provider_assumed(model: str, provider: str = "", core_price: dict | None = None) -> bool:
     """Return True if pricing *model* under *provider* relies on a provider-assumed
     rate (issue #42).

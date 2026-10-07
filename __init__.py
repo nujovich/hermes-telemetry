@@ -368,15 +368,17 @@ def register(ctx) -> None:  # noqa: ANN001
                 effective_model, provider, core_price=core_price
             )
 
-            # Free→paid transition detection (issues #16/#32).
-            # Only models with explicit pricing (not unknown-model fallback) are
-            # tracked: an unknown model at $0 is not "free by design" and should
-            # not trigger a false alert when it later gets a real price entry.
+            # Free→paid transition detection (issues #16/#32/#89).
+            # Only models explicitly priced at input=0 AND output=0 (genuinely
+            # free) are tracked. An unknown model at $0 is not "free by design",
+            # and a paid model whose zero-token call happens to cost $0 (issue
+            # #89) must not be recorded as free — otherwise its next real call
+            # fires a false alert.
             # is_free_tier_transition also catches the id-change case, where a
             # provider drops a `:free` suffix (or renames the promo to its paid
             # base) so the paid call arrives under a different model id than the
             # `:free` row we recorded — e.g. nemotron-3-ultra:free → nemotron-3-ultra.
-            if cost == 0.0 and pricing.is_explicitly_priced(
+            if cost == 0.0 and pricing.is_free_model(
                 effective_model, provider, core_price=core_price
             ):
                 db.record_free_model(effective_model, provider)

@@ -167,6 +167,84 @@ def test_unknown_model_does_not_queue_free_to_paid_alert(tmp_path, monkeypatch):
     assert not db.is_known_free_model(model, provider)
 
 
+class _MockPluginContext:
+    """Minimal PluginContext: records hooks so tests can fire the real callbacks."""
+
+    def __init__(self):
+        self.hooks: dict = {}
+
+    def register_hook(self, name, fn):
+        self.hooks[name] = fn
+
+    def register_command(self, name, fn, description="", args_hint=""):
+        pass
+
+    def fire(self, hook_name, **kwargs):
+        fn = self.hooks.get(hook_name)
+        return fn(**kwargs) if fn else None
+
+
+def _fire_zero_token_call(monkeypatch, model: str, provider: str, session_id: str) -> None:
+    """Drive the REAL post_api_request callback with a zero-token usage dict."""
+    import sys
+
+    # register() does `from . import db, ...`; the module was loaded standalone
+    # above, so make its package-relative imports resolvable.
+    monkeypatch.setitem(sys.modules, _init_mod.__name__, _init_mod)
+    ctx = _MockPluginContext()
+    _init_mod.register(ctx)
+    ctx.fire("on_session_start", session_id=session_id, model=model, platform="cli")
+    ctx.fire(
+        "post_api_request",
+        session_id=session_id,
+        platform="cli",
+        model=model,
+        provider=provider,
+        response_model=model,
+        api_call_count=1,
+        api_duration=0.5,
+        finish_reason="stop",
+        usage={
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+        assistant_content_chars=0,
+        assistant_tool_call_count=0,
+    )
+
+
+def test_paid_model_zero_token_call_is_not_recorded_free(monkeypatch):
+    """A paid model's zero-token $0 call must not enter known_free_models (issue #89).
+
+    Fires the real post_api_request hook, so it fails if the hook reverts to
+    is_explicitly_priced.
+    """
+    import hermes_telemetry.db as tdb
+
+    _fire_zero_token_call(monkeypatch, "deepseek-chat", "nous", "sess-paid-zero")
+
+    row = (
+        tdb._get_conn()
+        .execute("SELECT cost_usd FROM llm_calls WHERE session_id = 'sess-paid-zero'")
+        .fetchone()
+    )
+    assert row is not None and row[0] == 0.0  # the $0 call really happened
+    assert not tdb.is_known_free_model("deepseek-chat", "nous")
+
+
+def test_free_model_zero_token_call_is_recorded_free(monkeypatch):
+    """A genuinely-free model (input=0 AND output=0) at $0 is recorded as free,
+    via the real post_api_request hook."""
+    import hermes_telemetry.db as tdb
+
+    _fire_zero_token_call(monkeypatch, "owl-alpha", "nous", "sess-free-zero")
+
+    assert tdb.is_known_free_model("owl-alpha", "nous")
+
+
 def test_free_to_paid_transition_is_persisted_for_dashboard(tmp_path, monkeypatch):
     """Detecting a free→paid flip also writes to free_paid_transitions."""
     import db

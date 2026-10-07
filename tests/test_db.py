@@ -2027,3 +2027,77 @@ def test_count_distinct_llm_models_ignores_empty():
     db.record_llm_call("s4", _BF_NOW, "", "nous", 1, 1, 0.0, 1)  # empty — ignored
 
     assert db.count_distinct_llm_models() == 2
+
+
+# ---------------------------------------------------------------------------
+# v17 — repair known_free_models rows poisoned by issue #89
+# ---------------------------------------------------------------------------
+
+
+def _seed_llm_call(conn, model, provider, tokens_in, tokens_out, cost):
+    conn.execute(
+        "INSERT INTO llm_calls(session_id, ts, model, provider, tokens_in, tokens_out, cost_usd)"
+        " VALUES ('s', '2026-01-01T00:00:00Z', ?, ?, ?, ?, ?)",
+        (model, provider, tokens_in, tokens_out, cost),
+    )
+
+
+def test_schema_v17_recorded():
+    conn = db._get_conn()
+    assert _SCHEMA_VERSION >= 17
+    row = conn.execute("SELECT 1 FROM schema_version WHERE version = 17").fetchone()
+    assert row is not None
+
+
+def test_migrate_v17_deletes_poisoned_free_rows_and_keeps_genuine_ones():
+    """Upgrade path v16 -> v17: a paid model recorded as free by the #89 bug (no
+    $0-with-tokens evidence) is deleted along with its bogus transition; a
+    genuinely-free pair, a wildcard row, and unrelated transitions survive."""
+    conn = db._get_conn()
+    now = "2026-01-01T00:00:00Z"
+    # Simulate a DB that is at v16: v17 not yet applied.
+    conn.execute("DELETE FROM schema_version WHERE version >= 17")
+
+    for model, provider in [
+        ("deepseek-v4-pro", "nous"),  # poisoned: only zero-token $0 calls
+        ("owl-alpha", "nous"),  # genuine: $0 call that consumed tokens
+        ("never-called", "nous"),  # no llm_calls evidence at all -> poisoned
+        ("wild-free", ""),  # wildcard sentinel from backfill -> keep
+    ]:
+        conn.execute(
+            "INSERT INTO known_free_models(model, provider, first_seen_at) VALUES (?, ?, ?)",
+            (model, provider, now),
+        )
+    _seed_llm_call(conn, "deepseek-v4-pro", "nous", 0, 0, 0.0)
+    _seed_llm_call(conn, "deepseek-v4-pro", "nous", 1000, 200, 0.5)  # paid call
+    _seed_llm_call(conn, "owl-alpha", "nous", 500, 100, 0.0)
+    # Same model name on another provider must not vouch for the nous row.
+    _seed_llm_call(conn, "never-called", "other", 500, 100, 0.0)
+
+    for model, provider in [("deepseek-v4-pro", "nous"), ("owl-alpha", "nous")]:
+        conn.execute(
+            "INSERT INTO free_paid_transitions(model, provider, detected_at, first_paid_cost_usd)"
+            " VALUES (?, ?, ?, 0.5)",
+            (model, provider, now),
+        )
+    # A transition with no known_free row (id-change path) is unrelated: keep.
+    conn.execute(
+        "INSERT INTO free_paid_transitions(model, provider, detected_at, first_paid_cost_usd)"
+        " VALUES ('renamed-model', 'nous', ?, 0.1)",
+        (now,),
+    )
+
+    db._ensure_schema(conn)
+
+    kept = {(r[0], r[1]) for r in conn.execute("SELECT model, provider FROM known_free_models")}
+    assert kept == {("owl-alpha", "nous"), ("wild-free", "")}
+    transitions = {
+        (r[0], r[1]) for r in conn.execute("SELECT model, provider FROM free_paid_transitions")
+    }
+    assert transitions == {("owl-alpha", "nous"), ("renamed-model", "nous")}
+    assert conn.execute("SELECT 1 FROM schema_version WHERE version = 17").fetchone()
+
+    # Idempotent: a second pass changes nothing.
+    db._ensure_schema(conn)
+    assert conn.execute("SELECT COUNT(*) FROM known_free_models").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == _SCHEMA_VERSION
