@@ -7,7 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — Observation-only telemetry mode (opt-in)
+## [0.9.0] - 2026-10-07
+
+### Upgrade notes
+
+- **Schema v13 → v17.** Four forward-only migrations run automatically on first
+  load: `v14` adds the `pricing_snapshots` table (#71); `v15` adds
+  `pricing_snapshots.resolved_model` (#72); `v16` adds the
+  `endpoint_payload_cache` and `model_efficiency_cache` tables (#53); `v17` is a
+  data-only repair that deletes false `known_free_models` rows and the
+  `free_paid_transitions` rows they produced (#117). On an install that was not
+  affected by #89, `v17` deletes nothing.
+- **Module rename `setup.py` → `setup_wizard.py` (#118).** The setup wizard was
+  renamed so setuptools no longer executes it as a build script. Anything that
+  imports it directly (custom scripts, forks, docs) must switch to
+  `setup_wizard`; the `/setup` command and `hermes telemetry setup` are
+  unchanged.
+- **New runtime dependency: `pyyaml>=6.0` (#118).** It is now declared in
+  `pyproject.toml`, so pip-based installs pull it in. Hosts that load the plugin
+  from a checkout into an existing Hermes venv need PyYAML available there.
+- **Observation mode is opt-in; `enforce` stays the default (#114).** Upgrading
+  keeps today's budget guardrails. Only an explicit
+  `plugins.entries.hermes-telemetry.settings.mode: observe` turns enforcement
+  off.
+- **Costs now prefer the core-sourced tariff (#94).** Where Hermes core has
+  already resolved a price for a `(provider, model)` pair, it outranks
+  `pricing.yaml`. Totals for models whose `pricing.yaml` entry disagreed with the
+  core tariff can therefore change after upgrade (see the Changed section).
+
+### Added — Core-sourced pricing snapshots (#71, #72)
+
+- New `core_pricing.py` seam persists an append-per-change history of the tariffs
+  Hermes core resolves per `(provider, model)` (via
+  `agent.usage_pricing.get_pricing_entry`), with provenance: `source`,
+  `source_url`, `pricing_version`, `fetched_at`. Capture happens in
+  `post_api_request`, is throttled to once per 6 hours per `(provider, model)`
+  per process, and is fail-open: if core is absent or cannot resolve the model,
+  nothing is recorded and the hook is unaffected.
+- Dated model ids (e.g. `deepseek/deepseek-v4-pro-20260423`) miss the provider
+  `/models` catalog, which lists only canonical names. Capture now retries under
+  the canonical name (a trailing `-YYYYMMDD` is stripped, including before
+  `:free`) and stores the snapshot under the raw name, with the canonical name in
+  the new `resolved_model` column.
+- **Schema v14** (`pricing_snapshots` + `idx_pricing_snapshots_model`) and
+  **v15** (`pricing_snapshots.resolved_model`).
+
+### Added — `hermes telemetry pricing backfill` (#73)
+
+- Dry-run by default; `--apply` writes, `--json` for machine output. Seeds one
+  current pricing snapshot for every `(provider, model)` in `llm_calls` that has
+  none yet, so historical dated ids that never get a live snapshot gain coverage.
+  It is a coverage seed, not a historical reconstruction: rows carry the tariff
+  core resolves today. Idempotent, fail-open, no schema change.
+
+### Added — `hermes telemetry pricing drift` (#75)
+
+- Dry-run by default; compares `pricing.yaml` input/output rates against the
+  latest core snapshot per model and reports entries beyond `--threshold`
+  (default 1%). `--apply` merges the core rates back into `pricing.yaml`
+  (tagging each repaired entry `_source: core-snapshot`) and hot-reloads;
+  `--model` scopes to one model, `--json` for machine output.
+- Skips `_subscription: true` entries and treats `_provider_assumed` guesses as
+  "no local price" rather than drift. If models in `llm_calls` have no snapshot,
+  the report points at `pricing backfill` so a clean run is not a false all-clear.
+  No schema change.
+
+### Added — Observation-only telemetry mode (opt-in) (#114)
 
 - New plugin setting `plugins.entries.hermes-telemetry.settings.mode` with
   choices `enforce` (default) and `observe`. Observation mode keeps collecting
@@ -19,37 +84,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   When observe is active with a `budget.yaml` present, `/budget` and the
   dashboard budget panel plainly say limits are **not enforced**.
 
-### Fixed — `pyyaml` declared as a runtime dependency (#113)
-
-- `pyyaml` is imported at runtime by the pricing, budget, and stats loaders but
-  was missing from `[project].dependencies`, so a clean `pip install` broke on
-  first load. It is now declared (`pyyaml>=6.0`). Package discovery was also
-  fixed for non-uv build frontends by mapping the repo root to
-  `hermes_telemetry` explicitly, and the wizard module was renamed from
-  `setup.py` to `setup_wizard.py` so setuptools no longer tries to exec it as a
-  build script. `tests/test_packaging.py` guards all three.
-
-### Fixed — `/budget` status block did not list per-profile budgets (#70)
-
-- `/budget set profile <id> ...` and `/budget forecast ... profile <id>` already
-  worked, but plain `/budget` never showed per-profile status — only `global`,
-  `cron_job`, and `sender` scopes rendered. Added `db.list_profile_ids()`
-  (mirrors `list_cron_job_ids`/`list_sender_ids`) and a `Profiles:` section in
-  `_status_block()`, closing the command-surface parity gap between `set`,
-  `forecast`, and `status` for the `profile` scope. Only profiles seen in runs
-  within the last 30 days appear, matching the existing cron-job/sender window.
-
-### Changed — Core-sourced pricing snapshots are now the primary cost source
-
-- `estimate_cost()` now prefers the tariff Hermes core itself resolved for a
-  `(provider, model)` pair (already captured in `pricing_snapshots` by
-  `post_api_request`, read locally from SQLite — no new network calls) over
-  `pricing.yaml`/`_DEFAULT_PRICING`. A declared `_subscription: true` entry and
-  the `:free` suffix rule still outrank the core snapshot; a cold-start pair
-  with no snapshot yet falls back to the existing `pricing.yaml` chain
-  unchanged. `hermes telemetry pricing drift`/`pricing backfill` remain useful
-  for auditing `pricing.yaml` itself but are no longer required to keep costs
-  accurate. See `ONBOARDING.md § Pricing Engine → Lookup priority chain`.
 ### Added — Dashboard EN/RU language toggle (#92)
 
 - Standalone dashboard (`dashboard/index.html`) is EN-first with an EN↔RU toggle:
@@ -62,7 +96,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raw value; EN path is identity, RU the only override. Known limitation: the
   plugin widget (`dashboard/dist/index.js`) stays English.
 
-### Fixed — Date-range label collapsed to "X to X" when only `--from` was given (#37)
+### Added — `profile` scope in `budget set` (#79)
+
+- `budget set` now accepts `global | cron_job | sender | profile`, in chat
+  (`/budget set <scope> [<id>] <window> <usd>`, e.g.
+  `/budget set profile faro monthly 50`) and in the standalone CLI
+  (`hermes-telemetry budget set <scope> <window> <usd> [--id <name>]`). With an
+  id it writes `budgets.per_<scope>.overrides.<id>`; without one, the scope's
+  `default` bucket. The id-override form also works for `cron_job` and `sender`.
+  Previously `profile` was rejected as "Unknown scope" even though enforcement,
+  forecast, and manual YAML already honored it.
+
+### Changed — Core-sourced pricing snapshots are now the primary cost source (#94)
+
+- `estimate_cost()` now prefers the tariff Hermes core itself resolved for a
+  `(provider, model)` pair (already captured in `pricing_snapshots` by
+  `post_api_request`, read locally from SQLite — no new network calls) over
+  `pricing.yaml`/`_DEFAULT_PRICING`. A declared `_subscription: true` entry and
+  the `:free` suffix rule still outrank the core snapshot; a cold-start pair
+  with no snapshot yet falls back to the existing `pricing.yaml` chain
+  unchanged. `hermes telemetry pricing drift`/`pricing backfill` remain useful
+  for auditing `pricing.yaml` itself but are no longer required to keep costs
+  accurate. An incomplete core snapshot (missing `input` and/or `output`) is
+  ignored rather than priced at `$0`. See
+  `ONBOARDING.md § Pricing Engine → Lookup priority chain`.
+
+### Changed — Standalone dashboard caches heavy endpoints (#53)
+
+- Model efficiency, providers, provider health, and the daily token / daily
+  model charts are cached in SQLite and refreshed in the background, so the
+  standalone dashboard stays responsive on large databases; the heavy
+  model-efficiency fetch is deferred until the Breakdown page renders.
+  **Schema v16** adds `endpoint_payload_cache` and `model_efficiency_cache`.
+  `PRAGMA journal_mode=WAL` is now serialized with schema initialization,
+  removing a lock race between concurrent first connections. Telemetry
+  collection, budgets, and pricing are unchanged.
+
+### Fixed — `pyyaml` declared as a runtime dependency (#113, #118)
+
+- `pyyaml` is imported at runtime by the pricing, budget, and stats loaders but
+  was missing from `[project].dependencies`, so a clean `pip install` broke on
+  first load. It is now declared (`pyyaml>=6.0`). Package discovery was also
+  fixed for non-uv build frontends by mapping the repo root to
+  `hermes_telemetry` explicitly, and the wizard module was renamed from
+  `setup.py` to `setup_wizard.py` so setuptools no longer tries to exec it as a
+  build script. `tests/test_packaging.py` guards all three.
+
+### Fixed — `/budget` status block did not list per-profile budgets (#70, #95)
+
+- `/budget set profile <id> ...` and `/budget forecast ... profile <id>` already
+  worked, but plain `/budget` never showed per-profile status — only `global`,
+  `cron_job`, and `sender` scopes rendered. Added `db.list_profile_ids()`
+  (mirrors `list_cron_job_ids`/`list_sender_ids`) and a `Profiles:` section in
+  `_status_block()`, closing the command-surface parity gap between `set`,
+  `forecast`, and `status` for the `profile` scope. Only profiles seen in runs
+  within the last 30 days appear, matching the existing cron-job/sender window.
+
+### Fixed — Date-range label collapsed to "X to X" when only `--from` was given (#37, #93)
 
 - `hermes-telemetry stats --from <date>` used to auto-fill the missing `--to`
   with the current timestamp, so the rendered label read as a same-day range
@@ -75,7 +165,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `date_to` field (now `null` instead of an auto-filled timestamp) reflect
   the real input.
 
-### Fixed — Paid models recorded as free on zero-token calls, then raising false free→paid alerts (#89)
+### Fixed — Paid models recorded as free on zero-token calls, then raising false free→paid alerts (#89, #117)
 
 - `post_api_request` added a model to `known_free_models` whenever a call cost
   $0 and the model had any explicit price. A paid model (e.g. `deepseek-v4-pro`)
@@ -89,6 +179,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same model and provider at $0 that used tokens. It also deletes the
   `free_paid_transitions` rows those false entries produced. No columns or
   tables change, and on an unaffected install the migration deletes nothing.
+
+### Fixed — `pricing drift --apply` could pin a stale price across providers (#85)
+
+- When two providers (e.g. `custom` and `nous`) share an API and both have
+  snapshots for the same canonical model, `--apply` used to take the
+  alphabetically-first provider's snapshot, which could overwrite the current
+  price with an older one (issue #84). Drifted entries are now ordered by
+  snapshot recency, so the most recent snapshot wins; the multi-provider warning
+  is kept and reworded. No schema change.
+
+### Fixed — `pricing_refresh` ignored `HERMES_TELEMETRY_HOME` (#78)
+
+- The auto-refresh resolved `pricing.yaml` from an import-time constant based on
+  `HERMES_HOME` only, so on a consolidated install it could write to a
+  per-profile file while the cost path read the consolidated one. It now resolves
+  `paths.get_pricing_path()` at call time, like every other `pricing.yaml`
+  reader and writer.
+
+### Fixed — Dashboard ignored an explicit UTC viewer timezone on Python 3.8 (#74)
+
+- Without `zoneinfo` (Python 3.8), `_dashboard_viewer_tz` fell back to the
+  server's local timezone even when the viewer asked for `UTC`. UTC is now always
+  honored via `timezone.utc`; other IANA zones still need `zoneinfo`.
+
+### Fixed — Unbounded `DISTINCT JOIN` in the model-efficiency query (#82)
+
+- The standalone dashboard's model-efficiency query joined without bounding the
+  time window, causing CPU spikes on large databases. The join is now limited to
+  the requested window, and the background cache refresh no longer short-circuits
+  itself (supersedes #76).
+
+### Fixed — Standalone `hermes-telemetry` entry point was not executable (#88)
+
+- `hermes-telemetry` and `.githooks/pre-commit` were tracked as mode `100644`, so
+  the documented standalone install failed with `Permission denied` and the
+  pre-commit hook was silently ignored by git. Both are now tracked `100755`,
+  with a regression test.
+
+### Fixed — `plugin.yaml` did not declare the `subagent_start` hook (#103)
+
+- `register()` registers `subagent_start` but `plugin.yaml` did not list it under
+  `provides_hooks`, so `hermes plugins validate` failed. It is now declared; no
+  runtime behavior changes.
+
+### Internal
+
+- CI: fork PRs now run via `pull_request_target` (#86), with an explicit
+  fork-checkout opt-in, read-only `contents: read` permissions, and a SECURITY
+  note documenting the invariants that keep it safe (#87). Ruff is pinned via
+  `.ruff-version` so a new release cannot turn CI red on its own, and `*.md` is
+  excluded from `ruff format` (both landed with #88).
+- Tests: a pinning test for the dated `:free` slug against the paid base model
+  (#90, issue #54). No behavior change; `pricing.py` is untouched.
+- Docs: corrected the dashboard slot catalogue and recorded the Hermes session
+  model in `ONBOARDING.md` and `CLAUDE.md` (#96); corrected the attribution of the
+  v0.8.0 agent-intelligence work to #40 instead of #8 (#109).
 
 ## [0.8.0] - 2026-07-09
 
@@ -620,6 +766,7 @@ brings both surfaces up to date in lockstep. Verified against
 - MIT License
 - README with architecture, usage, screenshots
 
+[0.9.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.7.0...v0.8.0
 [0.5.1]: https://github.com/nujovich/hermes-telemetry/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.4.1...v0.5.0
