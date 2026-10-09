@@ -32,6 +32,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Test the docs generator
+        working-directory: website
+        run: |
+          npm ci
+          npm test
       - name: Install, build, and upload the site
         uses: withastro/action@v6
         with:

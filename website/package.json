@@ -7,7 +7,10 @@
     "start": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "predev": "node scripts/sync-docs.mjs",
+    "prebuild": "node scripts/sync-docs.mjs",
+    "test": "node --test \"scripts/*.test.mjs\""
   },
   "dependencies": {
     "@astrojs/starlight": "^0.42.6",
@@ -17,5 +20,8 @@
     "astro": "^7.2.10",
     "sharp": "^0.35.3",
     "starlight-links-validator": "^0.27.0"
+  },
+  "devDependencies": {
+    "github-slugger": "^2.0.0"
   }
 }
