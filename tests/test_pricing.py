@@ -124,34 +124,29 @@ def test_deepseek_current_ids_priced_at_current_rates(model, expected):
         assert resolved[key] == pytest.approx(value), key
 
 
-_DEEPSEEK_R1 = dict(input=0.55, output=2.19)
-_DEEPSEEK_V3 = dict(input=0.27, output=1.10)
-
-
 @pytest.mark.parametrize(
-    "model,expected",
+    "model",
     [
-        ("deepseek/deepseek-v4-pro-20260423", _DEEPSEEK_PRO),
-        ("deepseek/deepseek-v4-pro", _DEEPSEEK_PRO),
-        ("deepseek/deepseek-v4-flash", _DEEPSEEK_FLASH),
-        ("deepseek/deepseek-flash", _DEEPSEEK_FLASH),
-        ("deepseek/deepseek-chat", _DEEPSEEK_FLASH),
-        ("deepseek/deepseek-reasoner", _DEEPSEEK_FLASH),
-        ("deepseek/deepseek-r1", _DEEPSEEK_R1),
-        ("deepseek/deepseek-r1-distill-x", _DEEPSEEK_R1),
-        ("deepseek/deepseek-v3", _DEEPSEEK_V3),
-        ("deepseek/deepseek-v3.2", _DEEPSEEK_V3),
-        # Truly unknown vendor-qualified id keeps the bare-prefix Flash default.
-        ("deepseek/deepseek-v9-future", _DEEPSEEK_FLASH),
+        "deepseek/deepseek-v4-pro-20260423",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-chat",
+        "deepseek/deepseek-r1",
+        "deepseek/deepseek-v3.2",
     ],
 )
-def test_deepseek_vendor_qualified_ids_hit_their_own_model(model, expected):
-    """Slash ids (Nous / OpenRouter style) never match the bare exact keys, so
-    they need their own prefix entries or they all fall to the generic prefix."""
+def test_deepseek_vendor_qualified_ids_keep_pre_121_fallback(model):
+    """Slash-qualified ids are aggregator ids (Nous / OpenRouter), never
+    DeepSeek-direct. A prod replay showed DeepSeek-direct list rates overshoot
+    Nous's real resale price by 83-87% while the old 0.27/1.10 fallback was within
+    3-8%. Their authoritative price is the core snapshot; the static fallback must
+    resolve exactly as on origin/main: the bare "deepseek" prefix at 0.27/1.10
+    with the generic 0.10x cache_read (0.027)."""
     resolved = pricing._resolve_pricing(model, "nous", None)
     assert resolved is not None
-    for key, value in expected.items():
-        assert resolved[key] == pytest.approx(value), key
+    assert resolved["input"] == pytest.approx(0.27)
+    assert resolved["output"] == pytest.approx(1.10)
+    assert resolved["cache_read"] == pytest.approx(0.027)
 
 
 def test_deepseek_legacy_open_weight_ids_unchanged():
