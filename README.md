@@ -1,4 +1,6 @@
-# hermes-telemetry ☤
+<p align="center">
+  <img src="docs/brand/banner.svg" width="100%" alt="hermes-telemetry: observability + budget guardrails for Hermes Agent">
+</p>
 
 > *Observability + budget guardrails for [Hermes Agent](https://github.com/NousResearch/hermes-agent)*
 

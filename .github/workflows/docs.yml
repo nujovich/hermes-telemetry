@@ -1,0 +1,54 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "ONBOARDING.md"
+      - "README.md"
+      - "CHANGELOG.md"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "website/**"
+      - "ONBOARDING.md"
+      - "README.md"
+      - "CHANGELOG.md"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# PR builds cancel superseded runs; main deploys queue and are never cancelled.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install, build, and upload the site
+        uses: withastro/action@v6
+        with:
+          path: ./website
+
+  deploy:
+    # Only main publishes; PRs and manual runs from other branches just build.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

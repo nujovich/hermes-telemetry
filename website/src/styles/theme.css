@@ -1,0 +1,247 @@
+/* Fonts are self-hosted through Fontsource; no external font requests. */
+@import '@fontsource/antonio/400.css';
+@import '@fontsource/antonio/700.css';
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+:root {
+	--hm-blue: #0000f2;
+	--hm-paper: #f2f2f2;
+	--hm-navy: #000061;
+	--hm-muted: #616191;
+	--hm-font-display: 'Antonio', 'Arial Narrow', Impact, sans-serif;
+
+	--sl-font: 'IBM Plex Sans', system-ui, sans-serif;
+	--sl-font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+	--sl-line-height-headings: 1.1;
+	--sl-shadow-sm: none;
+	--sl-shadow-md: none;
+	--sl-shadow-lg: none;
+	--hm-radius: 6px;
+}
+
+/* Dark (default) */
+:root {
+	--sl-color-white: #f2f2f2;
+	--sl-color-gray-1: #e4e4f5;
+	--sl-color-gray-2: #c9c9e6;
+	--sl-color-gray-3: #9a9acb;
+	--sl-color-gray-4: #7a7aad;
+	--sl-color-gray-5: #2a2a6e;
+	--sl-color-gray-6: #0d0d3d;
+	--sl-color-black: #05052a;
+
+	--sl-color-accent-low: #10105c;
+	--sl-color-accent: #5a5aff;
+	--sl-color-accent-high: #a6a6ff;
+
+	--sl-color-text: #d9d9ee;
+	--sl-color-text-accent: #a6a6ff;
+	--sl-color-text-invert: #05052a;
+	--sl-color-bg: #05052a;
+	--sl-color-bg-nav: #0000f2;
+	--sl-color-bg-sidebar: #070735;
+	--sl-color-bg-inline-code: #12124f;
+	--sl-color-bg-accent: #5a5aff;
+	--sl-color-hairline-light: rgba(140, 140, 255, 0.28);
+	--sl-color-hairline: rgba(140, 140, 255, 0.2);
+	--sl-color-hairline-shade: rgba(140, 140, 255, 0.14);
+	--hm-heading: #f2f2f2;
+	--hm-eyebrow: #a6a6ff;
+}
+
+/* Light */
+:root[data-theme='light'] {
+	--sl-color-white: #000061;
+	--sl-color-gray-1: #000061;
+	--sl-color-gray-2: #1a1a7a;
+	--sl-color-gray-3: #4d4d85;
+	--sl-color-gray-4: #616191;
+	--sl-color-gray-5: #c4c4e6;
+	--sl-color-gray-6: #e4e4f3;
+	--sl-color-gray-7: #ececf7;
+	--sl-color-black: #f2f2f2;
+
+	--sl-color-accent-low: #dcdcff;
+	--sl-color-accent: #0000f2;
+	--sl-color-accent-high: #0000c4;
+
+	--sl-color-text: #000061;
+	--sl-color-text-accent: #0000f2;
+	--sl-color-text-invert: #f2f2f2;
+	--sl-color-bg: #f2f2f2;
+	--sl-color-bg-nav: #0000f2;
+	--sl-color-bg-sidebar: #f2f2f2;
+	--sl-color-bg-inline-code: #e4e4f3;
+	--sl-color-bg-accent: #0000f2;
+	--sl-color-hairline-light: rgba(0, 0, 242, 0.25);
+	--sl-color-hairline: rgba(0, 0, 242, 0.2);
+	--sl-color-hairline-shade: rgba(0, 0, 242, 0.14);
+	--hm-heading: #000061;
+	--hm-eyebrow: #0000f2;
+}
+
+/* Headings: condensed gothic, tight tracking */
+h1, h2, h3,
+.sl-markdown-content :is(h1, h2, h3),
+.hero h1 {
+	font-family: var(--hm-font-display);
+	font-weight: 700;
+	letter-spacing: -0.005em;
+	color: var(--hm-heading);
+}
+h1,
+.hero h1 {
+	text-transform: uppercase;
+	letter-spacing: -0.01em;
+}
+.hero h1 {
+	font-size: clamp(3.5rem, 12vw, 7rem);
+	line-height: 0.95;
+}
+:is(h1, h2, h3) a { color: inherit; }
+
+/* Mono uppercase labels */
+.sidebar-content summary .large,
+.sidebar-content .large,
+.pagination-links span,
+starlight-toc h2,
+mobile-starlight-toc h2,
+.sl-badge,
+.site-title,
+.header .right-group,
+.eyebrow {
+	font-family: var(--sl-font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+.sidebar-content .large,
+.sidebar-content summary .large {
+	font-size: var(--sl-text-xs);
+	font-weight: 500;
+	color: var(--hm-eyebrow);
+}
+.pagination-links span {
+	font-size: var(--sl-text-2xs);
+	color: var(--hm-eyebrow);
+}
+.pagination-links a { border-radius: var(--hm-radius); box-shadow: none; }
+
+/* Header: solid blue bar, off-white content in both themes */
+.header {
+	border-bottom: 0;
+}
+.header a,
+.header .site-title,
+.header button,
+.header select,
+.header starlight-theme-select label,
+.header .social-icons a {
+	color: #f2f2f2;
+}
+/* The search <dialog> is nested inside .header: hand its colors back to Starlight. */
+.header dialog a,
+.header dialog button,
+.header dialog select {
+	color: revert-layer;
+}
+.header .site-title {
+	font-family: var(--hm-font-display);
+	font-size: 1.5rem;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+}
+.header .social-icons::after { border-color: rgba(242, 242, 242, 0.4); }
+.header site-search button[data-open-modal] {
+	background: rgba(242, 242, 242, 0.12);
+	border: 1px solid rgba(242, 242, 242, 0.45);
+	border-radius: var(--hm-radius);
+	color: #f2f2f2;
+}
+.header site-search button[data-open-modal]:hover {
+	background: rgba(242, 242, 242, 0.2);
+	border-color: #f2f2f2;
+}
+.header site-search kbd {
+	background: rgba(242, 242, 242, 0.18);
+	color: #f2f2f2;
+	border-radius: 4px;
+}
+.header starlight-theme-select select {
+	background-color: transparent;
+	font-family: var(--sl-font-mono);
+	text-transform: uppercase;
+	font-size: var(--sl-text-xs);
+}
+.header starlight-theme-select option {
+	background: var(--sl-color-bg);
+	color: var(--sl-color-text);
+}
+.header :focus-visible { outline-color: #f2f2f2; }
+starlight-menu-button button {
+	background: rgba(242, 242, 242, 0.12);
+	color: #f2f2f2;
+	border-radius: var(--hm-radius);
+	box-shadow: none;
+}
+
+/* Flat surfaces, small radius */
+.starlight-aside,
+.sl-markdown-content :not(a, strong, em, del, span, input, code, br) + :is(.starlight-aside),
+.card,
+.expressive-code .frame,
+.expressive-code .frame pre,
+.sl-markdown-content code,
+.sl-link-button,
+.sl-markdown-content table {
+	border-radius: var(--hm-radius);
+	box-shadow: none;
+}
+.expressive-code .frame { box-shadow: none; border: 1px solid var(--sl-color-hairline-light); }
+.sl-link-button {
+	font-family: var(--sl-font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	font-size: var(--sl-text-sm);
+}
+.sl-link-button.primary {
+	background: #0000f2;
+	border-color: #0000f2;
+	color: #f2f2f2;
+}
+:root:not([data-theme='light']) .sl-link-button.primary {
+	background: #8c8cff;
+	border-color: #8c8cff;
+	color: #05052a;
+}
+.sl-link-button.minimal { color: var(--sl-color-text-accent); }
+
+.sl-markdown-content a:not(.sl-link-button) {
+	text-underline-offset: 0.2em;
+}
+
+/* Eyebrow marker on the landing hero */
+.hero .eyebrow,
+.hm-eyebrow {
+	font-family: var(--sl-font-mono);
+	font-size: var(--sl-text-sm);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--hm-eyebrow);
+}
+
+/* Site-wide disclaimer */
+.disclaimer {
+	margin: 0 auto;
+	max-width: 40rem;
+	text-align: center;
+	font-family: var(--sl-font-mono);
+	font-size: var(--sl-text-2xs);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	line-height: 1.6;
+	color: var(--sl-color-gray-3);
+}
