@@ -9,6 +9,7 @@ plugin's `import yaml` fails at session start with "No module named 'yaml'".
 See https://github.com/nujovich/hermes-telemetry/issues/113
 """
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -29,6 +30,23 @@ def test_pyyaml_declared_as_runtime_dependency():
     declared so installers pull it in -- issue #113."""
     deps = _project_dependencies()
     assert "pyyaml" in deps
+
+
+def test_runtime_dependencies_have_upper_bounds():
+    """Every runtime dependency must carry an upper bound below the next major.
+
+    The plugin installs into Hermes' own environment, so an unbounded `>=` pin
+    lets a future breaking major (watchdog 7, pyyaml 7) reach users on a plain
+    reinstall with no change on our side. The ceiling is the next unreleased
+    major, not the current one, so it does not fight Hermes' resolver."""
+    specs = [
+        line.split("#", 1)[0].strip().strip(",").strip('"')
+        for line in _project_dependencies().splitlines()
+    ]
+    specs = [s for s in specs if s]
+    assert specs, "no runtime dependencies parsed from pyproject.toml"
+    for spec in specs:
+        assert re.search(r",\s*<\s*\d", spec), f"{spec!r} has no upper bound"
 
 
 def _tool_setuptools_section() -> str:

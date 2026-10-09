@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Standalone dashboard: two error paths interpolated `err.message` into `innerHTML` unescaped (model-efficiency mount and the top-level load error); both now go through `escHtml`, matching the other error boxes.
+
+### Changed
+- Runtime dependencies are now upper-bounded below the next major (`watchdog>=3.0,<7`, `pyyaml>=6.0,<7`) so a future breaking release cannot reach users on a plain reinstall.
+
 ## [0.9.0] - 2026-10-07
 
 ### Upgrade notes
