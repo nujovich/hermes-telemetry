@@ -88,10 +88,87 @@ def test_is_free_model():
 
 
 def test_deepseek_pricing():
+    # deepseek-chat is served by V4.1-Flash and billed at Flash rates (issue #121).
     cost = pricing.estimate_cost(
         {"input_tokens": 1_000_000, "output_tokens": 1_000_000}, "deepseek-chat"
     )
-    assert abs(cost - (0.27 + 1.10)) < 1e-6
+    assert abs(cost - (0.15 + 0.60)) < 1e-6
+
+
+# Issue #121: DeepSeek's current ids used to fall through to the retired V3
+# prefix rate (0.27/1.10) with a generic 0.10x cache_read. These are the
+# off-peak rates published by DeepSeek and mirrored by Hermes core (peak = 2x,
+# time-of-day pricing is tracked in #122).
+_DEEPSEEK_FLASH = dict(input=0.15, output=0.60, cache_read=0.003, cache_write=0.15)
+_DEEPSEEK_PRO = dict(input=0.66, output=1.98, cache_read=0.022, cache_write=0.66)
+
+
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("deepseek-flash", _DEEPSEEK_FLASH),
+        ("deepseek-v4-flash", _DEEPSEEK_FLASH),
+        ("deepseek-chat", _DEEPSEEK_FLASH),
+        ("deepseek-reasoner", _DEEPSEEK_FLASH),
+        ("deepseek-v4-pro", _DEEPSEEK_PRO),
+        # Dated variants resolve through the exact keys acting as prefixes.
+        ("deepseek-v4-pro-20260423", _DEEPSEEK_PRO),
+        # Unknown current-generation id falls to the bare "deepseek" prefix.
+        ("deepseek-v4.1-flash", _DEEPSEEK_FLASH),
+    ],
+)
+def test_deepseek_current_ids_priced_at_current_rates(model, expected):
+    resolved = pricing._resolve_pricing(model, "custom:deepseek", None)
+    assert resolved is not None
+    for key, value in expected.items():
+        assert resolved[key] == pytest.approx(value), key
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek/deepseek-v4-pro-20260423",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-chat",
+        "deepseek/deepseek-r1",
+        "deepseek/deepseek-v3.2",
+    ],
+)
+def test_deepseek_vendor_qualified_ids_keep_pre_121_fallback(model):
+    """Slash-qualified ids are aggregator ids (Nous / OpenRouter), never
+    DeepSeek-direct. A prod replay showed DeepSeek-direct list rates overshoot
+    Nous's real resale price by 83-87% while the old 0.27/1.10 fallback was within
+    3-8%. Their authoritative price is the core snapshot; the static fallback must
+    resolve exactly as on origin/main: the bare "deepseek" prefix at 0.27/1.10
+    with the generic 0.10x cache_read (0.027)."""
+    resolved = pricing._resolve_pricing(model, "nous", None)
+    assert resolved is not None
+    assert resolved["input"] == pytest.approx(0.27)
+    assert resolved["output"] == pytest.approx(1.10)
+    assert resolved["cache_read"] == pytest.approx(0.027)
+
+
+def test_deepseek_legacy_open_weight_ids_unchanged():
+    """v3 / r1 are open-weight names also served by third parties: keep their rates."""
+    v3 = pricing._resolve_pricing("deepseek-v3", "custom:deepseek", None)
+    r1 = pricing._resolve_pricing("deepseek-r1", "custom:deepseek", None)
+    assert (v3["input"], v3["output"]) == (0.27, 1.10)
+    assert (r1["input"], r1["output"]) == (0.55, 2.19)
+
+
+def test_deepseek_flash_cost_matches_issue_121_example():
+    cost = pricing.estimate_cost(
+        {
+            "input_tokens": 177,
+            "output_tokens": 705,
+            "cache_read_tokens": 321280,
+            "reasoning_tokens": 0,
+        },
+        "deepseek-flash",
+        "custom:deepseek",
+    )
+    assert cost == pytest.approx(0.00141339)
 
 
 def test_openai_gpt4o():

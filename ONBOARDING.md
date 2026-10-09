@@ -779,8 +779,10 @@ mechanism anymore.
   The snapshot is stored under the **raw dated name** (`model`) with the canonical name in
   `resolved_model` (NULL when the raw name resolved directly). Safe because `resolve()` is
   fail-open: a wrong strip → `None` → no row. Verified on the VPS: the dominant
-  `deepseek/deepseek-v4-pro-20260423` is priced by the plugin via a family prefix (0.27/1.1)
-  while the core's real rate is 0.435/0.87 — the snapshot captures the authoritative rate.
+  `deepseek/deepseek-v4-pro-20260423` was priced by the plugin via the generic family prefix
+  (0.27/1.1) while the core's real rate was 0.435/0.87. Since #121 unprefixed DeepSeek ids
+  have explicit DeepSeek-direct built-ins; vendor-qualified `deepseek/...` ids are aggregator
+  ids and intentionally keep the pre-#121 fallback, relying on the core snapshot.
 - **Caveat:** `post_api_request` carries no `api_key`, so a private
   OpenAI-compatible endpoint with no cached `/models` metadata resolves to `None`
   (no snapshot). Nous / OpenRouter / official-docs models resolve without a

@@ -69,7 +69,12 @@ _DEFAULT_SEED: dict[str, dict] = {
     "o3-mini": dict(input=1.10, output=4.40),
     "o4-mini": dict(input=1.10, output=4.40),
     # DeepSeek
-    "deepseek-chat": dict(input=0.27, output=1.10),
+    # Off-peak rates matching pricing.py / Hermes core (issue #121; peak 2x in #122).
+    "deepseek-flash": dict(input=0.15, output=0.60, cache_read=0.003, cache_write=0.15),
+    "deepseek-v4-flash": dict(input=0.15, output=0.60, cache_read=0.003, cache_write=0.15),
+    "deepseek-chat": dict(input=0.15, output=0.60, cache_read=0.003, cache_write=0.15),
+    "deepseek-reasoner": dict(input=0.15, output=0.60, cache_read=0.003, cache_write=0.15),
+    "deepseek-v4-pro": dict(input=0.66, output=1.98, cache_read=0.022, cache_write=0.66),
     "deepseek-v3": dict(input=0.27, output=1.10),
     "deepseek-r1": dict(input=0.55, output=2.19),
     # Nous Research (Portal)

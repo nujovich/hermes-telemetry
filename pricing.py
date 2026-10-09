@@ -59,7 +59,16 @@ _DEFAULT_PRICING: dict[str, dict] = {
     "o3-mini": dict(input=1.10, output=4.40),
     "o4-mini": dict(input=1.10, output=4.40),
     # ── DeepSeek ────────────────────────────────────────────────────────────
-    "deepseek-chat": dict(input=0.27, output=1.10),
+    # Current ids (issue #121). Off-peak rates, matching Hermes core
+    # (agent/usage_pricing.py); peak hours bill 2x — time-of-day pricing is
+    # tracked in #122. DeepSeek has no separate cache-write fee (write = input).
+    # deepseek-chat / deepseek-reasoner are retired names now served by V4.1-Flash.
+    "deepseek-flash": dict(input=0.15, output=0.60, cache_read=0.003, cache_write=0.15),
+    "deepseek-v4-flash": dict(input=0.15, output=0.60, cache_read=0.003, cache_write=0.15),
+    "deepseek-chat": dict(input=0.15, output=0.60, cache_read=0.003, cache_write=0.15),
+    "deepseek-reasoner": dict(input=0.15, output=0.60, cache_read=0.003, cache_write=0.15),
+    "deepseek-v4-pro": dict(input=0.66, output=1.98, cache_read=0.022, cache_write=0.66),
+    # Legacy open-weight names (also served by third-party hosts): unchanged.
     "deepseek-v3": dict(input=0.27, output=1.10),
     "deepseek-r1": dict(input=0.55, output=2.19),
     # ── Nous Research (Portal) ───────────────────────────────────────────────
@@ -121,7 +130,18 @@ _PREFIX_PRICING: list[tuple[str, dict]] = [
     ("o3", dict(input=10.00, output=40.00)),
     ("o4-mini", dict(input=1.10, output=4.40)),
     ("deepseek-r1", dict(input=0.55, output=2.19)),
-    ("deepseek", dict(input=0.27, output=1.10)),
+    # Slash-qualified ids ("deepseek/<model>") are aggregator ids (Nous /
+    # OpenRouter), never DeepSeek-direct (direct uses bare ids). Their
+    # authoritative price is the core snapshot; this fallback deliberately keeps
+    # the pre-#121 rate, since aggregator resale prices differ from DeepSeek-direct
+    # list prices and are volatile. "deepseek/" is longer than "deepseek", so it
+    # wins the longest-prefix scan for slash ids (issue #121).
+    ("deepseek/", dict(input=0.27, output=1.10)),
+    # Bare family prefix = current-generation default (Flash) for truly unknown
+    # DeepSeek-direct ids (e.g. deepseek-v4.1-flash). Unprefixed dated ids such as
+    # deepseek-v4-pro-2026... are caught by the exact "deepseek-v4-pro" key.
+    # DeepSeek list prices changed three times in 2026-07..09: keep these current.
+    ("deepseek", dict(input=0.15, output=0.60, cache_read=0.003, cache_write=0.15)),
     # Gemini family prefixes catch dated variants (e.g. gemini-3-flash-preview-20251217).
     # Specific prefixes only — no generic "gemini" catch-all, since Flash 1.5 is
     # deprecated and a bare "gemini" prefix would mis-price unknown models. An

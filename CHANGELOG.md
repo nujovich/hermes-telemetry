@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **DeepSeek current ids priced at retired V3 rates (#121).** `deepseek-flash`,
+  `deepseek-v4-flash` and `deepseek-v4-pro` had no built-in entry and fell to the
+  bare `deepseek` prefix (0.27/1.10 plus a generic 0.10x cache read), overstating
+  cost for `custom:<name>` providers, which never get a Hermes core snapshot.
+  They now carry explicit off-peak rates matching Hermes core (Flash 0.15/0.60,
+  cache read 0.003; Pro 0.66/1.98, cache read 0.022; cache write = input), and
+  `deepseek-chat` / `deepseek-reasoner` and the bare `deepseek` prefix follow
+  Flash. `deepseek-v3` / `deepseek-r1` are unchanged. Vendor-qualified `deepseek/...` ids
+  are aggregator ids (Nous / OpenRouter) and intentionally keep the prior 0.27/1.10
+  fallback, since their authoritative price is the core snapshot. Peak-hour (2x)
+  pricing is tracked in #122.
+
 ## [0.9.0] - 2026-10-07
 
 ### Upgrade notes
