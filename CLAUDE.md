@@ -63,6 +63,9 @@ https://raw.githubusercontent.com/NousResearch/hermes-agent/main/<path>
 2. If you discover something new (an undocumented kwarg, a new status value, a changed
    API), update ONBOARDING.md as part of the same PR.
 
+ONBOARDING.md is published to the docs site (Internals section) at build time, so its
+`#anchor` links must stay valid: a broken one fails the docs build.
+
 Never contradict ONBOARDING.md without first verifying against the source and
 updating the doc.
 
