@@ -10,6 +10,9 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'hermes-telemetry',
+			logo: { src: './src/assets/logo.svg', alt: '' },
+			customCss: ['./src/styles/theme.css'],
+			components: { Footer: './src/components/Footer.astro' },
 			plugins: [starlightLinksValidator()],
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/nujovich/hermes-telemetry' },
