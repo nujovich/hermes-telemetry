@@ -14,7 +14,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 662 passing](https://img.shields.io/badge/Tests-662%20passing-green.svg)](https://img.shields.io/badge/Tests-662%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 664 passing](https://img.shields.io/badge/Tests-664%20passing-green.svg)](https://img.shields.io/badge/Tests-664%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -1386,7 +1386,7 @@ global    $0.1812 / $2.00    9%  [daily]
 |Pricing auto-refresh (OpenRouter API)|✅ 320 models fetched, manual overrides preserved   |
 |Estimated-price model handling       |✅ Negative prices → $0.00, budget degradation      |
 |Dashboard (HTML, auto-refresh 30s)   |✅ Charts, tables, budget bar, provider distribution|
-|662 tests pass                       |✅                                                  |
+|664 tests pass                       |✅                                                  |
 
 -----
 
@@ -1413,7 +1413,7 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (662 tests, 662 passing):**
+**Test suite (664 tests, 664 passing):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
@@ -1426,7 +1426,7 @@ pytest tests/ -v
 |`test_pricing_drift.py`          |32   |Drift vs core snapshots: threshold, subscription skip, canonical collapse, provider-assumed routing, `--apply` write-back, multi-provider recency, malformed-YAML safety, CLI|
 |`test_sync_profiles.py`          |29   |Profile consolidation via `HERMES_TELEMETRY_HOME`: `.env` upsert, name scoping, template preservation                          |
 |`test_stats_smells.py`           |22   |Anti-pattern (smell) detection and scoring                                                                                     |
-|`test_packaging.py`              |3    |Packaging contract: pyyaml declared in `[project].dependencies`, setuptools maps the repo root to `hermes_telemetry`, wizard module is not named `setup.py`|
+|`test_packaging.py`              |4    |Packaging contract: pyyaml declared in `[project].dependencies`, every runtime dependency upper-bounded, setuptools maps the repo root to `hermes_telemetry`, wizard module is not named `setup.py`|
 |`test_setup.py`                  |22   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |
 |`test_pricing_snapshots.py`      |24   |Core-sourced pricing snapshots: append-per-change, `resolved_model` canonicalization, capture throttle, incomplete-snapshot fallback|
 |`test_observation_mode.py`       |10   |Enforce-default mode, upgrade path (no get_config still blocks), observe opt-in, watcher always on, /budget not-enforced notice, mode normalisation (case/whitespace, non-string → enforce)|
@@ -1441,6 +1441,7 @@ pytest tests/ -v
 |`test_pricing_backfill.py`       |7    |Seed pricing snapshots for historical models (coverage seed, fail-open, idempotent)                                            |
 |`test_paths.py`                  |6    |Telemetry path resolution precedence: `HERMES_TELEMETRY_HOME` > `HERMES_HOME` > `~/.hermes`                                     |
 |`test_dashboard_plugin_isolation.py`|6 |Enforces zero shared Python code between the two dashboard surfaces                                                             |
+|`test_dashboard_html_escaping.py`|1   |Standalone dashboard never interpolates `err.message` into HTML unescaped                                                        |
 |`test_isolation.py`              |5    |`HERMES_HOME` redirect, no writes to real `~/.hermes`                                                                          |
 |`test_pricing_hot_reload.py`     |3    |In-process cache invalidation on pricing update                                                                                |
 |`test_moa_integration.py`        |3    |MoA end-to-end integration                                                                                                     |

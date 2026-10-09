@@ -2207,13 +2207,13 @@ async function loadAll(options = {}) {
         .catch((err) => {
           if (requestId !== latestLoadRequestId) return;
           const mount = document.getElementById('modelEfficiencyMount');
-          if (mount) mount.innerHTML = `<div class="text-muted">${i18n_t('Model efficiency unavailable')}: ${err.message}</div>`;
+          if (mount) mount.innerHTML = `<div class="text-muted">${i18n_t('Model efficiency unavailable')}: ${escHtml(err.message)}</div>`;
         });
     }
 
   } catch (err) {
     if (requestId !== latestLoadRequestId) return;
-    app.innerHTML = `<div class="error-box">${i18n_t('Error loading data')}: ${err.message}<br><br>${i18n_t('Make sure the dashboard server is running and telemetry DB exists.')}</div>`;
+    app.innerHTML = `<div class="error-box">${i18n_t('Error loading data')}: ${escHtml(err.message)}<br><br>${i18n_t('Make sure the dashboard server is running and telemetry DB exists.')}</div>`;
     setLoadStatus(i18n_t('Load error'), 'error');
   } finally {
     if (requestId === latestLoadRequestId) isLoading = false;
