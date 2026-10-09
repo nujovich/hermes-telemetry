@@ -78,9 +78,44 @@ def test_is_tool_ok_non_json():
     assert _init_mod._is_tool_ok("some plain text") is True
 
 
+def test_is_tool_ok_null_error_key_is_ok():
+    """The terminal tool's success envelope carries ``"error": null`` — that is not an error."""
+    assert _init_mod._is_tool_ok('{"output": "hi\\n", "exit_code": 0, "error": null}') is True
+
+
+def test_is_tool_ok_nonzero_exit_code():
+    """A non-zero exit_code is a failure even when ``error`` is null."""
+    assert _init_mod._is_tool_ok('{"output": "", "exit_code": 1, "error": null}') is False
+    assert _init_mod._is_tool_ok('{"output": "", "exit_code": -1, "error": "Timeout"}') is False
+
+
+def test_is_tool_ok_dict_result():
+    """Already-parsed dict results are judged the same way as JSON strings."""
+    assert _init_mod._is_tool_ok({"output": "ok", "exit_code": 0, "error": None}) is True
+    assert _init_mod._is_tool_ok({"output": "", "exit_code": 2, "error": None}) is False
+    assert _init_mod._is_tool_ok({"error": "boom"}) is False
+
+
+def test_is_tool_ok_is_error_and_status_flags():
+    """MCP-style ``isError`` / ``is_error``, ``success: false`` and error statuses fail."""
+    assert _init_mod._is_tool_ok('{"content": [], "isError": true}') is False
+    assert _init_mod._is_tool_ok('{"is_error": true}') is False
+    assert _init_mod._is_tool_ok('{"success": false}') is False
+    assert _init_mod._is_tool_ok('{"status": "failed"}') is False
+    assert _init_mod._is_tool_ok('{"status": "ok", "success": true}') is True
+
+
+def test_is_tool_ok_none_and_non_dict():
+    """None, lists and numbers carry no failure signal and count as ok."""
+    assert _init_mod._is_tool_ok(None) is True
+    assert _init_mod._is_tool_ok([1, 2]) is True
+    assert _init_mod._is_tool_ok('[{"error": "x"}]') is True
+
+
 def test_is_tool_ok_nested_error():
-    """Any dict with 'error' key at top level is not ok."""
-    assert _init_mod._is_tool_ok('{"error": null, "data": 1}') is False
+    """A dict with a non-empty 'error' value at top level is not ok; a null 'error' is."""
+    assert _init_mod._is_tool_ok('{"error": "boom", "data": 1}') is False
+    assert _init_mod._is_tool_ok('{"error": null, "data": 1}') is True
 
 
 def test_is_tool_ok_none():
