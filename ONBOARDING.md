@@ -308,19 +308,24 @@ to avoid double-counting. `prompt_tokens = input + cache_read + cache_write`, so
 using it plus the individual components would count them twice.
 
 ### `post_tool_call`
-Source: `model_tools.py:994-1005`
+Source: `model_tools.py`
 ```python
 tool_name: str
 args: dict
-result: str        # JSON string (or plain text) returned by the tool
+result: Any
 task_id: str
 session_id: str
 tool_call_id: str
 duration_ms: int
+status: str | None  # "ok" | "error" for classifiable tool outcomes
+error_type: str | None
+error_message: str | None
+middleware_trace: list
 ```
-Success/failure detection: attempt `json.loads(result)` and check for an
-`"error"` key. If that fails (not valid JSON), fall back to
-`result.startswith('{"error"')`. This is robust to tools that return plain text.
+Hermes runtime is authoritative for tool outcome classification. The plugin records
+a reliability row only when `status` is `"ok"` or `"error"`; blocked, missing,
+or unknown status values are measurement gaps and are not coerced into binary
+success/failure rows. The `result` payload does not override runtime `status`.
 
 ### `on_session_end`
 Source: `agent/conversation_loop.py:4692-4700`
@@ -1635,7 +1640,7 @@ the real `~/.hermes/telemetry`. Enforced by
 | Platform | ✅ Real | `on_session_start.platform` |
 | Cron job ID | ✅ Real (parsed) | `session_id` regex extraction |
 | Session duration | ✅ Real (wall time) | `started_at` → `ended_at` (last turn) |
-| Tool success/failure | ✅ Real | Parse `result` JSON for `"error"` key |
+| Tool success/failure | ✅ Real | `post_tool_call.status` (`"ok"` / `"error"`) |
 | Subagent count | ✅ Real (proxy) | `subagent_stop` hook count |
 | Cost (USD) | ⚠️ Estimated | Local pricing table × token counts |
 | Tokens when `usage=None` | ⚠️ Estimated, flagged | `approx_input_tokens + chars/4`, row marked `estimated=1` |

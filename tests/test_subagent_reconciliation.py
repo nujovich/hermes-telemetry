@@ -182,6 +182,7 @@ def test_subagent_tokens_counted_once():
         "post_tool_call",
         tool_name="delegate_task",
         result=result_json,
+        status="ok",
         duration_ms=2_500,
         session_id=PARENT,
     )
@@ -297,6 +298,7 @@ def test_subagent_with_multiple_child_api_calls():
         "post_tool_call",
         tool_name="delegate_task",
         result=result_json,
+        status="ok",
         duration_ms=3_000,
         session_id=PARENT,
     )
@@ -326,6 +328,7 @@ def test_subagent_tool_call_recorded_on_parent():
         "post_tool_call",
         tool_name="delegate_task",
         result=result_json,
+        status="ok",
         duration_ms=1_000,
         session_id=PARENT,
     )
