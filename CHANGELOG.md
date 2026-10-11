@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Daily chart counted every transcript generation as a new message
+
+- The `message_runs` / `user_messages` / `assistant_messages` series read
+  Hermes' `state.db` `messages` table row by row. Hermes keeps every generation
+  of a transcript there: compaction and tool-result pruning archive the old rows
+  and re-insert the carried copies (often under a later timestamp), and an undo rewinds
+  rows without deleting them. A compacted day was counted once per generation
+  (4.2x for assistant messages on one measured day). The query now keeps the
+  visible set (`active = 1 OR compacted = 1`, Hermes' own display/search
+  predicate) and counts each `message_uid` once, in the period it was first
+  written. A `state.db` without these columns keeps the previous row count.
+
 ## [0.9.0] - 2026-10-07
 
 ### Upgrade notes

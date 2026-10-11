@@ -115,6 +115,14 @@ def _state_rows(sql, params=()):
         conn.close()
 
 
+def _state_message_columns() -> frozenset:
+    """Column names of Hermes' ``messages`` table; empty when state.db is missing or unreadable."""
+    try:
+        return frozenset(row["name"] for row in _state_rows("PRAGMA table_info(messages)"))
+    except sqlite3.Error:
+        return frozenset()
+
+
 def _normalize_dashboard_tz_name(tz_name: str | None):
     text = (tz_name or "").strip()
     if not text or text.lower() == "local":
@@ -2143,21 +2151,41 @@ def _compute_daily_token_chart_rows(
         else:
             day = ts.date().isoformat()
         cron_counts[day] = cron_counts.get(day, 0) + 1
+    # Hermes keeps every generation of a transcript in ``messages``: compaction and
+    # tool-result pruning archive the old rows and re-insert the carried ones (often under a
+    # later timestamp), and an undo rewinds rows without deleting them. The visible set is
+    # ``active = 1 OR compacted = 1`` (Hermes' own display/search predicate) and every
+    # copy of a message keeps its ``message_uid``. Count each logical message once, on
+    # the period it was first written. A state.db without these columns keeps the
+    # one-row-one-message count.
+    message_cols = _state_message_columns()
     state_where = "role IN ('user','assistant')"
+    if {"active", "compacted"} <= message_cols:
+        state_where += " AND (active = 1 OR compacted = 1)"
+    message_key = "COALESCE(message_uid, 'row:' || id)" if "message_uid" in message_cols else "id"
+    state_having = ""
     state_params = []
     if since_epoch is not None:
-        state_where += " AND timestamp >= ?"
+        state_having = "HAVING MIN(timestamp) >= ?"
         state_params.append(since_epoch)
     message_rows = _state_rows(
         f"""
         SELECT
             {state_period_expr} AS day,
-            SUM(CASE WHEN role = 'user' AND TRIM(COALESCE(content, '')) != '' THEN 1 ELSE 0 END) AS user_messages,
-            SUM(CASE WHEN role = 'assistant' AND TRIM(COALESCE(content, '')) != '' THEN 1 ELSE 0 END) AS assistant_messages,
-            SUM(CASE WHEN role = 'user' AND TRIM(COALESCE(content, '')) != '' THEN 1 ELSE 0 END)
-                + SUM(CASE WHEN role = 'assistant' AND TRIM(COALESCE(content, '')) != '' THEN 1 ELSE 0 END) AS message_runs
-        FROM messages
-        WHERE {state_where}
+            SUM(CASE WHEN role = 'user' AND has_text THEN 1 ELSE 0 END) AS user_messages,
+            SUM(CASE WHEN role = 'assistant' AND has_text THEN 1 ELSE 0 END) AS assistant_messages,
+            SUM(CASE WHEN role = 'user' AND has_text THEN 1 ELSE 0 END)
+                + SUM(CASE WHEN role = 'assistant' AND has_text THEN 1 ELSE 0 END) AS message_runs
+        FROM (
+            SELECT
+                role,
+                MIN(timestamp) AS timestamp,
+                MAX(TRIM(COALESCE(content, '')) != '') AS has_text
+            FROM messages
+            WHERE {state_where}
+            GROUP BY role, {message_key}
+            {state_having}
+        )
         GROUP BY {state_period_expr}
         ORDER BY day ASC
         """,
