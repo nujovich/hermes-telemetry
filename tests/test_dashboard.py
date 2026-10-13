@@ -70,6 +70,46 @@ def _seed_state_db(path: Path, rows: list[tuple[float, str, str]]):
     conn.close()
 
 
+def _seed_state_db_generations(path: Path, rows: list[tuple], *, with_uid: bool = True):
+    """state.db with Hermes' generation columns.
+
+    Rows are ``(timestamp, role, content, active, compacted, message_uid)``. Hermes keeps
+    every generation of a transcript: compaction/pruning archives the old rows
+    (``active = 0, compacted = 1``, still visible) and re-inserts carried copies (often under
+    a later timestamp) with the same ``message_uid``; an undo rewinds rows
+    (``active = 0, compacted = 0``) without deleting them.
+    """
+    conn = sqlite3.connect(path)
+    uid_column = ", message_uid TEXT" if with_uid else ""
+    conn.execute(
+        f"""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            role TEXT NOT NULL,
+            content TEXT,
+            timestamp REAL NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            compacted INTEGER NOT NULL DEFAULT 0{uid_column}
+        )
+        """
+    )
+    if with_uid:
+        conn.executemany(
+            "INSERT INTO messages (timestamp, role, content, active, compacted, message_uid)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+    else:
+        conn.executemany(
+            "INSERT INTO messages (timestamp, role, content, active, compacted)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [row[:5] for row in rows],
+        )
+    conn.commit()
+    conn.close()
+
+
 def _seed_cron_history(serve_module, jobs: list[dict], output_runs: list[tuple[str, str]]):
     serve_module.CRON_JOBS_PATH.write_text(json.dumps({"jobs": jobs}))
     for job_id, ts in output_runs:
@@ -685,6 +725,96 @@ def test_daily_token_chart_includes_requests_cost_savings_and_messages(
     assert row["total_tokens"] == 330
     assert row["estimated_savings_usd"] == pytest.approx(0.025, abs=1e-6)
     assert row["savings_pct"] == pytest.approx(45.45, abs=0.01)
+
+
+def _utc(*args) -> float:
+    return datetime(*args, tzinfo=timezone.utc).timestamp()
+
+
+def test_daily_token_chart_counts_each_message_once_across_generations(
+    serve_module, monkeypatch, tmp_path
+):
+    state_db = tmp_path / "state.db"
+    _seed_state_db_generations(
+        state_db,
+        [
+            # Day 1 turn, archived by a compaction on day 2 (visible history).
+            (_utc(2026, 6, 10, 10, 1), "user", "hello", 0, 1, "u-hello"),
+            (_utc(2026, 6, 10, 10, 2), "assistant", "hi", 0, 1, "a-hi"),
+            (_utc(2026, 6, 10, 10, 3), "assistant", "", 0, 1, "a-tool-only"),
+            # Day 2 compaction re-inserts the carried copies with the insert time.
+            (_utc(2026, 6, 11, 10, 0), "user", "hello", 1, 0, "u-hello"),
+            (_utc(2026, 6, 11, 10, 0), "assistant", "hi", 1, 0, "a-hi"),
+            # A turn the user undid on day 2 (rewound, not part of the conversation).
+            (_utc(2026, 6, 11, 10, 5), "user", "oops", 0, 0, "u-oops"),
+            (_utc(2026, 6, 11, 10, 5), "assistant", "sure", 0, 0, "a-oops"),
+            # A genuinely new day 2 turn.
+            (_utc(2026, 6, 11, 10, 6), "user", "next", 1, 0, "u-next"),
+            (_utc(2026, 6, 11, 10, 7), "assistant", "done", 1, 0, "a-next"),
+        ],
+    )
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+
+    rows = serve_module.api_daily_token_chart(window_hours=0, limit_days=10, tz_name="UTC")
+    by_day = {row["day"]: row for row in rows}
+
+    assert sorted(by_day) == ["2026-06-10", "2026-06-11"]
+    assert by_day["2026-06-10"]["user_messages"] == 1
+    assert by_day["2026-06-10"]["assistant_messages"] == 1
+    assert by_day["2026-06-10"]["message_runs"] == 2
+    # Without generation awareness day 2 reads 3 user + 3 assistant messages.
+    assert by_day["2026-06-11"]["user_messages"] == 1
+    assert by_day["2026-06-11"]["assistant_messages"] == 1
+    assert by_day["2026-06-11"]["message_runs"] == 2
+
+
+def test_daily_token_chart_window_skips_copies_of_older_messages(
+    serve_module, monkeypatch, tmp_path
+):
+    now = datetime.now(timezone.utc).timestamp()
+    state_db = tmp_path / "state.db"
+    _seed_state_db_generations(
+        state_db,
+        [
+            # Written three days ago, carried into a compaction one hour ago.
+            (now - 3 * 86400, "user", "old question", 0, 1, "u-old"),
+            (now - 3600, "user", "old question", 1, 0, "u-old"),
+            # Written inside the window.
+            (now - 1800, "user", "new question", 1, 0, "u-new"),
+        ],
+    )
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+
+    last_day = serve_module.api_daily_token_chart(window_hours=24, limit_days=10, tz_name="UTC")
+    all_time = serve_module._compute_daily_token_chart_rows(
+        window_hours=0, limit_days=10, tz_name="UTC"
+    )
+
+    assert sum(row["user_messages"] for row in last_day) == 1
+    assert sum(row["user_messages"] for row in all_time) == 2
+
+
+def test_daily_token_chart_generation_filter_without_message_uid(
+    serve_module, monkeypatch, tmp_path
+):
+    # A state.db that has active/compacted but predates message_uid: hide rewound rows,
+    # count every visible row (no identity to deduplicate on). The legacy schema without
+    # either column is covered by _seed_state_db above and keeps the plain row count.
+    state_db = tmp_path / "state.db"
+    _seed_state_db_generations(
+        state_db,
+        [
+            (_utc(2026, 6, 10, 10, 1), "user", "hello", 0, 1, None),
+            (_utc(2026, 6, 10, 10, 2), "user", "again", 1, 0, None),
+            (_utc(2026, 6, 10, 10, 3), "user", "undone", 0, 0, None),
+        ],
+        with_uid=False,
+    )
+    monkeypatch.setattr(serve_module, "STATE_DB_PATH", state_db)
+
+    rows = serve_module.api_daily_token_chart(window_hours=0, limit_days=10, tz_name="UTC")
+
+    assert [(row["day"], row["user_messages"]) for row in rows] == [("2026-06-10", 2)]
 
 
 def test_daily_token_chart_hides_deleted_sessions_like_dashboard_tables(

@@ -2267,6 +2267,15 @@ promise and can change on any upgrade.
 - Keep the connection short-lived: a live Hermes is writing to the same WAL.
 - Cover schema drift in tests explicitly, the same way the migration tests cover
   upgrade paths.
+- Count logical messages, not rows. `messages` holds every generation of a
+  transcript: compaction and tool-result pruning archive the old rows
+  (`active = 0, compacted = 1`, still visible) and re-insert carried copies (a
+  carried message without an in-memory timestamp gets the insert time); an undo rewinds rows (`active = 0, compacted = 0`). Every copy
+  keeps the message's `message_uid`. Filter on Hermes' visible set
+  (`active = 1 OR compacted = 1`) and deduplicate on `message_uid`, attributing a
+  message to its earliest timestamp — copies re-inserted by a compaction land on
+  later days. Probe the columns first (`PRAGMA table_info(messages)`); older
+  schemas lack them.
 
 ---
 
