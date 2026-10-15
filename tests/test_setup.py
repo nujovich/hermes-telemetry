@@ -260,6 +260,34 @@ class TestYamlDump:
 
 
 # ---------------------------------------------------------------------------
+# Tests: atomic pricing.yaml write (issue #105/#106)
+# ---------------------------------------------------------------------------
+class TestWritePricingIsAtomic:
+    def test_write_pricing_routes_through_atomic_writer(self, tmp_telemetry, monkeypatch):
+        """`_write_pricing` must commit via the shared atomic primitive so a
+        concurrent reader under multiplex never sees a partial pricing.yaml."""
+        from hermes_telemetry import pricing_refresh
+
+        calls = []
+        real = pricing_refresh._atomic_write_text
+
+        def _spy(path, content):
+            calls.append(path)
+            return real(path, content)
+
+        monkeypatch.setattr(pricing_refresh, "_atomic_write_text", _spy)
+
+        written = setup._write_pricing({"atomic-model": {"input": 1.5, "output": 2.5}})
+
+        expected = tmp_telemetry / "telemetry" / "pricing.yaml"
+        assert written == expected
+        assert calls == [expected]
+        assert "atomic-model" in expected.read_text()
+        leftovers = [p.name for p in expected.parent.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []
+
+
+# ---------------------------------------------------------------------------
 # Tests: owl-alpha in defaults
 # ---------------------------------------------------------------------------
 class TestOwlAlphaInDefaults:

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from pathlib import Path
 
 try:
     from . import paths
@@ -166,11 +167,48 @@ _warned_unknown: set[tuple[str, str]] = set()
 # #42): a source-ineligible entry was applied as a best-effort estimate rather
 # than recording a silent $0. Deduped so the warning fires once per pair.
 _warned_provider_assumed: set[tuple[str, str]] = set()
-_custom_pricing: dict | None = None  # parsed YAML data (models + defaults)
+_custom_pricing: dict | None = (
+    None  # parsed YAML data (models + defaults); memoized ONLY on success
+)
+# True while `_load_custom_pricing()` is in a streak of consecutive failures
+# (file missing OR unreadable/unparseable) — issue #105/#106 follow-up. A
+# successful parse resets this to False.
+_pricing_load_failed = False
+# The pricing.yaml stat signature `(st_ino, st_mtime_ns, st_size)` captured
+# BEFORE the read that produced the CURRENT failure, or None when the failure
+# was "file missing". Meaningless (and unused) while `_pricing_load_failed` is
+# False.
+_pricing_load_failure_sig: tuple[int, int, int] | None = None
+# True once a WARNING has been logged for the CURRENT streak of consecutive
+# read/parse failures. Failures are no longer memoized, so a persistently
+# broken file would otherwise log a fresh WARNING on every single
+# estimate_cost() call. Reset to False by the next successful parse, so a
+# NEW failure streak warns again.
+_pricing_load_failed_warned = False
 
 
 def _empty_custom_pricing() -> dict:
     return {"models": {}, "defaults": {}, "model_sources": {}, "subscription_models": set()}
+
+
+def _pricing_file_signature(path: Path) -> tuple[int, int, int] | None:
+    """Return `(st_ino, st_mtime_ns, st_size)` for `path`, or None if it doesn't exist
+    (or can't be stat'd). Used to detect whether a pricing.yaml that is
+    currently in a failure streak has actually changed since the last failed
+    load, so `_load_custom_pricing()` can skip the open()/parse() cost on a
+    call against an unchanged file (hot path: estimate_cost() runs on every
+    tool call). Size is included alongside mtime_ns because two writes can
+    land within the same mtime tick on filesystems with coarse resolution —
+    size alone still tells them apart in the common case of changed content.
+    The inode is included because every atomic ``os.replace`` commit (see
+    ``pricing_refresh._atomic_write_text``) yields a NEW inode, even when
+    mtime_ns and size happen to collide with the file it replaced.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
 
 
 def _load_custom_pricing() -> dict:
@@ -185,14 +223,50 @@ def _load_custom_pricing() -> dict:
     ``model_sources`` is what powers the provider-aware guard (issue #24): the
     price-key dict has the ``_``-prefixed metadata stripped, so the source has
     to be captured separately before stripping or the guard can't see it.
+
+    Failure handling (issue #105/#106 follow-up): a successful parse is
+    memoized permanently in ``_custom_pricing`` (unchanged hot-reload
+    contract — only ``reload_custom_pricing()`` invalidates it). EITHER
+    failure state — the file missing, or present but unreadable/unparseable
+    — is never memoized into ``_custom_pricing`` itself; instead this
+    function records the file's stat signature (``None`` for "missing",
+    else ``(st_ino, st_mtime_ns, st_size)``) in ``_pricing_load_failure_sig`` and
+    returns the empty fallback for that call. The signature is captured
+    BEFORE the file is opened: if a concurrent writer atomically replaces
+    the file mid-parse, the failure is pinned to the content that was
+    actually read, so the replacement is seen as "changed" on the next call
+    instead of being mistaken for the broken file. On the NEXT call, while still
+    in a failure streak, the file is `stat()`'d again and the open()/parse()
+    is skipped entirely — returning the fallback immediately — unless the
+    signature has changed, so a persistently broken/missing file doesn't pay
+    the read/parse cost on every single ``estimate_cost()`` call.
     """
-    global _custom_pricing
+    global \
+        _custom_pricing, \
+        _pricing_load_failed, \
+        _pricing_load_failure_sig, \
+        _pricing_load_failed_warned
     if _custom_pricing is not None:
         return _custom_pricing
+
     pricing_file = paths.get_pricing_path()
+
+    if _pricing_load_failed:
+        current_sig = _pricing_file_signature(pricing_file)
+        if current_sig == _pricing_load_failure_sig:
+            # Same failure state as last time (file still missing, or still
+            # present with identical mtime/size) — skip the open()/parse().
+            return _empty_custom_pricing()
+        # Something changed (file appeared/disappeared/was rewritten) —
+        # fall through to a real attempt below.
+
     if not pricing_file.exists():
-        _custom_pricing = _empty_custom_pricing()
-        return _custom_pricing
+        _pricing_load_failed = True
+        _pricing_load_failure_sig = None
+        return _empty_custom_pricing()
+    # Captured BEFORE open(): a failure is pinned to the file we actually read,
+    # not to whatever a concurrent atomic writer may have swapped in since.
+    pre_read_sig = _pricing_file_signature(pricing_file)
     try:
         import yaml
 
@@ -236,9 +310,39 @@ def _load_custom_pricing() -> dict:
             "model_sources": model_sources,
             "subscription_models": subscription_models,
         }
+        _pricing_load_failed = False
+        _pricing_load_failure_sig = None
+        _pricing_load_failed_warned = False  # a successful parse re-arms the warning
     except Exception as exc:
-        logger.warning("Failed to load custom pricing from %s: %s", pricing_file, exc)
-        _custom_pricing = _empty_custom_pricing()
+        # Do NOT memoize on a read/parse failure (issue #105/#106): under Hermes
+        # multiplex, a concurrent writer can make this instance observe a
+        # transiently broken pricing.yaml (or its own prior _save_yaml call
+        # could fail). Pinning the empty table here would silently drop every
+        # custom override — in particular a `_subscription: true` flat-rate
+        # entry — for the rest of this process's life. pricing.yaml sits ABOVE
+        # the built-in/prefix table in the lookup chain, not below, so losing
+        # it does NOT zero out cost: an overridden model instead falls through
+        # to core-snapshot/built-in/prefix pricing and gets billed at list
+        # rate instead of its pinned rate — the #106 mis-billing symptom.
+        # Return the fallback for THIS call only and leave `_custom_pricing`
+        # unset (None) so a later call — once the file's stat signature
+        # actually changes (see the gate at the top of this function) —
+        # retries the file. A successful parse still memoizes normally above.
+        #
+        # Log dedup: with failures no longer memoized, a persistently corrupt
+        # file would log a WARNING on every real parse attempt. Warn once per
+        # failure streak; downgrade repeats to DEBUG until the next
+        # successful parse re-arms the warning (see `_pricing_load_failed_warned`
+        # above). An UNCHANGED failing file never reaches this branch at all —
+        # the stat-signature gate above returns early before any log call.
+        _pricing_load_failed = True
+        _pricing_load_failure_sig = pre_read_sig
+        if _pricing_load_failed_warned:
+            logger.debug("Failed to load custom pricing from %s: %s", pricing_file, exc)
+        else:
+            logger.warning("Failed to load custom pricing from %s: %s", pricing_file, exc)
+            _pricing_load_failed_warned = True
+        return _empty_custom_pricing()
     return _custom_pricing
 
 
@@ -679,6 +783,17 @@ def get_known_free_models() -> list:
 
 
 def reload_custom_pricing() -> None:
-    """Force-reload the user pricing file (useful in tests)."""
-    global _custom_pricing
+    """Force-reload the user pricing file (useful in tests).
+
+    Also clears the failure-state stat signature (issue #105/#106
+    follow-up): without this, an explicit reload immediately following a
+    write that happens to leave the file's `(st_mtime_ns, st_size)`
+    unchanged from the last recorded failure — a real possibility, not just
+    theoretical, since both can coincide — would be silently skipped by
+    `_load_custom_pricing()`'s hot-path gate. An explicit reload must always
+    force a real attempt.
+    """
+    global _custom_pricing, _pricing_load_failed, _pricing_load_failure_sig
     _custom_pricing = None
+    _pricing_load_failed = False
+    _pricing_load_failure_sig = None

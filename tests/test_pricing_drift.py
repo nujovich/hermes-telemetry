@@ -147,6 +147,33 @@ def test_apply_multi_provider_same_model_writes_most_recent_snapshot():
     assert entry["output"] == 0.696
 
 
+def test_apply_writes_pricing_yaml_through_the_atomic_writer(monkeypatch):
+    # Issue #105/#106: the --apply writer must commit via the atomic primitive
+    # (tmp + os.replace), never an in-place truncate a concurrent reader can see.
+    import yaml
+    from hermes_telemetry import paths, pricing_refresh
+
+    db.record_pricing_snapshot("nous", "atomic-m", _snap(0.5, 1.0))
+    _write_pricing_yaml({"atomic-m": {"input": 9.0, "output": 9.0}})
+
+    calls = []
+    real = pricing_refresh._atomic_write_text
+
+    def _spy(path, content):
+        calls.append(path)
+        return real(path, content)
+
+    monkeypatch.setattr(pricing_refresh, "_atomic_write_text", _spy)
+
+    result = pricing_drift.run(apply=True)
+
+    assert result["written"] == 1
+    assert calls == [paths.get_pricing_path()]
+    with open(paths.get_pricing_path()) as f:
+        entry = yaml.safe_load(f)["models"]["atomic-m"]
+    assert (entry["input"], entry["output"]) == (0.5, 1.0)
+
+
 def test_run_model_filter():
     db.record_pricing_snapshot("nous", "a", _snap(0.435, 0.87))
     db.record_pricing_snapshot("nous", "b", _snap(0.435, 0.87))

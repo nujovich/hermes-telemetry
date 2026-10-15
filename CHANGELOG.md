@@ -25,6 +25,18 @@ the two never beat against each other, and the per-exception-class key means a
 *different* failure raised inside the window is surfaced immediately rather
 than swallowed by the previous one's suppression.
 
+### Fixed
+
+- **`pricing.yaml` overrides could be lost for the rest of a process's life (#105, #106).**
+  Under Hermes multiplex, several plugin instances in one gateway process share one
+  `pricing.yaml`, and a refresh rewrote it in place, so a concurrent reader could see an
+  empty or partial file. The loader then cached that failed read permanently, dropping
+  every override (including `_subscription: true` flat-rate entries) and billing those
+  models at list rate. Writes from the price refresh, `pricing drift --apply` and the
+  `/setup` wizard are now atomic (temp file + `os.replace`, existing permissions kept,
+  symlinked `pricing.yaml` followed rather than replaced), and a failed read is no longer
+  cached: the file is re-read as soon as it changes, with no reload needed.
+
 ## [0.9.1] - 2026-10-14
 
 ### Fixed

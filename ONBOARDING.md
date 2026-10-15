@@ -741,6 +741,56 @@ sets it back to `None`, forcing the next read to re-parse the YAML. This is
 called by the auto-refresh cycle and by the `/setup` command, so new prices
 take effect immediately without a gateway restart.
 
+**A read/parse failure is never memoized — but IS stat-gated (issue
+#105/#106).** `_load_custom_pricing()` treats "file missing" and "file
+present but unreadable/unparseable" as the same kind of failure state,
+unified under one mechanism. On EITHER failure it returns the empty
+fallback table for that call only and leaves `_custom_pricing` as `None` —
+so, unlike a successful parse, a failure is never pinned into the permanent
+cache. Pinning it used to silently drop every custom override — in
+particular a `_subscription: true` flat-rate entry — for the rest of that
+plugin instance's process life. This does **not** zero out cost:
+`pricing.yaml` sits ABOVE the built-in/prefix table in the lookup priority
+chain (see § Pricing Engine above), not below, so an overridden model
+instead falls through to core-snapshot/built-in/prefix pricing and gets
+billed at list rate instead of its pinned rate — the #106 mis-billing
+symptom. A *successful* parse still memoizes exactly as before, so
+`test_cache_is_stale_until_reload` (a stale read until an explicit
+`reload_custom_pricing()`) is unaffected.
+
+Naively retrying the file on every single call would reintroduce a
+different cost: `estimate_cost()` runs on the hot path (every tool call), so
+a persistently broken or missing file would pay an open()+parse() (or even
+just a re-`stat()`) on every one of them. Instead, on a failure
+`_load_custom_pricing()` records the file's stat signature —
+`_pricing_load_failure_sig = None` for "missing", else
+`(st_ino, st_mtime_ns, st_size)` — in `_pricing_load_failed`/`_pricing_load_failure_sig`.
+The signature is captured **before** the `open()`, not after the failed
+parse: if a concurrent writer atomically replaces the file mid-parse, a
+post-failure `stat()` would record the *good* replacement's signature and
+pin the instance to the empty table forever. The inode is part of the
+signature because every `os.replace` commit yields a new one, even when
+`mtime_ns` and size collide with the file it replaced.
+The next call, while still in a failure streak, `stat()`s the file and
+compares: if the signature is unchanged, it returns the fallback
+immediately without opening or parsing anything; only a real change (file
+appeared, disappeared, or was rewritten) triggers an actual retry. This is
+also what makes a missing-then-later-created file (or a corrupt file that
+gets fixed) pick up correctly with no explicit reload — the changed
+signature falls through to a real parse attempt. `reload_custom_pricing()`
+additionally clears `_pricing_load_failed`/`_pricing_load_failure_sig`
+directly, so an explicit reload always forces a real attempt even in the
+unlikely case the file's signature happens to be unchanged from the last
+recorded failure.
+
+Since a genuine retry only happens when something changed, a persistently
+broken file (same content) logs nothing at all past the first failure — the
+signature-match short-circuit returns before any log call. Only a REAL
+retry that still fails logs anything, and even then only once per failure
+streak: WARNING on the first real failure, DEBUG on any later one, both
+tracked via `_pricing_load_failed_warned` and reset by the next successful
+parse.
+
 ### Core-sourced pricing snapshots
 
 `pricing.py` (above) computes *cost* from our own `pricing.yaml`. Separately, the
@@ -1137,6 +1187,45 @@ models via `estimated_price_share()` and degrades hard verdicts under `warn_only
 The 24h refresh cadence is tracked via a sentinel file at
 `~/.hermes/telemetry/.pricing_refresh`. Touch it to force a refresh on next
 plugin load. Delete it to trigger auto-refresh.
+
+### Atomic write (issue #105/#106)
+
+Under Hermes multiplex, one gateway process runs N plugin instances (one per
+served profile), all sharing the same `pricing.yaml` and all running their own
+auto-refresh cycle. `pricing_refresh._atomic_write_text()` writes to a temp
+file in the same directory, flushes + fsyncs, then commits via `os.replace`
+(POSIX-atomic rename) — a concurrent reader in another instance only ever
+sees the old content or the new content in full, never a truncated/partial
+file. `_save_yaml()` (the auto-refresh writer) builds on it and keeps its
+existing fail-open contract (logs and returns on error, never raises).
+`pricing_drift.py`'s `--apply` writer and `setup_wizard.py`'s first-run writer both
+route through the same primitive — the former still propagates a write
+failure to the CLI (unchanged), the latter still propagates to `/setup`'s
+caller (unchanged).
+
+**Symlinks are followed, not replaced.** `_atomic_write_text()` resolves
+`path` with `os.path.realpath` first and uses the resolved target for the
+mode lookup, the temp file's directory and the `os.replace`. Without that,
+a symlinked `pricing.yaml` (e.g. into a dotfiles repo) would be swapped for a
+regular file and the real target left untouched.
+
+**Permissions are preserved, not reset to `mkstemp`'s default.**
+`tempfile.mkstemp()` creates its file `0600` — if that mode rode along into
+the replace it would silently tighten `pricing.yaml` from `open(path, "w")`'s
+usual `0o666 & ~umask` (typically `0644`), breaking read access for e.g. a
+dashboard running as another user. `_atomic_write_text()` `chmod`s the temp
+file (`os.fchmod` on the open fd, done *inside* the `with os.fdopen(fd, "w")`
+block so the fd is guaranteed closed even if `fchmod` itself raises — doing
+it before the `with` would leak the fd on that path): to the existing
+target's mode when one is already there, otherwise to `0o666` masked by the
+umask captured once at module import (`_DEFAULT_FILE_MODE`). That umask is
+read via `_read_process_umask()`, which parses the `Umask:` field from
+`/proc/self/status` (falling back to `0o022` when unavailable) rather than
+calling `os.umask()` — `os.umask()` has no read-only form, it always *sets*
+the process-wide umask while returning the old value, which would be unsafe
+to call at arbitrary import time in a long-running multithreaded gateway
+process (import can happen mid-uptime, racing another thread's file
+creation).
 
 ---
 

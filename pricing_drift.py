@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 
-from . import db, paths, pricing
+from . import db, paths, pricing, pricing_refresh
 
 logger = logging.getLogger(__name__)
 
@@ -257,9 +257,13 @@ def _apply_drift(drifted: list[dict]) -> int:
         applied[target] = rates
         written += 1
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    # Atomic write (issue #105/#106): a concurrent reader in another plugin
+    # instance under Hermes multiplex must never observe a truncated/partial
+    # pricing.yaml. Raises on failure (unchanged from the prior open()/dump()
+    # behavior) so a write error surfaces to the CLI instead of silently
+    # reporting `written` entries that never actually landed on disk.
+    content = yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    pricing_refresh._atomic_write_text(path, content)
 
     pricing.reload_custom_pricing()
     return written

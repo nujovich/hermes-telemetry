@@ -210,7 +210,14 @@ def _write_pricing(models: dict[str, dict]) -> Path:
     _tele_dir().mkdir(parents=True, exist_ok=True)
     content = _build_pricing_yaml(models)
     p = _pricing_path()
-    p.write_text(content)
+    # Atomic write (issue #105/#106): under Hermes multiplex, N plugin
+    # instances can run setup concurrently on first load — a concurrent
+    # reader must never observe a truncated/partial pricing.yaml. Reuses the
+    # same temp-file + os.replace primitive pricing_refresh uses for its
+    # auto-refresh writes.
+    from . import pricing_refresh
+
+    pricing_refresh._atomic_write_text(p, content)
     return p
 
 

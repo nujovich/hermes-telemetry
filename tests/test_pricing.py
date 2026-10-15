@@ -33,10 +33,16 @@ def reset_pricing(tmp_path_factory, monkeypatch):
     pricing._custom_pricing = None
     pricing._warned_unknown.clear()
     pricing._warned_provider_assumed.clear()
+    pricing._pricing_load_failed_warned = False
+    pricing._pricing_load_failed = False
+    pricing._pricing_load_failure_sig = None
     yield
     pricing._custom_pricing = None
     pricing._warned_unknown.clear()
     pricing._warned_provider_assumed.clear()
+    pricing._pricing_load_failed_warned = False
+    pricing._pricing_load_failed = False
+    pricing._pricing_load_failure_sig = None
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +302,238 @@ def test_custom_pricing_malformed_yaml(tmp_path, monkeypatch, caplog):
         cost = pricing.estimate_cost({"input_tokens": 1_000_000}, "gpt-4o")
     # Should fall back to defaults
     assert abs(cost - 2.50) < 1e-6
+
+
+def test_custom_pricing_parse_failure_is_not_memoized(tmp_path, monkeypatch, caplog):
+    """A read/parse failure must NOT pin the empty fallback into the module
+    cache (issue #105/#106): under Hermes multiplex, a concurrent writer can
+    make this instance observe a transiently broken pricing.yaml. Pinning the
+    empty table would silently drop every custom override (in particular a
+    `_subscription: true` flat-rate entry) for the rest of this process's
+    life — pricing.yaml sits ABOVE the built-in/prefix table in the lookup
+    chain, so losing it does not zero out cost, it makes those models fall
+    through to list pricing instead (the #106 mis-billing symptom). The next
+    call, with no explicit reload_custom_pricing(), must retry the file and
+    pick up a valid write once one lands."""
+    import logging
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    tele_dir = tmp_path / "telemetry"
+    tele_dir.mkdir()
+    pfile = tele_dir / "pricing.yaml"
+    pfile.write_text("{invalid: [1, 2")  # unterminated flow sequence — real yaml.YAMLError
+
+    pricing._custom_pricing = None
+    with caplog.at_level(logging.WARNING):
+        first = pricing._load_custom_pricing()
+    assert first["models"] == {}  # fallback for this call only
+
+    # No reload_custom_pricing() in between — proves the memo was left unset.
+    pfile.write_text("models:\n  recovered-model:\n    input: 5.0\n    output: 5.0\n")
+    second = pricing._load_custom_pricing()
+    assert second["models"]["recovered-model"]["input"] == 5.0
+
+
+def test_custom_pricing_parse_failure_warns_once_then_downgrades_to_debug(
+    tmp_path, monkeypatch, caplog
+):
+    """A persistently-failing pricing.yaml must not spam a WARNING on every
+    *real* parse attempt. The first failure of a streak logs WARNING; a
+    later failure in the same streak (the file changed again but is still
+    broken — the stat-signature gate lets a genuinely new attempt through)
+    logs DEBUG. A subsequent successful parse re-arms the WARNING for the
+    next failure streak. An UNCHANGED failing file is covered separately by
+    test_corrupt_file_unchanged_skips_reparse — it logs nothing at all,
+    since the stat-signature gate skips the parse (and the log call with
+    it)."""
+    import logging
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    tele_dir = tmp_path / "telemetry"
+    tele_dir.mkdir()
+    pfile = tele_dir / "pricing.yaml"
+    pfile.write_text("{invalid: [1, 2")
+
+    pricing._custom_pricing = None
+    with caplog.at_level(logging.DEBUG, logger="hermes_telemetry.pricing"):
+        pricing._load_custom_pricing()
+        # Different (still corrupt) content changes the stat signature, so
+        # this is a genuine second parse attempt, not a short-circuited one.
+        pfile.write_text("{still invalid: [3, 4")
+        pricing._load_custom_pricing()
+
+    load_failures = [r for r in caplog.records if "Failed to load custom pricing" in r.message]
+    assert [r.levelno for r in load_failures] == [logging.WARNING, logging.DEBUG]
+
+    # A successful parse re-arms the warning for the NEXT failure streak.
+    pfile.write_text("models:\n  recovered-model:\n    input: 1.0\n    output: 1.0\n")
+    pricing._load_custom_pricing()
+    assert pricing._pricing_load_failed_warned is False
+
+    pfile.write_text("{invalid once more: [5, 6")
+    pricing._custom_pricing = None  # force a fresh attempt past the success memo
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="hermes_telemetry.pricing"):
+        pricing._load_custom_pricing()
+    load_failures_after_recovery = [
+        r for r in caplog.records if "Failed to load custom pricing" in r.message
+    ]
+    assert [r.levelno for r in load_failures_after_recovery] == [logging.WARNING]
+
+
+# ---------------------------------------------------------------------------
+# Unified missing/corrupt failure-state stat gate (issue #105/#106 follow-up)
+# ---------------------------------------------------------------------------
+
+
+def test_missing_file_created_later_is_picked_up_without_reload(tmp_path, monkeypatch):
+    """A missing pricing.yaml at first call must not wedge the loader forever:
+    once the file is created (e.g. by /setup or a later refresh) with no
+    explicit reload_custom_pricing() call in between, the very next call
+    must pick it up, because the recorded failure signature (None for
+    'missing') no longer matches the now-existing file's stat."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    tele_dir = tmp_path / "telemetry"
+    tele_dir.mkdir()
+    pfile = tele_dir / "pricing.yaml"
+    assert not pfile.exists()
+
+    first = pricing._load_custom_pricing()
+    assert first["models"] == {}
+    assert pricing._pricing_load_failed is True
+    assert pricing._pricing_load_failure_sig is None
+
+    pfile.write_text("models:\n  new-model:\n    input: 3.0\n    output: 3.0\n")
+    second = pricing._load_custom_pricing()
+    assert second["models"]["new-model"]["input"] == 3.0
+    assert pricing._pricing_load_failed is False
+
+
+def test_corrupt_file_unchanged_skips_reparse_then_recovers(tmp_path, monkeypatch):
+    """Once a corrupt pricing.yaml has failed once, a call against the SAME
+    unchanged file must not re-open/re-parse it (hot-path cost: estimate_cost
+    can be called on every tool call). Only a real change to the file's stat
+    signature (mtime_ns, size) should trigger a retry."""
+    import yaml
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    tele_dir = tmp_path / "telemetry"
+    tele_dir.mkdir()
+    pfile = tele_dir / "pricing.yaml"
+    pfile.write_text("{invalid: [1, 2")
+
+    first = pricing._load_custom_pricing()
+    assert first["models"] == {}
+
+    calls = []
+    real_safe_load = yaml.safe_load
+
+    def _spy_safe_load(*args, **kwargs):
+        calls.append(1)
+        return real_safe_load(*args, **kwargs)
+
+    monkeypatch.setattr(yaml, "safe_load", _spy_safe_load)
+
+    second = pricing._load_custom_pricing()
+    assert second["models"] == {}
+    assert calls == []  # unchanged file — must NOT re-open/re-parse
+
+    # Rewrite with valid content — the stat signature changes, so this MUST
+    # be picked up on the very next call.
+    pfile.write_text("models:\n  recovered:\n    input: 2.0\n    output: 2.0\n")
+    third = pricing._load_custom_pricing()
+    assert calls == [1]  # this time it genuinely re-parsed
+    assert third["models"]["recovered"]["input"] == 2.0
+
+
+def test_reload_custom_pricing_clears_failure_signature(tmp_path, monkeypatch):
+    """reload_custom_pricing() must force a real retry even if the file's
+    stat signature happens to be unchanged from the last recorded failure —
+    an explicit reload must never be silently skipped by the hot-path gate."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    tele_dir = tmp_path / "telemetry"
+    tele_dir.mkdir()
+    pfile = tele_dir / "pricing.yaml"
+    pfile.write_text("{invalid: [1, 2")
+
+    pricing._load_custom_pricing()
+    assert pricing._pricing_load_failed is True
+
+    pricing.reload_custom_pricing()
+    assert pricing._pricing_load_failed is False
+    assert pricing._pricing_load_failure_sig is None
+
+
+def test_failure_signature_is_captured_before_the_read(tmp_path, monkeypatch):
+    """If another writer atomically replaces a broken pricing.yaml with a good
+    one WHILE this instance is mid-parse, the failure must be pinned to the
+    signature of the file that was actually READ (the broken one) — not to the
+    good replacement that landed afterwards. Otherwise the next call sees an
+    'unchanged' signature and stays pinned to the empty table forever."""
+    import os
+
+    import yaml
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    tele_dir = tmp_path / "telemetry"
+    tele_dir.mkdir()
+    pfile = tele_dir / "pricing.yaml"
+    pfile.write_text("{invalid: [1, 2")
+
+    good = "models:\n  raced-model:\n    input: 4.0\n    output: 8.0\n"
+    real_safe_load = yaml.safe_load
+
+    def _replace_then_fail(stream, *args, **kwargs):
+        # Simulate the concurrent writer landing between our read and the
+        # moment the (old) code would have taken its post-failure signature.
+        tmp = tele_dir / ".pricing.yaml.racer.tmp"
+        tmp.write_text(good)
+        os.replace(tmp, pfile)
+        monkeypatch.setattr(yaml, "safe_load", real_safe_load)
+        raise yaml.YAMLError("simulated parse failure on the pre-replace content")
+
+    monkeypatch.setattr(yaml, "safe_load", _replace_then_fail)
+
+    first = pricing._load_custom_pricing()
+    assert first["models"] == {}
+
+    second = pricing._load_custom_pricing()
+    assert second["models"]["raced-model"]["input"] == 4.0
+    assert second["models"]["raced-model"]["output"] == 8.0
+
+
+def test_same_size_same_mtime_replacement_with_new_inode_is_reread(tmp_path, monkeypatch):
+    """os.replace always yields a new inode, but (mtime_ns, size) can collide
+    with the previous file (coarse-mtime filesystems, same-length content).
+    The signature must include the inode so such a replacement is re-read."""
+    import os
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    tele_dir = tmp_path / "telemetry"
+    tele_dir.mkdir()
+    pfile = tele_dir / "pricing.yaml"
+
+    good = "models:\n  same-size:\n    input: 5.0\n    output: 6.0\n"
+    # Broken content with EXACTLY the same byte length as the good content.
+    broken = "{invalid: [" + "x" * (len(good) - len("{invalid: ["))
+    assert len(broken) == len(good)
+    pfile.write_text(broken)
+    st = pfile.stat()
+
+    assert pricing._load_custom_pricing()["models"] == {}
+    assert pricing._pricing_load_failed is True
+
+    tmp = tele_dir / ".pricing.yaml.swap.tmp"
+    tmp.write_text(good)
+    os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+    os.replace(tmp, pfile)
+    new = pfile.stat()
+    assert (new.st_mtime_ns, new.st_size) == (st.st_mtime_ns, st.st_size)
+    assert new.st_ino != st.st_ino
+
+    result = pricing._load_custom_pricing()
+    assert result["models"]["same-size"]["input"] == 5.0
+    assert result["models"]["same-size"]["output"] == 6.0
 
 
 # ---------------------------------------------------------------------------
