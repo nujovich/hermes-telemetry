@@ -1434,7 +1434,12 @@ def test_migrate_v10_adds_columns_from_wedged_v9(monkeypatch):
     conn.execute("DROP TABLE _runs_old")
 
     # Remove the v10 marker so the migration re-runs on the next connect.
-    conn.execute("DELETE FROM schema_version WHERE version = 10")
+    # Every LATER marker goes too: a real pre-v10 DB has none of the columns
+    # those migrations add either, and a fixture that keeps them applied while
+    # rebuilding the tables in their v9 shape is a state that cannot occur —
+    # the writers (record_llm_call) write the newest columns, so the wedged
+    # state has to be coherent to be honest.
+    conn.execute("DELETE FROM schema_version WHERE version >= 10")
 
     llm_cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('llm_calls')")}
     runs_cols = {r[0] for r in conn.execute("SELECT name FROM pragma_table_info('runs')")}
@@ -2101,3 +2106,283 @@ def test_migrate_v17_deletes_poisoned_free_rows_and_keeps_genuine_ones():
     db._ensure_schema(conn)
     assert conn.execute("SELECT COUNT(*) FROM known_free_models").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == _SCHEMA_VERSION
+
+
+# ---------------------------------------------------------------------------
+# v18 — turn identity on llm_calls/tool_calls + llm_call_errors ledger
+# ---------------------------------------------------------------------------
+
+
+def test_schema_v18_columns():
+    """v18 adds turn identity to both observation tables and the ledger table.
+
+    The tool-side id is asserted explicitly: a check for ``turn_id`` alone stays
+    green while ``tool_call_id`` never lands.
+    """
+    conn = db._get_conn()
+    llm_cols = {r["name"] for r in conn.execute("PRAGMA table_info(llm_calls)")}
+    tool_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tool_calls)")}
+    assert {"turn_id", "task_id", "api_request_id"} <= llm_cols
+    assert {"turn_id", "tool_call_id"} <= tool_cols
+
+    err_cols = {r["name"] for r in conn.execute("PRAGMA table_info(llm_call_errors)")}
+    assert err_cols == {
+        "id",
+        "session_id",
+        "ts",
+        "turn_id",
+        "task_id",
+        "api_request_id",
+        "api_call_count",
+        "model",
+        "provider",
+        "status_code",
+        "error_type",
+        "error_message",
+        "retry_count",
+        "max_retries",
+        "retryable",
+        "reason",
+        "duration_ms",
+    }
+
+    indexes = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_llm_call_errors_session" in indexes
+    # Turn identity ships with the indexes its own query shapes need: the
+    # per-turn rollup (GROUP BY llm_calls.turn_id) and the delegation join
+    # (subagent_edges.parent_turn_id = llm_calls.turn_id). Asserted by name AND
+    # by indexed column — a right-named index on the wrong column answers the
+    # wrong question, and only a scan would reveal it.
+    assert {"idx_llm_turn", "idx_tool_turn"} <= indexes
+    assert [r["name"] for r in conn.execute("PRAGMA index_info(idx_llm_turn)")] == ["turn_id"]
+    assert [r["name"] for r in conn.execute("PRAGMA index_info(idx_tool_turn)")] == ["turn_id"]
+
+
+def test_schema_v18_recorded():
+    conn = db._get_conn()
+    assert _SCHEMA_VERSION >= 18
+    row = conn.execute("SELECT 1 FROM schema_version WHERE version = 18").fetchone()
+    assert row is not None
+
+
+def _rebuilt_without(conn, table: str, dropped: set[str]) -> None:
+    """Rebuild *table* without *dropped* (SQLite < 3.35 has no DROP COLUMN)."""
+    kept = [r for r in conn.execute(f"PRAGMA table_info({table})") if r[1] not in dropped]
+    defs = []
+    for _cid, name, ctype, notnull, dflt, pk in kept:
+        piece = f"{name} {ctype}"
+        if pk:
+            piece += " PRIMARY KEY"
+        elif notnull:
+            piece += " NOT NULL"
+        if dflt is not None:
+            piece += f" DEFAULT {dflt}"
+        defs.append(piece)
+    cols = ", ".join(r[1] for r in kept)
+    conn.execute(f"ALTER TABLE {table} RENAME TO _{table}_old")
+    conn.execute(f"CREATE TABLE {table} ({', '.join(defs)})")
+    conn.execute(f"INSERT INTO {table} ({cols}) SELECT {cols} FROM _{table}_old")
+    conn.execute(f"DROP TABLE _{table}_old")
+
+
+def test_migrate_v18_adds_identity_columns_from_wedged_v17():
+    """Upgrade path v17 -> v18: a DB whose observation tables are still in their
+    v17 shape self-heals on the next connect — record_llm_call/record_tool_call
+    must not crash with 'no such column: turn_id'."""
+    conn = db._get_conn()
+
+    _rebuilt_without(conn, "llm_calls", {"turn_id", "task_id", "api_request_id"})
+    _rebuilt_without(conn, "tool_calls", {"turn_id", "tool_call_id"})
+    conn.execute("DROP INDEX IF EXISTS idx_llm_call_errors_session")
+    conn.execute("DROP INDEX IF EXISTS idx_llm_turn")
+    conn.execute("DROP INDEX IF EXISTS idx_tool_turn")
+    conn.execute("DROP TABLE IF EXISTS llm_call_errors")
+    conn.execute("DELETE FROM schema_version WHERE version >= 18")
+
+    llm_cols = {r[1] for r in conn.execute("PRAGMA table_info(llm_calls)")}
+    tool_cols = {r[1] for r in conn.execute("PRAGMA table_info(tool_calls)")}
+    assert not {"turn_id", "task_id", "api_request_id"} & llm_cols  # wedged state confirmed
+    assert not {"turn_id", "tool_call_id"} & tool_cols
+    wedged_indexes = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+    assert not {"idx_llm_turn", "idx_tool_turn"} & wedged_indexes
+
+    db._ensure_schema(conn)
+
+    llm_cols = {r[1] for r in conn.execute("PRAGMA table_info(llm_calls)")}
+    tool_cols = {r[1] for r in conn.execute("PRAGMA table_info(tool_calls)")}
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"turn_id", "task_id", "api_request_id"} <= llm_cols
+    assert {"turn_id", "tool_call_id"} <= tool_cols
+    assert "llm_call_errors" in tables
+
+    # The upgrade path must recreate the turn indexes the migrated DB is
+    # supposed to query through, not just the columns.
+    repaired_indexes = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+    assert {"idx_llm_turn", "idx_tool_turn"} <= repaired_indexes
+    assert [r["name"] for r in conn.execute("PRAGMA index_info(idx_llm_turn)")] == ["turn_id"]
+    assert [r["name"] for r in conn.execute("PRAGMA index_info(idx_tool_turn)")] == ["turn_id"]
+
+    # And the writers must round-trip the identity columns end-to-end.
+    db.start_run("v18-repair", model="m", platform="cli")
+    db.record_llm_call(
+        "v18-repair",
+        "2026-06-20T20:00:00+00:00",
+        "m",
+        "p",
+        tokens_in=1,
+        tokens_out=1,
+        cost_usd=0.0,
+        latency_ms=5,
+        turn_id="v18-repair:t1:abcd1234",
+        task_id="t1",
+        api_request_id="req-1",
+    )
+    db.record_tool_call(
+        "v18-repair",
+        "2026-06-20T20:00:01+00:00",
+        "read_file",
+        True,
+        5,
+        turn_id="v18-repair:t1:abcd1234",
+        tool_call_id="call-1",
+    )
+    assert conn.execute(
+        "SELECT turn_id, task_id, api_request_id FROM llm_calls WHERE session_id = 'v18-repair'"
+    ).fetchone()[:] == ("v18-repair:t1:abcd1234", "t1", "req-1")
+    assert conn.execute(
+        "SELECT turn_id, tool_call_id FROM tool_calls WHERE session_id = 'v18-repair'"
+    ).fetchone()[:] == ("v18-repair:t1:abcd1234", "call-1")
+
+
+def test_record_llm_call_persists_turn_identity():
+    db.record_llm_call(
+        "turn-sess",
+        "2026-06-20T20:00:00+00:00",
+        "m",
+        "p",
+        tokens_in=1,
+        tokens_out=1,
+        cost_usd=0.0,
+        latency_ms=5,
+        turn_id="turn-sess:t1:aaaa1111",
+        task_id="t1",
+        api_request_id="req-1",
+    )
+    row = (
+        db._get_conn()
+        .execute(
+            "SELECT turn_id, task_id, api_request_id FROM llm_calls WHERE session_id = 'turn-sess'"
+        )
+        .fetchone()
+    )
+    assert row["turn_id"] == "turn-sess:t1:aaaa1111"
+    assert row["task_id"] == "t1"
+    assert row["api_request_id"] == "req-1"
+
+
+def test_record_llm_call_turn_identity_defaults_null():
+    """Rows written without identity (history, or a host that sends none) keep
+    NULL — not an empty string that would join against nothing."""
+    db.record_llm_call(
+        "no-turn",
+        "2026-06-20T20:00:00+00:00",
+        "m",
+        "p",
+        tokens_in=1,
+        tokens_out=1,
+        cost_usd=0.0,
+        latency_ms=5,
+    )
+    row = db._get_conn().execute("SELECT * FROM llm_calls WHERE session_id = 'no-turn'").fetchone()
+    assert row["turn_id"] is None
+    assert row["task_id"] is None
+    assert row["api_request_id"] is None
+
+
+def test_record_tool_call_persists_turn_identity():
+    db.record_tool_call(
+        "tool-turn",
+        "2026-06-20T20:00:00+00:00",
+        "read_file",
+        True,
+        7,
+        turn_id="tool-turn:t1:bbbb2222",
+        tool_call_id="call-xyz",
+    )
+    row = (
+        db._get_conn().execute("SELECT * FROM tool_calls WHERE session_id = 'tool-turn'").fetchone()
+    )
+    assert row["turn_id"] == "tool-turn:t1:bbbb2222"
+    assert row["tool_call_id"] == "call-xyz"
+
+
+def test_record_tool_call_identity_defaults_null():
+    """The plugin's synthetic subagent_stop proxy row has no tool_call_id."""
+    db.record_tool_call(
+        "proxy-turn", "2026-06-20T20:00:00+00:00", "delegate_task/subagent", True, 900
+    )
+    row = (
+        db._get_conn()
+        .execute("SELECT * FROM tool_calls WHERE session_id = 'proxy-turn'")
+        .fetchone()
+    )
+    assert row["turn_id"] is None
+    assert row["tool_call_id"] is None
+
+
+def test_record_llm_call_error_roundtrip():
+    db.record_llm_call_error(
+        "err-sess",
+        "2026-06-20T20:00:00+00:00",
+        model="openai/gpt",
+        provider="nous",
+        status_code=429,
+        error_type="rate_limit_error",
+        error_message="429 Too Many Requests",
+        turn_id="err-sess:t1:cccc3333",
+        task_id="t1",
+        api_request_id="req-429",
+        api_call_count=2,
+        retry_count=2,
+        max_retries=5,
+        retryable=True,
+        reason="rate_limited",
+        duration_ms=1250,
+    )
+    row = db._get_conn().execute("SELECT * FROM llm_call_errors").fetchone()
+    assert row["session_id"] == "err-sess"
+    assert row["status_code"] == 429
+    assert row["retryable"] == 1
+    assert row["error_type"] == "rate_limit_error"
+    assert row["error_message"] == "429 Too Many Requests"
+    assert row["turn_id"] == "err-sess:t1:cccc3333"
+    assert row["api_request_id"] == "req-429"
+    assert row["api_call_count"] == 2
+    assert row["retry_count"] == 2
+    assert row["max_retries"] == 5
+    assert row["reason"] == "rate_limited"
+    assert row["duration_ms"] == 1250
+
+
+def test_record_llm_call_error_is_attempt_level_not_deduped():
+    for _ in range(3):
+        db.record_llm_call_error("err-sess", "2026-06-20T20:00:00+00:00", status_code=429)
+    assert db._get_conn().execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 3
+
+
+def test_record_llm_call_error_truncates_message_to_500():
+    db.record_llm_call_error("err-sess", "2026-06-20T20:00:00+00:00", error_message="x" * 900)
+    row = db._get_conn().execute("SELECT error_message FROM llm_call_errors").fetchone()
+    assert len(row["error_message"]) == 500
+
+
+def test_record_llm_call_error_unknown_retryable_is_null():
+    """``retryable=None`` (the host did not classify) is not the same answer as
+    ``retryable=False`` — it is stored as NULL."""
+    db.record_llm_call_error("err-sess", "2026-06-20T20:00:00+00:00", retryable=None)
+    row = db._get_conn().execute("SELECT retryable FROM llm_call_errors").fetchone()
+    assert row["retryable"] is None

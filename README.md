@@ -16,7 +16,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 687 passing](https://img.shields.io/badge/Tests-687%20passing-green.svg)](https://img.shields.io/badge/Tests-687%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 712 passing](https://img.shields.io/badge/Tests-712%20passing-green.svg)](https://img.shields.io/badge/Tests-712%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -146,11 +146,11 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (687 tests, 687 passing):**
+**Test suite (712 tests, 712 passing):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
-|`test_db.py`                     |116  |Schema migrations (v1→v17, incl. the #89 known-free repair), CRUD, aggregations, concurrent WAL writes, `known_free_models`, pricing snapshots, subagent edges, cache layer|
+|`test_db.py`                     |127  |Schema migrations (v1→v18, incl. the #89 known-free repair), CRUD, aggregations, concurrent WAL writes, `known_free_models`, pricing snapshots, subagent edges, turn identity + the failure ledger, cache layer|
 |`test_pricing.py`                |100  |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds (incl. `nemotron-3-ultra` paid + `:free` suffix → $0 rule), subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`, `snapshot_to_price`/`core_price` priority (core-pricing-primary)|
 |`test_dashboard.py`              |47   |HTML dashboard rendering, auto-refresh, chart data endpoints, viewer-timezone budget windows, cache layer (TTL / serve-stale)  |
 |`test_telemetry_cli.py`          |48   |CLI subcommands (stats/budget/pricing/sync-profiles), all window variants, text + `--json` output, entry point smoke test, tracked exec bit on the standalone binary and the pre-commit hook, date-range label edge cases|
@@ -164,7 +164,7 @@ pytest tests/ -v
 |`test_setup.py`                  |22   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |
 |`test_pricing_snapshots.py`      |24   |Core-sourced pricing snapshots: append-per-change, `resolved_model` canonicalization, capture throttle, incomplete-snapshot fallback|
 |`test_observation_mode.py`       |10   |Enforce-default mode, upgrade path (no get_config still blocks), observe opt-in, watcher always on, /budget not-enforced notice, mode normalisation (case/whitespace, non-string → enforce)|
-|`test_init.py`                   |27   |Cron session ID regex, tool success/failure parsing, free→paid transition alert (detection, queueing, injection, backfill)     |
+|`test_init.py`                   |41   |Cron session ID regex, tool success/failure parsing, free→paid transition alert (detection, queueing, injection, backfill), v18 hook wiring (turn identity + failure ledger), hot-path error-log throttling |
 |`test_stats_models.py`           |19   |Per-model breakdown, `/stats models` output format                                                                             |
 |`test_subagent_reconciliation.py`|15   |Parent + child hook sequence, token reconciliation, no double-counting                                                         |
 |`test_pricing_refresh.py`        |15   |Auto-refresh from OpenRouter API, change detection, manual override preservation, subscription-model metadata, `HERMES_TELEMETRY_HOME` resolution|
@@ -182,6 +182,8 @@ pytest tests/ -v
 |`test_profile_capture.py`        |2    |Per-profile attribution capture                                                                                                |
 |`test_logging_isolation.py`      |2    |Plugin logger state isolation between tests                                                                                    |
 |`test_ci_config.py`              |4    |Lint toolchain pin: `.ruff-version` is the single source of truth, CI installs from it, the pre-commit hook warns on version skew, `*.md` excluded from formatting|
+
+Counts above are per-file collected totals, measured on this branch with `pytest tests/ -q` and the optional `fastapi` test dependency installed (712 passed, 0 skipped). CI installs only `pytest` + `pyyaml`, so `test_dashboard_plugin_api.py` skips there and the same command reports **678 passed, 34 skipped**.
 
 No live Hermes is required — all tests are self-contained with in-memory SQLite.
 

@@ -9,8 +9,11 @@ Public API used by __init__.py (hooks) and stats.py (/stats command):
   record_llm_call(session_id, ts, model, provider, tokens_in, tokens_out,
                   cost_usd, latency_ms,
                   cache_read_tokens=0, cache_write_tokens=0, reasoning_tokens=0,
-                  estimated=False)
-  record_tool_call(session_id, ts, tool_name, ok, latency_ms)
+                  estimated=False, provider_assumed=False, moa_preset=None,
+                  turn_id=None, task_id=None, api_request_id=None)
+  record_tool_call(session_id, ts, tool_name, ok, latency_ms,
+                   turn_id=None, tool_call_id=None)
+  record_llm_call_error(session_id, ts, ...)   # per-attempt failure ledger (v18)
   set_sender(session_id, sender_id)
   get_run(session_id)          -> dict | None
   stats_summary(window_hours)  -> dict
@@ -43,7 +46,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 17
+_SCHEMA_VERSION = 18
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -178,6 +181,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v15(conn)
     _migrate_v16(conn)
     _migrate_v17(conn)
+    _migrate_v18(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -682,6 +686,77 @@ def _migrate_v17(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v18(conn: sqlite3.Connection) -> None:
+    """Persist per-call identity, and add the per-attempt failure ledger.
+
+    Identity: ``turn_id`` (``{session_id}:{task_id}:{8hex}``), ``task_id``,
+    ``api_request_id`` and ``tool_call_id`` are already on every relevant hook
+    payload. They were dropped only because the handlers read the token/cost
+    fields and left the rest in ``**_kw``. Storing them makes
+    ``llm_calls``/``tool_calls`` groupable per turn with a plain
+    ``GROUP BY turn_id`` (no materialized rollup), and lets the existing
+    ``subagent_edges.parent_turn_id`` join to the parent's own calls.
+    NULL is the honest value for history: rows written before this migration
+    have no recorded turn, and the one synthetic tool row the plugin writes
+    (the ``subagent_stop`` proxy) has no ``tool_call_id``.
+
+    Ledger: ``llm_call_errors`` is written by the ``api_request_error`` hook for
+    every firing — all statuses, retryable or not — one row per failed ATTEMPT
+    (no dedupe, N attempts → N rows). It exists because ``llm_calls`` only ever
+    saw the success path, and the aggregate ``model_unavailable_alerts`` row
+    cannot answer "how many attempts did this call take, and why did each one
+    fail". ``error_message`` is bounded to 500 chars by the writer (the column
+    IS the bound; see ``record_llm_call_error``).
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 18")
+    if cur.fetchone() is not None:
+        return
+
+    for col in ("turn_id", "task_id", "api_request_id"):
+        _add_column_if_missing(conn, "llm_calls", col, "TEXT")
+    for col in ("turn_id", "tool_call_id"):
+        _add_column_if_missing(conn, "tool_calls", col, "TEXT")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS llm_call_errors (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     TEXT NOT NULL DEFAULT '',
+            ts             TEXT NOT NULL,
+            turn_id        TEXT,
+            task_id        TEXT,
+            api_request_id TEXT,
+            api_call_count INTEGER,
+            model          TEXT,
+            provider       TEXT,
+            status_code    INTEGER,
+            error_type     TEXT,
+            error_message  TEXT,
+            retry_count    INTEGER,
+            max_retries    INTEGER,
+            retryable      INTEGER,
+            reason         TEXT,
+            duration_ms    INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_llm_call_errors_session
+            ON llm_call_errors(session_id, ts);
+        -- Turn identity is only useful if the lookups it exists for are indexed:
+        -- the per-turn rollup is a GROUP BY llm_calls.turn_id, and
+        -- subagent_edges.parent_turn_id joins to llm_calls.turn_id. Without
+        -- these two the join falls back to scanning every llm_calls row a
+        -- long-lived DB has accumulated. v18 has not shipped, so they cost
+        -- nothing to add now.
+        CREATE INDEX IF NOT EXISTS idx_llm_turn ON llm_calls(turn_id);
+        CREATE INDEX IF NOT EXISTS idx_tool_turn ON tool_calls(turn_id);
+    """
+    )
+
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (18, ?)",
+        (_utcnow(),),
+    )
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -767,6 +842,9 @@ def record_llm_call(
     estimated: bool = False,
     provider_assumed: bool = False,
     moa_preset: str | None = None,
+    turn_id: str | None = None,
+    task_id: str | None = None,
+    api_request_id: str | None = None,
 ) -> None:
     conn = _get_conn()
     conn.execute(
@@ -774,8 +852,8 @@ def record_llm_call(
         INSERT INTO llm_calls
             (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms,
              cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated,
-             provider_assumed, moa_preset)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             provider_assumed, moa_preset, turn_id, task_id, api_request_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -792,6 +870,9 @@ def record_llm_call(
             1 if estimated else 0,
             1 if provider_assumed else 0,
             moa_preset,
+            turn_id,
+            task_id,
+            api_request_id,
         ),
     )
     _ensure_run_row(session_id, ts)
@@ -877,18 +958,81 @@ def record_tool_call(
     tool_name: str,
     ok: bool,
     latency_ms: int | None,
+    turn_id: str | None = None,
+    tool_call_id: str | None = None,
 ) -> None:
     conn = _get_conn()
     conn.execute(
         """
-        INSERT INTO tool_calls (session_id, ts, tool_name, ok, latency_ms)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO tool_calls (session_id, ts, tool_name, ok, latency_ms, turn_id, tool_call_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, ts, tool_name, 1 if ok else 0, latency_ms),
+        (session_id, ts, tool_name, 1 if ok else 0, latency_ms, turn_id, tool_call_id),
     )
     conn.execute(
         "UPDATE runs SET tool_calls = tool_calls + 1 WHERE session_id = ?",
         (session_id,),
+    )
+
+
+def record_llm_call_error(
+    session_id: str,
+    ts: str,
+    model: str = "",
+    provider: str = "",
+    status_code: int | None = None,
+    error_type: str = "",
+    error_message: str = "",
+    turn_id: str | None = None,
+    task_id: str | None = None,
+    api_request_id: str | None = None,
+    api_call_count: int | None = None,
+    retry_count: int | None = None,
+    max_retries: int | None = None,
+    retryable: bool | None = None,
+    reason: str = "",
+    duration_ms: int | None = None,
+) -> None:
+    """Append one row to the per-attempt failure ledger (schema v18).
+
+    Called from the ``api_request_error`` hook for EVERY firing — any status,
+    retryable or not — so a retry storm or a 5xx/timeout/auth failure is
+    visible per attempt instead of nowhere at all. Attempt-level by design: no
+    dedupe, N attempts → N rows. The aggregate ``model_unavailable_alerts``
+    alert is a separate, narrower surface and stays untouched.
+
+    ``retryable=None`` is stored as NULL, not 0 — "the host did not say"
+    is not the same answer as "not retryable". ``error_message`` is truncated
+    to 500 chars here, at the write boundary, so every caller inherits the
+    bound the column advertises.
+    """
+    conn = _get_conn()
+    conn.execute(
+        """
+        INSERT INTO llm_call_errors
+            (session_id, ts, turn_id, task_id, api_request_id, api_call_count, model,
+             provider, status_code, error_type, error_message, retry_count, max_retries,
+             retryable, reason, duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session_id or "",
+            ts,
+            turn_id or None,
+            task_id or None,
+            api_request_id or None,
+            api_call_count,
+            model,
+            provider,
+            status_code,
+            error_type,
+            (error_message or "")[:500],
+            retry_count,
+            max_retries,
+            None if retryable is None else (1 if retryable else 0),
+            reason,
+            duration_ms,
+        ),
     )
 
 

@@ -220,6 +220,25 @@ def _throttled_error(prefix: str, exc: BaseException) -> None:
         log.error("%s: %s", prefix, exc)
 
 
+def _failed_request_model(request: Any, api_kwargs: Any, model: str) -> str:
+    """Model id the FAILED request actually asked for (api_request_error).
+
+    The live host sends the request body nested —
+    ``request={"method": "POST", "body": {...api kwargs...}}`` — built by
+    ``agent/api_request_hooks.py::_api_request_payload_for_hook``. Older hosts
+    sent those kwargs flat as ``api_kwargs`` (the name this handler's signature
+    still carries). Read both, then fall back to the top-level ``model`` kwarg,
+    which the emitter always sets — so the id is never lost.
+    """
+    body = request.get("body") if isinstance(request, dict) else None
+    for source in (api_kwargs, request, body):
+        if isinstance(source, dict):
+            req_model = str(source.get("model") or "")
+            if req_model:
+                return req_model
+    return str(model or "")
+
+
 def register(ctx) -> None:  # noqa: ANN001
     _setup_log_file()
     tele_log = logging.getLogger("hermes_telemetry")
@@ -318,7 +337,9 @@ def register(ctx) -> None:  # noqa: ANN001
     # Fired after each individual API call within a turn.
     # kwargs: session_id, model, provider, api_duration (seconds),
     #         usage (dict with input_tokens/output_tokens or None),
-    #         api_call_count, assistant_content_chars
+    #         api_call_count, assistant_content_chars,
+    #         task_id, turn_id, api_request_id (persisted since v18 — see
+    #         ONBOARDING.md § Turn identity)
     # ------------------------------------------------------------------
     def post_api_request(
         session_id: str = "",
@@ -331,6 +352,9 @@ def register(ctx) -> None:  # noqa: ANN001
         response_model: str | None = None,
         api_call_count: int = 0,
         assistant_content_chars: int = 0,
+        task_id: str = "",
+        turn_id: str = "",
+        api_request_id: str = "",
         **_kw,
     ) -> None:
         try:
@@ -476,6 +500,12 @@ def register(ctx) -> None:  # noqa: ANN001
                 estimated=estimated,
                 provider_assumed=provider_assumed,
                 moa_preset=moa_preset,
+                # Turn identity (v18). Empty string is normalised to NULL by
+                # the writer: a call the host could not attribute to a turn is
+                # "unknown", not a turn literally named "".
+                turn_id=turn_id or None,
+                task_id=task_id or None,
+                api_request_id=api_request_id or None,
             )
 
             # Pricing snapshot (v14): capture the core-resolved tariff + provenance
@@ -513,47 +543,119 @@ def register(ctx) -> None:  # noqa: ANN001
     ctx.register_hook("post_api_request", post_api_request)
 
     # ------------------------------------------------------------------
-    # api_request_error  — model-unavailable detection (issue #43)
-    # Fired by agent/conversation_loop.py at the moment of a non-retryable
-    # client error. We act ONLY on 404 (model removed/deprecated) so the user
-    # finds out when e.g. a `:free` promo ends and hermes-agent does not
-    # silently re-route. Higher status codes are observed but not surfaced
-    # here — they belong to other features.
-    # kwargs (verified against hermes_cli/plugins.py VALID_HOOKS and
-    # agent/conversation_loop.py at the _invoke_api_request_error_hook call
-    # site): session_id, task_id, turn_id, api_request_id, api_call_count,
-    # api_start_time, api_kwargs (dict, includes "model" the request asked for),
-    # error_type, error_message, status_code, retry_count, max_retries,
-    # retryable, reason
+    # api_request_error  — failure ledger (v18) + model-unavailable
+    # detection (issue #43)
+    # Fired by agent/conversation_loop.py at the moment of an API client
+    # error. Two independent jobs:
+    #   1. LEDGER (v18): record EVERY firing — any status, retryable or not —
+    #      in llm_call_errors, before any filtering below.
+    #   2. MODEL-UNAVAILABLE ALERT (issue #43): act ONLY on 404 (model
+    #      removed/deprecated) so the user finds out when e.g. a `:free` promo
+    #      ends and hermes-agent does not silently re-route. Higher status
+    #      codes are observed but not surfaced here — they belong to other
+    #      features.
+    # PAYLOAD SHAPE — the load-bearing part. Verified against
+    # agent/api_request_hooks.py::_invoke_api_request_error_hook: the error
+    # text arrives NESTED as error={"type", "message"}, the request body as
+    # request={"method", "body"} (the model id the request asked for lives in
+    # body["model"]), and the duration as api_duration in SECONDS. There is NO
+    # top-level error_type / error_message / api_kwargs / api_start_time. The
+    # flat names are still declared, and still read as a fallback, so an older
+    # host keeps working — but reading ONLY the flat names is exactly what made
+    # this handler store an empty error_message for a live-shaped 404.
+    # Other kwargs: session_id, task_id, turn_id, api_request_id,
+    # api_call_count, status_code, retry_count, max_retries, retryable,
+    # reason, model, provider.
     # ------------------------------------------------------------------
     def api_request_error(
         session_id: str = "",
+        task_id: str = "",
+        turn_id: str = "",
+        api_request_id: str = "",
+        api_call_count: int = 0,
+        api_duration: float = 0.0,
         api_kwargs: dict | None = None,
+        request: dict | None = None,
+        error: dict | None = None,
         error_type: str = "",
         error_message: str = "",
         status_code: int | None = None,
-        retryable: bool = True,
+        retry_count: int | None = None,
+        max_retries: int | None = None,
+        # None is the default on purpose: a payload that does not state
+        # retryable has NOT said "not retryable", and the ledger records that
+        # as NULL (see record_llm_call_error). Defaulting to True wrote a
+        # classification the payload never made. (Found by a community
+        # reviewer.)
+        retryable: bool | None = None,
         reason: str = "",
         model: str = "",
         provider: str = "",
         **_kw,
     ) -> None:
         try:
+            # Normalise the payload once, so the ledger below and the 404 alert
+            # that follows can never disagree about what the failure said.
+            # Nested first (the live shape), flat second (older host).
+            err = error if isinstance(error, dict) else {}
+            error_type = str(err.get("type") or error_type or "")
+            error_message = str(err.get("message") or error_message or "")
+            # api_duration arrives from the wire, so it is not trusted: a
+            # non-finite float ("inf"/"nan") or a non-numeric string raised
+            # OverflowError/ValueError at round()/float() here — ABOVE the
+            # ledger's own try — and the outer handler swallowed it, so neither
+            # the ledger row nor the 404 alert landed: the silent-failure class
+            # this ledger exists to close. NULL is the honest value for a
+            # duration we could not read. (Found by a community reviewer.)
+            try:
+                duration_ms = int(round(float(api_duration or 0) * 1000))
+            except (TypeError, ValueError, OverflowError):
+                duration_ms = None
+            req_model = _failed_request_model(request, api_kwargs, model)
+
+            # Per-attempt failure ledger (v18). Deliberately BEFORE the 404
+            # filter: a 429/5xx/timeout/auth failure is exactly the class that
+            # leaves no trace anywhere today. Own guard — a ledger write that
+            # fails must not suppress the 404 alert path below.
+            try:
+                db.record_llm_call_error(
+                    session_id=session_id,
+                    ts=_utcnow(),
+                    model=req_model,
+                    provider=str(provider or ""),
+                    status_code=status_code,
+                    error_type=error_type,
+                    error_message=error_message,
+                    turn_id=turn_id or None,
+                    task_id=task_id or None,
+                    api_request_id=api_request_id or None,
+                    api_call_count=api_call_count,
+                    retry_count=retry_count,
+                    max_retries=max_retries,
+                    retryable=retryable,
+                    reason=reason,
+                    duration_ms=duration_ms,
+                )
+            except Exception as ledger_exc:
+                tele_log.error("llm_call_errors write failed: %s", ledger_exc)
+
             if status_code != 404:
                 return
             # Conservative filter: 404 must be non-retryable to count as a true
             # "model gone" signal. A retryable 404 (rare, but possible from a
             # routing proxy) gets surfaced in the upstream retry loop instead.
-            if retryable:
+            # ``is not False``, not truthiness: the kwarg now defaults to None
+            # so "the host did not say" reaches the ledger as NULL, and an
+            # unknown must stay OUT of the alert path exactly as True did.
+            # Testing truthiness here would fire the alert on every
+            # unclassified 404 — a new regression introduced by the default
+            # change itself. (Found by a community reviewer.)
+            if retryable is not False:
                 return
 
-            # Resolve the model id from api_kwargs (what the agent actually
-            # sent on the wire) first, falling back to the top-level kwarg.
-            req_model = ""
-            if isinstance(api_kwargs, dict):
-                req_model = str(api_kwargs.get("model") or "")
-            if not req_model:
-                req_model = str(model or "")
+            # req_model was resolved above from the request body — what the
+            # agent actually sent on the wire — falling back to the top-level
+            # kwarg. Without an id there is nothing to alert on.
             if not req_model:
                 tele_log.debug("api_request_error: status_code=404 with no model id — ignored")
                 return
@@ -597,7 +699,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 req_model,
                 req_provider,
                 reason,
-                _kw.get("retry_count"),
+                retry_count,
                 session_id,
             )
         except Exception as exc:
@@ -608,13 +710,17 @@ def register(ctx) -> None:  # noqa: ANN001
     # ------------------------------------------------------------------
     # post_tool_call
     # Fired after each tool execution.
-    # kwargs: tool_name, result, duration_ms, session_id, task_id, args
+    # kwargs: tool_name, result, duration_ms, session_id, task_id, args,
+    #         tool_call_id, turn_id, api_request_id
     # ------------------------------------------------------------------
     def post_tool_call(
         tool_name: str = "",
         result: Any = None,
         duration_ms: int = 0,
         session_id: str = "",
+        task_id: str = "",
+        tool_call_id: str = "",
+        turn_id: str = "",
         **_kw,
     ) -> None:
         try:
@@ -625,6 +731,10 @@ def register(ctx) -> None:  # noqa: ANN001
                 tool_name=tool_name,
                 ok=ok,
                 latency_ms=duration_ms,
+                # v18: ties the tool row to its turn (and, when the host
+                # provides one, to the exact tool_call_id the model emitted).
+                turn_id=turn_id or None,
+                tool_call_id=tool_call_id or None,
             )
         except Exception as exc:
             _throttled_error("post_tool_call hook failed", exc)
@@ -678,6 +788,7 @@ def register(ctx) -> None:  # noqa: ANN001
     # ------------------------------------------------------------------
     def subagent_stop(
         parent_session_id: str = "",
+        parent_turn_id: str = "",
         child_session_id: str = "",
         child_role: str = "",
         child_status: str = "",
@@ -692,6 +803,11 @@ def register(ctx) -> None:  # noqa: ANN001
                 tool_name="delegate_task/subagent",
                 ok=ok,
                 latency_ms=duration_ms,
+                # v18: the proxy row belongs to the parent's turn that
+                # delegated, so it groups with that turn's api calls. There is
+                # no tool_call_id for a delegation — the model never emitted
+                # one — so that column stays NULL here.
+                turn_id=parent_turn_id or None,
             )
             if child_session_id:
                 db.record_subagent_stop(
