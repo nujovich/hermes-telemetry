@@ -1842,7 +1842,7 @@ hermes telemetry sync-profiles --apply    # RUN FROM THE DEFAULT PROFILE (shared
 - `config.yaml` is **read-only**: the command warns when a profile has not enabled the plugin
   (`plugins.enabled`) but NEVER edits it. Auto-enable and plugin-symlinking were deliberately
   dropped — the repo has no comment-preserving YAML writer, and enabling is a one-line manual
-  step (`hermes plugins enable hermes-telemetry --profile <name>`).
+  step that sync-profiles prints correctly: `hermes plugins install hermes-telemetry -p <name> --enable` if not installed, else `hermes plugins enable hermes-telemetry -p <name>`.
 - **Non-default guard:** enumeration is default `~/.hermes` + `~/.hermes/profiles/*/`; the target
   defaults to the current resolved home (`HERMES_TELEMETRY_HOME` > `HERMES_HOME` > `~/.hermes`).
   If run from a named profile, `--apply` refuses unless `--yes` is passed — review the dry-run

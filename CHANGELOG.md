@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — sync_profiles repair hint branches on plugin install state (#132)
+
+The dry-run warning for profiles where the plugin is not enabled now prints the
+correct verb per profile: `hermes plugins install hermes-telemetry -p <name> --enable`
+if the plugin is not installed, or `hermes plugins enable hermes-telemetry -p <name>`
+if installed but not enabled. Previously it always printed the `enable` verb
+(which fails for not-installed profiles). JSON output and status collection
+unchanged. Tests added for both branches and a mixed case.
+
 ### Fixed — throttled hot-path hook error logging
 
 `pre_tool_call` / `post_tool_call` / `pre_llm_call` fire on every tool call, and

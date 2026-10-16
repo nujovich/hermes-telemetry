@@ -226,12 +226,15 @@ def render(
             "plugin ok" if st.plugin_enabled == "enabled" else f"plugin WARN: {st.plugin_enabled}"
         )
         lines.append(f"  {st.name:<20} env: {note:<40} {plugin}")
-    warn = [st.name for st in statuses if st.plugin_enabled != "enabled"]
+    warn = [st for st in statuses if st.plugin_enabled != "enabled"]
     if warn:
         lines.append("")
-        lines.append("WARN: plugin not enabled in: " + ", ".join(warn))
-        for name in warn:
-            lines.append(f"  hermes plugins enable {PLUGIN_NAME} --profile {name}")
+        lines.append("WARN: plugin not enabled in: " + ", ".join(st.name for st in warn))
+        for st in warn:
+            if not st.plugin_installed:
+                lines.append(f"  hermes plugins install {PLUGIN_NAME} -p {st.name} --enable")
+            else:
+                lines.append(f"  hermes plugins enable {PLUGIN_NAME} -p {st.name}")
     return "\n".join(lines)
 
 
