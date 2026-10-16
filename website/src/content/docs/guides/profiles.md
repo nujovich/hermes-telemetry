@@ -57,7 +57,7 @@ The standalone `hermes-telemetry sync-profiles` accepts the same arguments.
 ### What it does, and what it deliberately does not
 
 - **It writes only** a single `HERMES_TELEMETRY_HOME` line into each profile's `.env`. The write is atomic and idempotent; existing lines, comments, and an `export ` prefix are preserved. Hermes loads `<home>/.env` before it loads plugins, so the setting reaches each profile's process on its own, with no manual `source` step.
-- **It treats `config.yaml` as read-only.** It warns when a profile has not enabled the plugin (`hermes plugins enable hermes-telemetry --profile <name>`) but never edits the file.
+- **It treats `config.yaml` as read-only.** It warns when a profile has not enabled the plugin (`hermes plugins install hermes-telemetry -p <name> --enable` if the plugin is not installed, or `hermes plugins enable hermes-telemetry -p <name>` if it is) but never edits the file.
 - **It is going-forward only.** It does not backfill rows that a profile already wrote to its own pre-consolidation `telemetry.db`.
 
 :::caution

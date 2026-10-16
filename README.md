@@ -16,7 +16,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 687 passing](https://img.shields.io/badge/Tests-687%20passing-green.svg)](https://img.shields.io/badge/Tests-687%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 689 passing](https://img.shields.io/badge/Tests-689%20passing-green.svg)](https://img.shields.io/badge/Tests-689%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -146,7 +146,7 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (687 tests, 687 passing):**
+**Test suite (689 tests, 689 passing):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
@@ -157,7 +157,7 @@ pytest tests/ -v
 |`test_budget.py`                 |36   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` (default + per-profile/id override) hot-reload|
 |`test_dashboard_plugin_api.py`   |34   |Plugin dashboard API: per-profile scoping clauses, efficiency/smells/budget endpoints                                          |
 |`test_pricing_drift.py`          |32   |Drift vs core snapshots: threshold, subscription skip, canonical collapse, provider-assumed routing, `--apply` write-back, multi-provider recency, malformed-YAML safety, CLI|
-|`test_sync_profiles.py`          |29   |Profile consolidation via `HERMES_TELEMETRY_HOME`: `.env` upsert, name scoping, template preservation                          |
+|`test_sync_profiles.py`          |31   |Profile consolidation via `HERMES_TELEMETRY_HOME`: `.env` upsert, name scoping, template preservation, per-state repair hints (install vs enable)                       |
 |`test_stats_smells.py`           |22   |Anti-pattern (smell) detection and scoring                                                                                     |
 |`test_packaging.py`              |4    |Packaging contract: pyyaml declared in `[project].dependencies`, every runtime dependency upper-bounded, setuptools maps the repo root to `hermes_telemetry`, wizard module is not named `setup.py`|
 |`test_dashboard_html_escaping.py`|1   |Standalone dashboard never interpolates `err.message` into HTML unescaped                                                        |

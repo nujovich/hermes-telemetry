@@ -216,7 +216,43 @@ def test_render_dry_run_shows_target_plan_and_warning(tmp_path):
     text = sp.render(statuses, target=tmp_path)
     assert str(tmp_path) in text
     assert "would set" in text
-    assert "hermes plugins enable hermes-telemetry --profile coder" in text
+    assert "hermes plugins install hermes-telemetry -p coder --enable" in text
+
+
+def test_render_dry_run_installed_not_enabled_shows_enable_hint(tmp_path):
+    """Installed but not enabled profile gets the 'enable' hint (not 'install')."""
+    installed = tmp_path / "profiles" / "installed-disabled"
+    installed.mkdir(parents=True)
+    plugins = installed / "plugins"
+    plugins.mkdir()
+    (plugins / sp.PLUGIN_NAME).mkdir()
+    _write_config(installed, ["other"])
+    statuses = sp.detect(tmp_path, target=tmp_path)
+    text = sp.render(statuses, target=tmp_path)
+    assert f"  hermes plugins enable {sp.PLUGIN_NAME} -p installed-disabled" in text
+    assert f"  hermes plugins install {sp.PLUGIN_NAME} -p installed-disabled --enable" not in text
+
+
+def test_render_dry_run_mixed_installed_and_not_installed(tmp_path):
+    """Mixed case: one not installed, one installed-but-disabled, exact hint per profile."""
+    not_installed = tmp_path / "profiles" / "not-installed"
+    not_installed.mkdir(parents=True)
+    installed_disabled = tmp_path / "profiles" / "installed-disabled"
+    installed_disabled.mkdir(parents=True)
+    plugins = installed_disabled / "plugins"
+    plugins.mkdir()
+    (plugins / sp.PLUGIN_NAME).mkdir()
+    _write_config(installed_disabled, ["other"])
+
+    statuses = sp.detect(tmp_path, target=tmp_path)
+    text = sp.render(statuses, target=tmp_path)
+
+    # not-installed -> install hint; installed-disabled -> enable hint
+    assert f"  hermes plugins install {sp.PLUGIN_NAME} -p not-installed --enable" in text
+    assert f"  hermes plugins enable {sp.PLUGIN_NAME} -p installed-disabled" in text
+    # no cross-contamination between the two branches
+    assert f"  hermes plugins enable {sp.PLUGIN_NAME} -p not-installed" not in text
+    assert f"  hermes plugins install {sp.PLUGIN_NAME} -p installed-disabled --enable" not in text
 
 
 def test_render_applied_shows_actions(tmp_path):
