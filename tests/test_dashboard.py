@@ -1432,3 +1432,73 @@ def test_model_efficiency_sql_uses_window_filter(tmp_path, serve_module, monkeyp
         assert params in ((), [], None) or len(params) == 0, params
     finally:
         serve_module.ModelEfficiencyCache.reset_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# Shared telemetry home visibility (issue #128)
+# ---------------------------------------------------------------------------
+
+
+def _reload_serve_with_env(monkeypatch, hermes_home, telemetry_home):
+    """Re-execute dashboard/serve.py with a custom HERMES_HOME /
+    HERMES_TELEMETRY_HOME pair (both are read at import time)."""
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    if telemetry_home is None:
+        monkeypatch.delenv("HERMES_TELEMETRY_HOME", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(telemetry_home))
+    spec = importlib.util.spec_from_file_location("dashboard_serve_reloaded", _SERVE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_sessions_json(path: Path, session_id: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"entry": {"session_id": session_id}}))
+
+
+def test_visibility_covers_all_profiles_under_shared_telemetry_home(tmp_path, monkeypatch):
+    """#128: with HERMES_TELEMETRY_HOME pointing at a different home, the
+    visibility list must include every multiplex profile's sessions — not just
+    the running profile's — or the analytics views silently drop most rows."""
+    home = tmp_path / "home"
+    shared = tmp_path / "shared-home"
+    _write_sessions_json(home / "sessions" / "sessions.json", "sess-primary")
+    _write_sessions_json(home / "profiles" / "alpha" / "sessions" / "sessions.json", "sess-alpha")
+    _write_sessions_json(
+        home / "profiles" / "beta" / "sessions" / "session_sess-beta.json", "sess-beta"
+    )
+
+    module = _reload_serve_with_env(monkeypatch, home, shared)
+
+    ids, available = module._active_hermes_session_ids()
+    assert available is True
+    assert {"sess-primary", "sess-alpha", "sess-beta"} <= ids
+
+    # And the clause built from them must carry all three sessions.
+    _, params = module._visible_sessions_clause()
+    for sid in ("sess-primary", "sess-alpha", "sess-beta"):
+        assert sid in params
+
+
+def test_visibility_single_profile_by_default(serve_module, tmp_path):
+    """Default setup (no HERMES_TELEMETRY_HOME): only the primary home is
+    scanned — today's behavior, unchanged (#128 must not loosen it)."""
+    _write_sessions_json(tmp_path / "sessions" / "sessions.json", "sess-primary")
+    ids, available = serve_module._active_hermes_session_ids()
+    assert available is True
+    assert ids == {"sess-primary"}
+
+
+def test_visibility_shared_home_equal_to_hermes_home_is_not_shared(tmp_path, monkeypatch):
+    """HERMES_TELEMETRY_HOME == HERMES_HOME is the default single-home
+    topology, not the shared one — profiles must NOT be merged in."""
+    home = tmp_path / "home"
+    _write_sessions_json(home / "sessions" / "sessions.json", "sess-primary")
+    _write_sessions_json(home / "profiles" / "alpha" / "sessions" / "sessions.json", "sess-alpha")
+
+    module = _reload_serve_with_env(monkeypatch, home, home)
+
+    ids, _ = module._active_hermes_session_ids()
+    assert ids == {"sess-primary"}

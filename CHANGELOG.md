@@ -25,6 +25,18 @@ the two never beat against each other, and the per-exception-class key means a
 *different* failure raised inside the window is surfaced immediately rather
 than swallowed by the previous one's suppression.
 
+### Fixed
+
+- **Standalone dashboard hid every session not in the running profile's
+  `sessions.json` under a shared telemetry home (#128).** The dashboard read
+  its DB from `HERMES_TELEMETRY_HOME` but resolved its session-visibility
+  filter from `HERMES_HOME`, so with the #63 consolidation topology the
+  analytics views silently dropped every other profile's runs / requests /
+  tool calls (reporter: ~1/14 of tool calls visible; `/api/summary` on the
+  same page showed the true totals). Under a shared home the visibility list
+  is now gathered from the primary profile's sessions dir plus every
+  multiplex profile's; the default single-profile setup is unchanged.
+
 ## [0.9.1] - 2026-10-14
 
 ### Fixed
