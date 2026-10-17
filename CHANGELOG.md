@@ -25,6 +25,22 @@ the two never beat against each other, and the per-exception-class key means a
 *different* failure raised inside the window is surfaced immediately rather
 than swallowed by the previous one's suppression.
 
+### Fixed
+
+- **`budget.yaml` writes were not atomic, and a failed read silently disabled
+  enforcement until reload (#135).** Same bug class as #105/#106, on the
+  budget side — with worse consequences: a partial read meant lost
+  enforcement, not list-rate billing. All three writers (`budget set`,
+  `setup_wizard._write_budget`, the dashboard budget edit) now route through
+  an atomic writer (unique temp file + fsync + `os.replace`, existing mode
+  kept, symlinked `budget.yaml` followed rather than replaced), mirroring
+  #134's `pricing.yaml` fix; the dashboard keeps a duplicated helper because
+  the standalone surface cannot import plugin code (parity test included).
+  `load_config()` no longer memoizes a failed read: the failure is recorded
+  as the file's stat signature captured before the read, and the next call
+  retries as soon as the file changes — no `reload_config()` or restart
+  needed. A missing `budget.yaml` still means budgets are disabled.
+
 ## [0.9.1] - 2026-10-14
 
 ### Fixed

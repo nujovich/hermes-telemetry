@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -1432,3 +1433,38 @@ def test_model_efficiency_sql_uses_window_filter(tmp_path, serve_module, monkeyp
         assert params in ((), [], None) or len(params) == 0, params
     finally:
         serve_module.ModelEfficiencyCache.reset_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# Atomic write parity (issue #135)
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_text_parity_with_plugin(serve_module, tmp_path):
+    """serve.py's duplicated _atomic_write_text must behave like the plugin's
+    budget._atomic_write_text: content round-trip, mode preservation, symlink
+    following, temp cleanup. The standalone dashboard cannot import plugin
+    code (two-surface rule), so parity is asserted behaviorally."""
+    import hermes_telemetry.budget as budget
+
+    helpers = (
+        ("standalone", serve_module._atomic_write_text),
+        ("plugin", budget._atomic_write_text),
+    )
+    for name, helper in helpers:
+        target = tmp_path / name / "budget.yaml"
+        helper(target, "budgets: {}\n")
+        assert target.read_text() == "budgets: {}\n"
+
+        os.chmod(target, 0o640)
+        helper(target, "budgets: {global: {daily_usd: 1.0}}\n")
+        assert target.stat().st_mode & 0o777 == 0o640
+
+        link = target.with_name("link.yaml")
+        link.symlink_to(target)
+        helper(link, "budgets: {global: {daily_usd: 2.0}}\n")
+        assert link.is_symlink()
+        assert "daily_usd: 2.0" in target.read_text()
+
+        leftovers = [p.name for p in target.parent.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []

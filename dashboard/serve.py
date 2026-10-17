@@ -23,11 +23,13 @@ unreachable from other hosts. To view it from another machine, either:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -67,6 +69,52 @@ DB_PATH = _TELEMETRY_HOME / "telemetry.db"
 STATE_DB_PATH = HERMES_HOME / "state.db"
 CRON_JOBS_PATH = HERMES_HOME / "cron" / "jobs.json"
 CRON_OUTPUT_DIR = HERMES_HOME / "cron" / "output"
+
+
+def _read_process_umask() -> int:
+    """Return this process's umask WITHOUT mutating it (parses /proc/self/status
+    on Linux, falls back to 0o022). Mirrors budget._read_process_umask — the
+    standalone dashboard shares no code with the plugin package (two-surface
+    rule, tests/test_dashboard_plugin_isolation.py)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("Umask:"):
+                    return int(line.split(":", 1)[1].strip(), 8)
+    except (OSError, ValueError):
+        pass
+    return 0o022
+
+
+_DEFAULT_UMASK = _read_process_umask()
+_DEFAULT_FILE_MODE = 0o666 & ~_DEFAULT_UMASK
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` atomically: temp file in the same
+    directory, fsync, ``os.replace`` commit, existing mode kept, symlink
+    target followed. Mirrors ``budget._atomic_write_text`` (issue #135) —
+    duplicated here because the standalone dashboard cannot import plugin
+    code; behavioral parity is asserted by
+    tests/test_dashboard.py::test_atomic_write_text_parity_with_plugin."""
+    target = Path(os.path.realpath(path))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mode = os.stat(target).st_mode & 0o777 if target.exists() else _DEFAULT_FILE_MODE
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), mode)
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp_name)
+        raise
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if "hermes_telemetry" not in sys.modules:
@@ -2974,14 +3022,15 @@ def api_budget_update(payload, tz_name: str | None = None):
             return {"enabled": False, "error": "on_estimated_mode must be 'warn_only' or 'enforce'"}
         cfg.setdefault("on_estimated", {})["mode"] = mode
 
-    # Write back atomically via Path.replace()
+    # Write back atomically (unique temp + fsync + os.replace, mode kept,
+    # symlink target followed) — see #135. Mirrors the plugin-side writers
+    # via the duplicated _atomic_write_text above (two-surface rule).
     try:
         import yaml
 
-        tmp = budget_path.with_suffix(".yaml.tmp")
-        with open(tmp, "w") as f:
-            yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
-        tmp.replace(budget_path)
+        _atomic_write_text(
+            budget_path, yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False)
+        )
     except Exception as e:
         return {"enabled": False, "error": f"Failed to write budget.yaml: {e}"}
 
