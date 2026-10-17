@@ -105,6 +105,112 @@ _WINDOWS = (("daily", "daily_usd"), ("monthly", "monthly_usd"))
 _config_cache: dict | None = None
 _config_lock = threading.Lock()
 
+# Failure-streak state for load_config() (issue #135). A read/parse failure is
+# never memoized: _load_failure_sig holds the stat signature captured BEFORE
+# the failed read, and while the file is unchanged load_config() returns the
+# default (budgets-disabled) config for that call without re-opening it. The
+# next call retries as soon as the file's (st_ino, st_mtime_ns, st_size)
+# changes — mirroring the pricing.yaml fix in #134. Pinning a failed read used
+# to disable enforcement for the rest of the process's life.
+_load_failure_sig: tuple | None = None
+_load_failure_warned: bool = False
+
+
+def _read_process_umask() -> int:
+    """Return this process's umask WITHOUT mutating it.
+
+    ``os.umask()`` has no read-only form — calling it always SETS the
+    process umask while returning the old value. That's unsafe to call from
+    module import: import can happen mid-uptime in a long-running
+    multithreaded gateway process, and the brief window where the umask is
+    wrong would race any other thread creating a file at that exact moment.
+
+    Linux exposes the current umask as a read-only field in
+    ``/proc/self/status`` (octal, e.g. ``Umask:\\t0022``); this parses that
+    instead. Falls back to the common default ``0o022`` when the field is
+    unavailable (non-Linux, a sandboxed/restricted ``/proc``, or a
+    malformed line) — this function must never raise.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("Umask:"):
+                    return int(line.split(":", 1)[1].strip(), 8)
+    except (OSError, ValueError):
+        pass
+    return 0o022
+
+
+# Computed once at import time (not per-call, and via the non-mutating reader
+# above — see its docstring for why). Mirrors what ``open(path, "w")`` would
+# have produced for a brand-new file: 0o666 masked by the umask in effect at
+# process start.
+_DEFAULT_UMASK = _read_process_umask()
+_DEFAULT_FILE_MODE = 0o666 & ~_DEFAULT_UMASK
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` atomically.
+
+    Writes to a temp file in the SAME directory, flushes + fsyncs, then
+    commits via ``os.replace`` (POSIX-atomic rename). A concurrent reader
+    therefore only ever sees the old content or the new content in full —
+    never a truncated/partial file (issue #135: under Hermes multiplex, N
+    plugin instances per process share one budget.yaml and race to write it,
+    and an out-of-process dashboard may edit it concurrently). The temp file
+    is removed if the write or the commit fails. Raises on failure — callers
+    decide their own fail-open/fail-loud policy.
+
+    Permissions: ``tempfile.mkstemp()`` creates its file ``0600`` — if that
+    mode rode along into the replace it would be a silent regression from
+    ``open(path, "w")``'s ``0o666 & ~umask`` (typically ``0644``), and a
+    dashboard running as another user would lose read access. The temp file
+    is ``chmod``'d before writing to match the target's existing mode when it
+    already exists, or the umask-derived default for a brand-new file.
+
+    Symlinks: if ``path`` is a symlink, ``os.replace`` onto it would swap the
+    link for a regular file and leave the real target untouched. The path is
+    therefore resolved first, and the mode lookup, the temp file's directory
+    and the replace all operate on the resolved target — the link survives and
+    the real file receives the new content.
+    """
+    target = Path(os.path.realpath(path))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mode = os.stat(target).st_mode & 0o777 if target.exists() else _DEFAULT_FILE_MODE
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+    )
+    try:
+        # fchmod happens INSIDE the fdopen `with` block (fd leak otherwise):
+        # if fchmod raised before the fd were wrapped by os.fdopen(), nothing
+        # would ever close it. Once wrapped, the `with` block's __exit__
+        # closes the fd on any exception raised inside it, fchmod included.
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), mode)
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp_name)
+        raise
+
+
+def _file_signature(path: Path) -> tuple | None:
+    """Stat signature for failure-streak gating: (st_ino, st_mtime_ns, st_size).
+
+    The inode is part of the signature because every ``os.replace`` commit
+    yields a new one, even when ``mtime_ns`` and size collide with the file it
+    replaced. ``None`` when the file cannot be stat'd (missing/removed).
+    """
+    try:
+        st = path.stat()
+        return (st.st_ino, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
 # Short-TTL verdict cache so the pre_tool_call gate (which fires on EVERY tool
 # call) does not re-query SQLite within a single assistant turn. Spend only
 # changes when a new llm call is recorded, so a few seconds is safe.
@@ -174,8 +280,16 @@ def _pricing_path() -> Path:
 
 def load_config() -> dict:
     """Load and cache budget.yaml. Returns a normalized config dict. A missing
-    or malformed file yields an empty (disabled) budget — never raises."""
-    global _config_cache
+    or malformed file yields an empty (disabled) budget — never raises.
+
+    A malformed file is NEVER memoized (issue #135): the failure is recorded
+    as the file's stat signature captured before the read, and while the file
+    is unchanged the default config is returned for that call without
+    re-opening it. The next call retries as soon as the file changes — no
+    ``reload_config()`` or restart needed. Pinning a failed read used to
+    disable enforcement for the rest of the process's life.
+    """
+    global _config_cache, _load_failure_sig, _load_failure_warned
     with _config_lock:
         if _config_cache is not None:
             return _config_cache
@@ -185,10 +299,19 @@ def load_config() -> dict:
             "on_estimated": dict(_DEFAULT_ON_ESTIMATED),
         }
         path = _budget_path()
+        if _load_failure_sig is not None and _file_signature(path) == _load_failure_sig:
+            # Unchanged since the failed read: one stat per call, no open.
+            return cfg
+        _load_failure_sig = None
         if path.exists():
             try:
                 import yaml
 
+                # Signature BEFORE the read: if a concurrent writer atomically
+                # replaces the file mid-parse, a post-failure stat would record
+                # the good replacement's signature and pin the instance to the
+                # empty table forever.
+                sig = _file_signature(path)
                 with open(path) as f:
                     raw = yaml.safe_load(f) or {}
                 cfg["budgets"] = raw.get("budgets") or {}
@@ -197,16 +320,25 @@ def load_config() -> dict:
                 if isinstance(raw.get("on_estimated"), dict):
                     cfg["on_estimated"].update(raw["on_estimated"])
             except Exception as exc:
-                logger.warning("Failed to load budget config %s: %s", path, exc)
+                if not _load_failure_warned:
+                    logger.warning("Failed to load budget config %s: %s", path, exc)
+                    _load_failure_warned = True
+                else:
+                    logger.debug("Failed to load budget config %s: %s", path, exc)
+                _load_failure_sig = sig
+                return cfg
+            _load_failure_warned = False
         _config_cache = cfg
         return cfg
 
 
 def reload_config() -> None:
     """Drop the cached config (after an edit) so the next read re-parses."""
-    global _config_cache
+    global _config_cache, _load_failure_sig, _load_failure_warned
     with _config_lock:
         _config_cache = None
+        _load_failure_sig = None
+        _load_failure_warned = False
     with _verdict_lock:
         _verdict_cache.clear()
 
@@ -698,8 +830,6 @@ def _set_budget(scope: str, window: str, usd: float, scope_id: str = "") -> str:
     ``global`` scope takes no id. Mirrors the read structure in
     ``_resolve_limits``.
     """
-    import os
-
     import yaml
 
     if scope not in ("global", "cron_job", "sender", "profile"):
@@ -734,12 +864,11 @@ def _set_budget(scope: str, window: str, usd: float, scope_id: str = "") -> str:
         else:
             node.setdefault("default", {})[key] = usd
 
-    # Atomic write: temp file + os.replace (POSIX atomic)
-    # Prevents watchdog from reading partial/empty YAML on IN_MODIFY
-    tmp = path.with_suffix(".yaml.tmp")
-    with open(tmp, "w") as f:
-        yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
-    os.replace(tmp, path)
+    # Atomic write via _atomic_write_text (unique temp + fsync + os.replace,
+    # existing mode kept, symlink target followed) — see #135. Prevents a
+    # concurrent reader (watchdog, another plugin instance, out-of-process
+    # dashboard) from ever parsing a partial file.
+    _atomic_write_text(path, yaml.safe_dump(raw, default_flow_style=False, sort_keys=False))
     reload_config()
     target = f"{scope} '{scope_id}'" if scope_id else scope
     return f"Set {target} {window} budget to ${usd:.2f}. Saved to {path}."

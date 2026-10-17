@@ -272,10 +272,15 @@ def _build_budget_yaml(data: dict) -> str:
 
 
 def _write_budget(data: dict) -> Path:
+    # Route through the atomic writer (unique temp + fsync + os.replace, mode
+    # kept, symlink followed) — see #135. A plain write_text() truncates in
+    # place, so a concurrent reader can parse an empty or partial file.
+    from .budget import _atomic_write_text
+
     _tele_dir().mkdir(parents=True, exist_ok=True)
     content = _build_budget_yaml(data)
     p = _budget_path()
-    p.write_text(content)
+    _atomic_write_text(p, content)
     return p
 
 
