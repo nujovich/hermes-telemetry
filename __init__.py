@@ -145,19 +145,25 @@ def _extract_cron_job_id(session_id: str, platform: str) -> str | None:
     return None
 
 
+# Values of a top-level "error" key that do NOT signal a failure. Several tools
+# (terminal foreground/background, ...) always include the key and set it to
+# null on success, so the key's presence alone is not a failure signal (#120).
+_NO_ERROR_VALUES: tuple = (None, "", False, 0, [], {})
+
+
 def _is_tool_ok(result: Any) -> bool:
     """Determine success/failure from a tool result string."""
     if not isinstance(result, str):
         return True
-    if result.startswith('{"error"'):
-        return False
     try:
         parsed = json.loads(result)
-        if isinstance(parsed, dict) and "error" in parsed:
-            return False
     except (json.JSONDecodeError, ValueError):
-        pass
-    return True
+        return True
+    if not isinstance(parsed, dict):
+        return True
+    if parsed.get("error") not in _NO_ERROR_VALUES:
+        return False
+    return parsed.get("status") != "error"
 
 
 # ---------------------------------------------------------------------------

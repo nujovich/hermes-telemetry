@@ -81,9 +81,26 @@ def test_is_tool_ok_non_json():
     assert _init_mod._is_tool_ok("some plain text") is True
 
 
-def test_is_tool_ok_nested_error():
-    """Any dict with 'error' key at top level is not ok."""
-    assert _init_mod._is_tool_ok('{"error": null, "data": 1}') is False
+def test_is_tool_ok_empty_error_values_are_ok():
+    """'error' present but empty (null/""/false/0/[]/{}) is not a failure (#120).
+
+    terminal and other tools always include the key and set it to null on
+    success, so the key's presence alone must not mark the call failed.
+    """
+    assert _init_mod._is_tool_ok('{"error": null, "data": 1}') is True
+    assert _init_mod._is_tool_ok('{"output": "ok", "exit_code": 0, "error": null}') is True
+    assert _init_mod._is_tool_ok('{"error": ""}') is True
+    assert _init_mod._is_tool_ok('{"error": false}') is True
+    assert _init_mod._is_tool_ok('{"error": 0}') is True
+    assert _init_mod._is_tool_ok('{"error": []}') is True
+    assert _init_mod._is_tool_ok('{"error": {}}') is True
+
+
+def test_is_tool_ok_non_empty_error_is_failure():
+    """A non-empty 'error' value is a failure, with or without 'status'."""
+    assert _init_mod._is_tool_ok('{"output": "", "exit_code": 1, "error": "boom"}') is False
+    assert _init_mod._is_tool_ok('{"error": "", "status": "error"}') is False
+    assert _init_mod._is_tool_ok('{"error": {"code": 1}}') is False
 
 
 def test_is_tool_ok_none():

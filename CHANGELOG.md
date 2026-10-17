@@ -25,6 +25,18 @@ the two never beat against each other, and the per-exception-class key means a
 *different* failure raised inside the window is surfaced immediately rather
 than swallowed by the previous one's suppression.
 
+### Fixed
+
+- **`tool_calls.ok` was always 0 for tools whose success envelope carries an
+  `"error"` key (#120).** `_is_tool_ok()` treated the *presence* of a top-level
+  `"error"` key as failure, but several tools (e.g. `terminal`, foreground and
+  background) always include the key and set it to `null` on success — so every
+  successful call was recorded as a failure (one install: terminal ok-rate
+  0.09 %, 3 of 3,222 rows; reproduced on another install at 0.06 %, 1 of 1,667).
+  Only a non-empty error value — or an explicit `"status": "error"` — now counts
+  as failure. The failure was silent and historical rows cannot be repaired (the
+  raw tool result is not stored).
+
 ## [0.9.1] - 2026-10-14
 
 ### Fixed
