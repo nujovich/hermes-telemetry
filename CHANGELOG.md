@@ -312,6 +312,18 @@ than swallowed by the previous one's suppression.
   dry-run by default (`--apply` to write). Rows whose model no longer resolves
   to an explicit price are skipped and reported, never zeroed.
 
+### Fixed
+
+- **Standalone dashboard hid every session not in the running profile's
+  `sessions.json` under a shared telemetry home (#128).** The dashboard read
+  its DB from `HERMES_TELEMETRY_HOME` but resolved its session-visibility
+  filter from `HERMES_HOME`, so with the #63 consolidation topology the
+  analytics views silently dropped every other profile's runs / requests /
+  tool calls (reporter: ~1/14 of tool calls visible; `/api/summary` on the
+  same page showed the true totals). Under a shared home the visibility list
+  is now gathered from the primary profile's sessions dir plus every
+  multiplex profile's; the default single-profile setup is unchanged.
+
 ## [0.9.1] - 2026-10-14
 
 ### Fixed
