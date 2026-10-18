@@ -333,7 +333,7 @@ def _budget_json(subcommand: str) -> None:
         print(json.dumps(rows, default=str))
         return
 
-    # Full status: global + cron_jobs + senders
+    # Full status: global + cron_jobs + senders + profiles
     result: dict = {}
 
     g = _budget.check("global", "")
@@ -350,6 +350,12 @@ def _budget_json(subcommand: str) -> None:
     for sid in sender_ids:
         v = _budget.check("sender", sid)
         result["senders"][sid] = _dc.asdict(v) if v is not None else None
+
+    profile_ids = db.list_profile_ids(since30)
+    result["profiles"] = {}
+    for pid in profile_ids:
+        v = _budget.check("profile", pid)
+        result["profiles"][pid] = _dc.asdict(v) if v is not None else None
 
     print(json.dumps(result, default=str))
 

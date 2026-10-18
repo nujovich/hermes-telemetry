@@ -280,7 +280,9 @@ def global_verdict():
 def test_budget_status_json_global_ok(global_verdict, capsys):
     with patch("hermes_telemetry.budget.check", return_value=global_verdict), patch(
         "hermes_telemetry.telemetry_cli.db.list_cron_job_ids", return_value=[]
-    ), patch("hermes_telemetry.telemetry_cli.db.list_sender_ids", return_value=[]):
+    ), patch("hermes_telemetry.telemetry_cli.db.list_sender_ids", return_value=[]), patch(
+        "hermes_telemetry.telemetry_cli.db.list_profile_ids", return_value=[]
+    ):
         main(["budget", "--json"])
     out, _ = capsys.readouterr()
     data = _json.loads(out)
@@ -289,16 +291,48 @@ def test_budget_status_json_global_ok(global_verdict, capsys):
     assert data["global"]["limit"] == pytest.approx(5.0)
     assert data["cron_jobs"] == {}
     assert data["senders"] == {}
+    assert data["profiles"] == {}
 
 
 def test_budget_status_json_no_budgets(capsys):
     with patch("hermes_telemetry.budget.check", return_value=None), patch(
         "hermes_telemetry.telemetry_cli.db.list_cron_job_ids", return_value=[]
-    ), patch("hermes_telemetry.telemetry_cli.db.list_sender_ids", return_value=[]):
+    ), patch("hermes_telemetry.telemetry_cli.db.list_sender_ids", return_value=[]), patch(
+        "hermes_telemetry.telemetry_cli.db.list_profile_ids", return_value=[]
+    ):
         main(["budget", "--json"])
     out, _ = capsys.readouterr()
     data = _json.loads(out)
     assert data["global"] is None
+    assert data["profiles"] == {}
+
+
+def test_budget_status_json_profiles(capsys):
+    profile_verdict = BudgetVerdict(
+        scope="profile",
+        scope_id="faro",
+        window="daily",
+        status="soft",
+        spent=4.2,
+        limit=5.0,
+        pct=0.84,
+        based_on_estimates=False,
+        degraded=False,
+        period_key="2026-06-11",
+    )
+    with patch("hermes_telemetry.budget.check", return_value=profile_verdict), patch(
+        "hermes_telemetry.telemetry_cli.db.list_cron_job_ids", return_value=[]
+    ), patch("hermes_telemetry.telemetry_cli.db.list_sender_ids", return_value=[]), patch(
+        "hermes_telemetry.telemetry_cli.db.list_profile_ids", return_value=["faro"]
+    ):
+        main(["budget", "--json"])
+    out, _ = capsys.readouterr()
+    data = _json.loads(out)
+    assert data["profiles"]["faro"]["scope"] == "profile"
+    assert data["profiles"]["faro"]["scope_id"] == "faro"
+    assert data["profiles"]["faro"]["status"] == "soft"
+    assert data["profiles"]["faro"]["spent"] == pytest.approx(4.2)
+    assert data["profiles"]["faro"]["limit"] == pytest.approx(5.0)
 
 
 def test_budget_cron_json(capsys):
