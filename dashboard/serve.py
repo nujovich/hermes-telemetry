@@ -302,6 +302,28 @@ def _period_start_expr(col: str, granularity: str, tz_name: str | None = None) -
     return f"dashboard_period_start({col}, {_sql_string_literal(granularity)}, {_sql_string_literal(tz_value)})"
 
 
+def _iter_hermes_homes():
+    """Yield the Hermes homes whose session metadata may hold telemetry rows.
+
+    Under a shared telemetry home (HERMES_TELEMETRY_HOME resolving to a home
+    other than the running HERMES_HOME — the #63 consolidation topology) the
+    telemetry DB holds EVERY profile's sessions, so the visibility list must
+    be gathered from all of them: the primary profile's sessions dir plus
+    every multiplex profile's (#128). With the default single-profile setup
+    only the primary home is scanned, preserving today's behavior exactly.
+    """
+    yield HERMES_HOME
+    if _TELEMETRY_HOME != HERMES_HOME / "telemetry":
+        try:
+            profiles_dir = HERMES_HOME / "profiles"
+            if profiles_dir.is_dir():
+                for entry in sorted(profiles_dir.iterdir()):
+                    if entry.is_dir():
+                        yield entry
+        except OSError:
+            pass
+
+
 def _active_hermes_session_ids():
     """Return session IDs still present in Hermes' active/session files.
 
@@ -310,33 +332,34 @@ def _active_hermes_session_ids():
     no longer exists. Cron telemetry is kept separately via session_id LIKE
     'cron_%' because cron runs are not represented in sessions.json.
     """
-    hermes_home = HERMES_HOME
-    sessions_dir = hermes_home / "sessions"
-    sessions_json = sessions_dir / "sessions.json"
     ids = set()
     metadata_available = False
 
-    try:
-        if sessions_json.exists():
-            metadata_available = True
-            data = json.loads(sessions_json.read_text())
-            if isinstance(data, dict):
-                for item in data.values():
-                    if isinstance(item, dict) and item.get("session_id"):
-                        ids.add(str(item["session_id"]))
-    except Exception:
-        # Missing/corrupt Hermes session metadata should not take down telemetry.
-        pass
+    for hermes_home in _iter_hermes_homes():
+        sessions_dir = hermes_home / "sessions"
+        sessions_json = sessions_dir / "sessions.json"
 
-    try:
-        if sessions_dir.exists():
-            metadata_available = True
-            for path in sessions_dir.glob("session_*.json"):
-                session_id = path.stem.removeprefix("session_")
-                if session_id:
-                    ids.add(session_id)
-    except Exception:
-        pass
+        try:
+            if sessions_json.exists():
+                metadata_available = True
+                data = json.loads(sessions_json.read_text())
+                if isinstance(data, dict):
+                    for item in data.values():
+                        if isinstance(item, dict) and item.get("session_id"):
+                            ids.add(str(item["session_id"]))
+        except Exception:
+            # Missing/corrupt Hermes session metadata should not take down telemetry.
+            pass
+
+        try:
+            if sessions_dir.exists():
+                metadata_available = True
+                for path in sessions_dir.glob("session_*.json"):
+                    session_id = path.stem.removeprefix("session_")
+                    if session_id:
+                        ids.add(session_id)
+        except Exception:
+            pass
 
     return ids, metadata_available
 
