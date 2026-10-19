@@ -2862,6 +2862,56 @@ def api_budget(tz_name: str | None = None):
             }
         )
 
+    # Per-profile budgets. The budget engine models per_profile (default +
+    # overrides); the standalone panel surfaces each profile seen in runs that
+    # resolves to a limit, mirroring the global loop with a profile filter.
+    pp_cfg = budgets.get("per_profile") or {}
+    if pp_cfg:
+        pp_default = pp_cfg.get("default") or {}
+        pp_overrides = pp_cfg.get("overrides") or {}
+        profile_rows = _rows(
+            "SELECT DISTINCT profile FROM runs "
+            "WHERE profile IS NOT NULL AND profile != '' ORDER BY profile"
+        )
+        for prow in profile_rows:
+            name = prow["profile"]
+            limits = (pp_overrides.get(name) or pp_default) or {}
+            for win_key in ("daily", "monthly"):
+                limit = limits.get(f"{win_key}_usd")
+                if limit is None:
+                    continue
+                bounds = _budget_window_bounds_utc(win_key, tz_name)
+                spend = _one(
+                    "SELECT COALESCE(SUM(cost_usd),0.0) AS spent, "
+                    "COALESCE(SUM(estimated_llm_calls),0) AS est, "
+                    "COALESCE(SUM(api_calls),0) AS total FROM runs "
+                    "WHERE started_at >= ? AND profile = ?",
+                    (bounds["window_start_utc"], name),
+                )
+                spent = float(spend.get("spent", 0))
+                pct = spent / limit if limit > 0 else 0
+                soft_pct = thresholds.get("soft_pct", 0.8)
+                hard_pct = thresholds.get("hard_pct", 1.0)
+                level = "ok"
+                if pct >= hard_pct:
+                    level = "hard"
+                elif pct >= soft_pct:
+                    level = "soft"
+                scopes.append(
+                    {
+                        "scope": f"profile:{name}/{win_key}",
+                        "scope_id": name,
+                        "window": win_key,
+                        "spent": round(spent, 6),
+                        "limit": limit,
+                        "pct": round(pct * 100, 1),
+                        "level": level,
+                        "estimated_calls": spend.get("est", 0),
+                        "total_calls": spend.get("total", 0),
+                        **bounds,
+                    }
+                )
+
     mode = _enforcement_mode()
     return {
         "enabled": True,
