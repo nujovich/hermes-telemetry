@@ -16,7 +16,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 729 passing](https://img.shields.io/badge/Tests-729%20passing-green.svg)](https://img.shields.io/badge/Tests-729%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 738 passing](https://img.shields.io/badge/Tests-738%20passing-green.svg)](https://img.shields.io/badge/Tests-738%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e742d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -146,7 +146,7 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (729 tests, 729 passing):**
+**Test suite (738 tests, 738 passing):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
@@ -173,6 +173,7 @@ pytest tests/ -v
 |`test_moa.py`                    |11   |Mixture-of-Agents (MoA) telemetry capture                                                                                      |
 |`test_sync_profiles_cli.py`      |7    |`sync-profiles` CLI wiring, dry-run + `--apply`                                                                                |
 |`test_pricing_backfill.py`       |7    |Seed pricing snapshots for historical models (coverage seed, fail-open, idempotent)                                            |
+|`test_pricing_recalculate.py`    |9    |Historical cost recalc vs current `pricing.yaml`: explicit-row filter (estimated/assumed excluded), dry-run vs `--apply`, run rollup refresh, unpriced-model skip, CLI|
 |`test_paths.py`                  |6    |Telemetry path resolution precedence: `HERMES_TELEMETRY_HOME` > `HERMES_HOME` > `~/.hermes`                                     |
 |`test_dashboard_plugin_isolation.py`|6 |Enforces zero shared Python code between the two dashboard surfaces                                                             |
 |`test_isolation.py`              |5    |`HERMES_HOME` redirect, no writes to real `~/.hermes`                                                                          |
@@ -183,7 +184,7 @@ pytest tests/ -v
 |`test_logging_isolation.py`      |2    |Plugin logger state isolation between tests                                                                                    |
 |`test_ci_config.py`              |4    |Lint toolchain pin: `.ruff-version` is the single source of truth, CI installs from it, the pre-commit hook warns on version skew, `*.md` excluded from formatting|
 
-Counts above are per-file collected totals, measured on this branch with `pytest tests/ -q` and the optional `fastapi` test dependency installed (729 passed, 0 skipped). CI installs only `pytest` + `pyyaml`, so `test_dashboard_plugin_api.py` skips there and the same command reports **695 passed, 34 skipped**.
+Counts above are per-file collected totals, measured on this branch with `pytest tests/ -q` and the optional `fastapi` test dependency installed (738 passed, 0 skipped). CI installs only `pytest` + `pyyaml`, so `test_dashboard_plugin_api.py` skips there and the same command reports **704 passed, 34 skipped**.
 
 No live Hermes is required — all tests are self-contained with in-memory SQLite.
 
