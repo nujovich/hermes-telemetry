@@ -201,6 +201,13 @@ def _build_parser_into(sub) -> None:
     pd.add_argument("--model", default=None, help="Limit to a single canonical model name")
     pd.add_argument("--json", action="store_true", help="Output as JSON")
 
+    pr = psub.add_parser(
+        "recalculate",
+        help="Recompute historical llm_calls costs against current pricing.yaml",
+    )
+    pr.add_argument("--apply", action="store_true", help="Write changes (default: dry-run)")
+    pr.add_argument("--json", action="store_true", help="Output as JSON")
+
 
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
@@ -400,6 +407,14 @@ def _handle_pricing(
 
         result = pricing_drift.run(apply=args.apply, threshold_pct=args.threshold, model=args.model)
         print(pricing_drift.to_json(result) if args.json else pricing_drift.render(result))
+        return
+    if args.pricing_command == "recalculate":
+        from . import pricing_recalculate
+
+        result = pricing_recalculate.run(apply=args.apply)
+        print(
+            pricing_recalculate.to_json(result) if args.json else pricing_recalculate.render(result)
+        )
         return
     if parser:
         parser.print_help()

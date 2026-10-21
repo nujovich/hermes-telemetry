@@ -1505,6 +1505,52 @@ def list_profile_ids(since_iso: str) -> list[str]:
     return [r["profile"] for r in rows]
 
 
+def list_recalculable_llm_calls() -> list[dict[str, Any]]:
+    """Return llm_calls rows that carried an explicit price at record time.
+
+    ``estimated = 0 AND provider_assumed = 0`` is the filter for rows whose
+    ``cost_usd`` came from a real price (not a token-shape estimate, not a
+    best-effort assumed rate). These are the only rows it is safe to recompute
+    against the current ``pricing.yaml`` after a ``pricing drift --apply``
+    corrected a rate (issue #83): rewriting the cost of an estimated or assumed
+    row would replace a deliberately-flagged approximation with a guess.
+    """
+    conn = _get_conn()
+    rows = conn.execute(
+        """
+        SELECT id, session_id, model, provider,
+               tokens_in, tokens_out, cache_read_tokens, cache_write_tokens,
+               reasoning_tokens, cost_usd
+        FROM llm_calls
+        WHERE estimated = 0 AND provider_assumed = 0
+        ORDER BY id
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_llm_call_cost(call_id: int, cost_usd: float) -> None:
+    """Overwrite ``cost_usd`` for a single ``llm_calls`` row (issue #83 recalc)."""
+    conn = _get_conn()
+    conn.execute("UPDATE llm_calls SET cost_usd = ? WHERE id = ?", (cost_usd, call_id))
+
+
+def refresh_run_cost(session_id: str) -> float:
+    """Recompute ``runs.cost_usd`` as the sum of its ``llm_calls.cost_usd``.
+
+    ``runs.cost_usd`` is otherwise only ever incremented alongside each
+    ``record_llm_call``, so re-summing keeps it consistent after a recalc
+    rewrites individual row costs (issue #83). Returns the new total.
+    """
+    conn = _get_conn()
+    new_total = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0.0) FROM llm_calls WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()[0]
+    conn.execute("UPDATE runs SET cost_usd = ? WHERE session_id = ?", (new_total, session_id))
+    return new_total
+
+
 def stats_by_provider(
     window_hours: int | None = None, *, date_from: str | None = None, date_to: str | None = None
 ) -> list[dict[str, Any]]:
