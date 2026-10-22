@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 18
+_SCHEMA_VERSION = 19
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -182,6 +182,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v16(conn)
     _migrate_v17(conn)
     _migrate_v18(conn)
+    _migrate_v19(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -761,6 +762,51 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _migrate_v19(conn: sqlite3.Connection) -> None:
+    """Carry the owning profile on every tool/llm row, not just on `runs`.
+
+    In a SHARED home (``HERMES_TELEMETRY_HOME`` — several profiles pointing at
+    one cost centre) `runs.profile` is the only per-profile label, and it is
+    only present when ``ctx.profile_name`` reached the plugin. Rows below
+    `runs` could not be attributed to a profile at all, so a per-profile query
+    over tool/llm traffic had nothing to filter on. ``runs.session_id`` is also
+    the PRIMARY KEY with no profile dimension, so two profiles whose sessions
+    happen to share an id merge into one row set and the `runs.profile` label
+    cannot be trusted to disambiguate them.
+
+    Storing the profile on each `tool_calls`/`llm_calls` row makes the
+    attribution self-describing. Existing rows are backfilled from their run
+    where that run carries a profile. Guarded on the version marker AND on the
+    columns, so a half-applied DB self-heals; idempotent.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 19")
+    first_run = cur.fetchone() is None
+
+    for table in ("tool_calls", "llm_calls"):
+        _add_column_if_missing(conn, table, "profile", "TEXT")
+
+    if first_run:
+        # Label existing rows from their run where the run knows the profile.
+        for table in ("tool_calls", "llm_calls"):
+            conn.execute(
+                f"UPDATE {table} SET profile = "
+                f"(SELECT r.profile FROM runs r WHERE r.session_id = {table}.session_id) "
+                f"WHERE profile IS NULL"
+            )
+
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tool_profile ON tool_calls(profile);
+            CREATE INDEX IF NOT EXISTS idx_llm_profile  ON llm_calls(profile);
+            """
+        )
+
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (19, ?)",
+            (_utcnow(),),
+        )
+
+
 def _run_hours_ago_expr(hours: int) -> str:
     return f"datetime('now', '-{hours} hours')"
 
@@ -845,6 +891,7 @@ def record_llm_call(
     turn_id: str | None = None,
     task_id: str | None = None,
     api_request_id: str | None = None,
+    profile: str | None = None,
 ) -> None:
     conn = _get_conn()
     conn.execute(
@@ -852,8 +899,8 @@ def record_llm_call(
         INSERT INTO llm_calls
             (session_id, ts, model, provider, tokens_in, tokens_out, cost_usd, latency_ms,
              cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated,
-             provider_assumed, moa_preset, turn_id, task_id, api_request_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             provider_assumed, moa_preset, turn_id, task_id, api_request_id, profile)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -873,6 +920,7 @@ def record_llm_call(
             turn_id,
             task_id,
             api_request_id,
+            profile,
         ),
     )
     _ensure_run_row(session_id, ts)
@@ -960,14 +1008,15 @@ def record_tool_call(
     latency_ms: int | None,
     turn_id: str | None = None,
     tool_call_id: str | None = None,
+    profile: str | None = None,
 ) -> None:
     conn = _get_conn()
     conn.execute(
         """
-        INSERT INTO tool_calls (session_id, ts, tool_name, ok, latency_ms, turn_id, tool_call_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tool_calls (session_id, ts, tool_name, ok, latency_ms, turn_id, tool_call_id, profile)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, ts, tool_name, 1 if ok else 0, latency_ms, turn_id, tool_call_id),
+        (session_id, ts, tool_name, 1 if ok else 0, latency_ms, turn_id, tool_call_id, profile),
     )
     conn.execute(
         "UPDATE runs SET tool_calls = tool_calls + 1 WHERE session_id = ?",

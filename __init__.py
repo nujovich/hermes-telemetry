@@ -517,6 +517,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 turn_id=turn_id or None,
                 task_id=task_id or None,
                 api_request_id=api_request_id or None,
+                profile=getattr(ctx, "profile_name", None),
             )
 
             # Pricing snapshot (v14): capture the core-resolved tariff + provenance
@@ -755,6 +756,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 # provides one, to the exact tool_call_id the model emitted).
                 turn_id=turn_id or None,
                 tool_call_id=tool_call_id or None,
+                profile=getattr(ctx, "profile_name", None),
             )
         except Exception as exc:
             _throttled_error("post_tool_call hook failed", exc)
@@ -828,6 +830,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 # no tool_call_id for a delegation — the model never emitted
                 # one — so that column stays NULL here.
                 turn_id=parent_turn_id or None,
+                profile=getattr(ctx, "profile_name", None),
             )
             if child_session_id:
                 db.record_subagent_stop(
@@ -1064,8 +1067,18 @@ def register(ctx) -> None:  # noqa: ANN001
 
 
 def _db_path_info() -> str:
+    """The DB path the plugin ACTUALLY opens — never a guess from HERMES_HOME.
+
+    ``HERMES_TELEMETRY_HOME`` (the opt-in shared cost centre, see paths.py)
+    outranks ``HERMES_HOME``. Reading only ``HERMES_HOME`` here printed a path
+    the plugin never writes to when a shared cost centre is configured, which
+    sent an investigation looking for rows in the wrong store.
+    """
     try:
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-        return str(hermes_home / "telemetry" / "telemetry.db")
+        from . import paths as _paths
+    except ImportError:  # pragma: no cover - loaded standalone (no package context)
+        import paths as _paths  # type: ignore[no-redef]
+    try:
+        return str(_paths.get_telemetry_home() / "telemetry.db")
     except Exception:
         return "~/.hermes/telemetry/telemetry.db"
