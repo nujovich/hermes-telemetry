@@ -159,6 +159,7 @@ pytest tests/ -v
 |`test_pricing_drift.py`          |33   |Drift vs core snapshots: threshold, subscription skip, canonical collapse, provider-assumed routing, `--apply` write-back, multi-provider recency, malformed-YAML safety, CLI|
 |`test_sync_profiles.py`          |31   |Profile consolidation via `HERMES_TELEMETRY_HOME`: `.env` upsert, name scoping, template preservation, per-state repair hints (install vs enable)                       |
 |`test_stats_smells.py`           |22   |Anti-pattern (smell) detection and scoring                                                                                     |
+|`test_shared_home_profile_attribution.py`|10|Shared-home DB path reporting + per-row profile attribution: v19 migration, backfill, `profile=` on `record_tool_call` / `record_llm_call`, NULL default|
 |`test_packaging.py`              |4    |Packaging contract: pyyaml declared in `[project].dependencies`, every runtime dependency upper-bounded, setuptools maps the repo root to `hermes_telemetry`, wizard module is not named `setup.py`|
 |`test_dashboard_html_escaping.py`|1   |Standalone dashboard never interpolates `err.message` into HTML unescaped                                                        |
 |`test_setup.py`                  |23   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |

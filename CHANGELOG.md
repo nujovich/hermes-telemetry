@@ -59,6 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (+ index). All five columns are nullable; **rows written before the upgrade
   keep NULL** — their turn ids were never captured, and NULL is the honest
   value. No backfill, no data rewrite, no rollup table.
+- **Schema v18 → v19.** One forward-only migration runs automatically on first
+  load. It adds `tool_calls.profile` and `llm_calls.profile` (both nullable
+  `TEXT`) plus `idx_tool_profile` / `idx_llm_profile`. Existing rows are
+  backfilled from their `runs.profile`; rows whose run carried no profile keep
+  **NULL** — the plugin could not resolve a profile for them, and NULL is the
+  honest value. `db.record_tool_call` / `db.record_llm_call` gain a `profile=`
+  keyword that defaults to `None`, so existing callers are unaffected.
 
 ### Added — /stats profile filter (`--profile`)
 
@@ -117,6 +124,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `runs` that resolves to a `per_profile` limit (override replaces default, as in
   the budget engine). These rows are read-only: the edit modal only handles
   global scopes, so they render without an Edit button.
+
+### Added — Per-row profile attribution on `tool_calls` / `llm_calls` (schema v20)
+
+- `runs.profile` (v12) labels the *session* and is only present when the plugin
+  saw `ctx.profile_name`. Rows below `runs` carried no profile at all, so a
+  per-profile query over tool/llm traffic had nothing to filter on — the exact
+  query a shared cost centre (`HERMES_TELEMETRY_HOME`) runs. v20 stores the
+  owning profile on each `tool_calls` / `llm_calls` row, so the attribution is
+  self-describing: a row's profile no longer depends on its `runs` row having
+  resolved one.
+- New `profile=` keyword on `db.record_llm_call` / `db.record_tool_call`
+  (default `None`). The hooks pass `getattr(ctx, "profile_name", None)` on
+  `post_api_request`, `post_tool_call` and the `subagent_stop` proxy row. A
+  profile that cannot be resolved stores NULL, exactly as `runs` does.
+- `_migrate_v20` backfills existing rows from their `runs.profile` (rows that
+  already carry one are left alone) and creates `idx_tool_profile` /
+  `idx_llm_profile` — the indexes a per-profile filter on those columns needs.
+  Guarded on the version marker *and* on the columns, so a half-applied DB
+  self-heals; idempotent.
+- **Reader wired.** `dashboard/plugin_api.py::_calls_profile_clause` now prefers the
+  row's own ``profile`` column (schema v20) and falls back to the ``runs``
+  correlation for an unlabelled row — so the per-profile filter over tool/llm
+  traffic has a column to filter on after all. `dashboard/serve.py` has no
+  profile surface, so there is no duplicate to keep in sync.
 
 ### Fixed — the `api_request_error` handler read the wrong payload shape
 
