@@ -242,7 +242,17 @@ def load_config() -> dict:
                 import yaml
 
                 with open(path) as f:
-                    raw = yaml.safe_load(f) or {}
+                    raw = yaml.safe_load(f)
+                if raw is None:
+                    # Empty YAML stream: a 0-byte file (a truncate-in-place
+                    # writer caught mid-write) or one holding only
+                    # whitespace/comments. Ambiguous, so it must NOT be pinned
+                    # into _config_cache as "budgets disabled" -- record the
+                    # failure streak so the next call retries as soon as the
+                    # file changes (#146). Return the disabled config for this
+                    # call only.
+                    _load_failure_sig = sig
+                    return cfg
                 cfg["budgets"] = raw.get("budgets") or {}
                 if isinstance(raw.get("thresholds"), dict):
                     cfg["thresholds"].update(raw["thresholds"])

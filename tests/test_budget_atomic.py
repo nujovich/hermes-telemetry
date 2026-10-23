@@ -157,6 +157,58 @@ def test_reload_config_clears_failure_streak(tmp_path):
     assert budget.load_config()["budgets"]["global"]["daily_usd"] == 7.50
 
 
+def test_empty_budget_file_is_not_pinned(tmp_path):
+    """A 0-byte budget.yaml (a truncate-in-place writer caught mid-write) must
+    not be pinned as "budgets disabled" -- a valid replacement is picked up
+    with no reload_config() (#146)."""
+    tele = tmp_path / "telemetry"
+    tele.mkdir(parents=True, exist_ok=True)
+    budget_file = _budget_path(tmp_path)
+    budget_file.write_text("")  # 0-byte truncation window
+    assert budget.load_config()["budgets"] == {}
+
+    budget_file.write_text(textwrap.dedent(VALID_BUDGET))
+    cfg = budget.load_config()  # no reload_config() -- the retry is automatic
+    assert cfg["budgets"]["global"]["daily_usd"] == 7.50
+
+
+def test_comments_only_budget_file_is_not_pinned(tmp_path):
+    """A non-empty file that parses to None (comments/whitespace only) is just
+    as ambiguous as a 0-byte file and must also retry, not pin (#146)."""
+    tele = tmp_path / "telemetry"
+    tele.mkdir(parents=True, exist_ok=True)
+    budget_file = _budget_path(tmp_path)
+    budget_file.write_text("# comments only, no budgets\n")
+    assert budget.load_config()["budgets"] == {}
+
+    budget_file.write_text(textwrap.dedent(VALID_BUDGET))
+    cfg = budget.load_config()
+    assert cfg["budgets"]["global"]["daily_usd"] == 7.50
+
+
+def test_empty_budget_file_streak_does_not_reopen(tmp_path, monkeypatch):
+    """While the empty file is unchanged, repeated calls return disabled without
+    re-opening (one stat per call), mirroring the malformed-file streak (#146)."""
+    tele = tmp_path / "telemetry"
+    tele.mkdir(parents=True, exist_ok=True)
+    budget_file = _budget_path(tmp_path)
+    budget_file.write_text("")
+    assert budget.load_config()["budgets"] == {}
+
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def counting_open(file, *args, **kwargs):
+        if Path(file) == budget_file:
+            opened.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+    assert budget.load_config()["budgets"] == {}
+    assert budget.load_config()["budgets"] == {}
+    assert opened == []
+
+
 # ---------------------------------------------------------------------------
 # Writers: atomic, unique temp, mode kept, symlink followed
 # ---------------------------------------------------------------------------
