@@ -435,6 +435,44 @@ def test_requests_filters_by_profile(plugin_api):
     assert all(r["provider"] == "nous" for r in out["rows"])
 
 
+def test_calls_profile_clause_prefers_the_rows_own_profile(plugin_api):
+    """v19: the per-profile filter reads the row's own ``profile`` column.
+
+    The row's label is ``ops`` while its run's is ``coder`` — so a filter on
+    ``ops`` must match (the row's column wins) and a filter on ``coder`` must
+    not (the ``runs`` correlation is only a fallback for an unlabelled row).
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(
+        rows_runs=[{"session_id": "c1", "model": "m", "platform": "cli", "profile": "coder"}],
+        rows_llm=[
+            {
+                "session_id": "c1",
+                "ts": now,
+                "model": "m",
+                "provider": "nous",
+                "tokens_in": 100,
+                "tokens_out": 10,
+                "cost_usd": 1.0,
+                "latency_ms": 5,
+                "profile": "ops",
+            }
+        ],
+    )
+    ops = plugin_api.requests(limit=100, window_hours=24, profile="ops")
+    assert ops["total_requests"] == 1
+    assert ops["rows"][0]["provider"] == "nous"
+
+    coder = plugin_api.requests(limit=100, window_hours=24, profile="coder")
+    assert coder["total_requests"] == 0
+
+    # the unqualified path (summary / token-breakdown) uses the same column
+    summary = plugin_api.summary(window_hours=24, profile="ops")
+    assert summary["llm"]["api_calls"] == 1
+
+
 def test_providers_filters_by_profile(plugin_api):
     _seed_two_profiles()
     out = plugin_api.providers(window_hours=24, profile="ops")

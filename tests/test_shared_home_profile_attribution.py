@@ -1,11 +1,18 @@
 """Shared-home (HERMES_TELEMETRY_HOME) cross-profile attribution.
 
 Topology this covers: several profiles point ``HERMES_TELEMETRY_HOME`` at ONE
-directory, so their rows land in a single ``telemetry.db``. In that store
-``runs.session_id`` is the PRIMARY KEY with no profile dimension, so two profiles
-whose sessions share an id merge into one row set, and rows below ``runs`` carried
-no profile at all. v19 puts the owning profile on every ``tool_calls`` /
-``llm_calls`` row so the attribution is self-describing.
+directory, so their rows land in a single ``telemetry.db``. Every row below
+``runs`` carried no profile at all, so a per-profile query over tool/llm
+traffic had nothing to filter on — and under a shared cost centre that is
+exactly the query a cost centre runs. v19 puts the owning profile on every
+``tool_calls`` / ``llm_calls`` row so the attribution is self-describing.
+
+``runs.session_id`` is still the PRIMARY KEY with no profile dimension, so two
+profiles whose sessions share an id still merge into one run row. That is a
+residual limitation of ``runs``, asserted rather than hidden (section 5); it is
+not the motivation here — upstream session ids (cron
+``cron_{job}_{%Y%m%d_%H%M%S}``, gateway ``new_session_id(now, hex_len=8)``) do
+not collide across profiles in practice.
 """
 
 from __future__ import annotations
@@ -244,15 +251,47 @@ def test_post_tool_call_hook_passes_profile():
 
 
 # ---------------------------------------------------------------------------
-# 5. the cross-profile case this exists for
+# 5. the cross-profile value: rows carry their own profile
 # ---------------------------------------------------------------------------
 
 
-def test_two_profiles_same_session_id_rows_are_separable(tmp_path, monkeypatch):
-    """Two profiles, ONE shared store, the SAME session id.
+def test_rows_carry_their_own_profile(tmp_path, monkeypatch):
+    """Two profiles, ONE shared store, DISTINCT session ids.
 
-    `runs` still merges (session_id is the PK) — that limitation is asserted, not
-    hidden. The tool/llm rows stay separable because each carries its own profile.
+    The honest value of v19: every tool/llm row carries the profile that produced
+    it, so a per-profile query has a column to filter on regardless of how the
+    session ids line up.
+    """
+    import hermes_telemetry.db as db
+
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(tmp_path / "shared"))
+
+    db.start_run("s-alpha", "m", "cli", profile="alpha")
+    db.record_tool_call("s-alpha", db._utcnow(), "terminal", True, 5, profile="alpha")
+    db.record_llm_call("s-alpha", db._utcnow(), "m", "p", 1, 1, 0.0, 5, profile="alpha")
+
+    db.start_run("s-beta", "m", "cli", profile="beta")
+    db.record_tool_call("s-beta", db._utcnow(), "read_file", True, 3, profile="beta")
+    db.record_llm_call("s-beta", db._utcnow(), "m", "p", 2, 2, 0.0, 6, profile="beta")
+
+    conn = db._get_conn()
+    tools = [
+        tuple(r) for r in conn.execute("SELECT tool_name, profile FROM tool_calls ORDER BY id")
+    ]
+    llms = [tuple(r) for r in conn.execute("SELECT model, profile FROM llm_calls ORDER BY id")]
+
+    assert tools == [("terminal", "alpha"), ("read_file", "beta")]
+    assert llms == [("m", "alpha"), ("m", "beta")]
+
+
+def test_runs_merge_is_a_stated_limitation(tmp_path, monkeypatch):
+    """The residual limitation, stated plainly — not the motivation.
+
+    `runs.session_id` is the PRIMARY KEY with no profile dimension, so two
+    profiles sharing an id merge into one run row and `set_profile`'s COALESCE
+    keeps the first writer's label. Upstream session ids do not collide across
+    profiles in practice; re-keying `runs` is a behaviour change this PR
+    deliberately leaves to the maintainer.
     """
     import hermes_telemetry.db as db
 
@@ -265,16 +304,6 @@ def test_two_profiles_same_session_id_rows_are_separable(tmp_path, monkeypatch):
     db.record_tool_call("dup", db._utcnow(), "read_file", True, 3, profile="beta")
     db.record_llm_call("dup", db._utcnow(), "m", "p", 2, 2, 0.0, 6, profile="beta")
 
-    conn = db._get_conn()
-    tools = [
-        tuple(r) for r in conn.execute("SELECT tool_name, profile FROM tool_calls ORDER BY id")
-    ]
-    llms = [tuple(r) for r in conn.execute("SELECT model, profile FROM llm_calls ORDER BY id")]
-
-    assert tools == [("terminal", "alpha"), ("read_file", "beta")]
-    assert llms == [("m", "alpha"), ("m", "beta")]
-
-    # the residual limitation, stated plainly: runs merges and first-writer-wins
     run = db.get_run("dup")
     assert run["tool_calls"] == 2
     assert run["profile"] == "alpha"
