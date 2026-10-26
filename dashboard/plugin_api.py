@@ -90,17 +90,30 @@ def _runs_profile_clause(profile: str | None) -> tuple[str, tuple]:
 
 
 def _calls_profile_clause(
-    profile: str | None, session_col: str = "session_id"
+    profile: str | None, session_col: str = "session_id", table: str = "llm_calls"
 ) -> tuple[str, tuple]:
-    """AND-clause restricting an `llm_calls` query to one profile. Correlates the
-    call's session to runs.profile via a subquery — avoids a JOIN and the
+    """AND-clause restricting an `llm_calls` query to one profile.
+
+    Prefers the row's own ``profile`` column (schema v19) and falls back to the
+    ``runs`` correlation for a row whose label was never captured — so a
+    half-applied v19 DB still filters correctly. Avoids a JOIN and the
     column-name ambiguity between runs and llm_calls (both have provider,
     cost_usd, tokens_in, …). Pass a qualified session_col (e.g. "lc.session_id")
-    when the query already aliases llm_calls."""
+    when the query already aliases llm_calls; the profile column is qualified
+    with the same alias. The outer reference is qualified with the table name
+    because an unqualified ``session_id`` inside the subquery would resolve to
+    the inner ``runs`` table instead of the outer one.
+    """
     if not profile:
         return "", ()
+    if "." in session_col:
+        alias = session_col.split(".", 1)[0]
+        outer_session, profile_col = session_col, f"{alias}.profile"
+    else:
+        outer_session, profile_col = f"{table}.session_id", f"{table}.profile"
     return (
-        f" AND {session_col} IN (SELECT session_id FROM runs WHERE profile = ?)",
+        f" AND COALESCE({profile_col}, "
+        f"(SELECT r.profile FROM runs r WHERE r.session_id = {outer_session})) = ?",
         (profile,),
     )
 

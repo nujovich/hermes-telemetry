@@ -170,8 +170,8 @@ pre_api_request         Stash approx_input_tokens keyed by (session_id, call_cou
 post_api_request        PRIMARY TOKEN SOURCE. One call per individual API call
                         within a turn. Carries the usage dict with real token
                         counts. Calculates cost, records llm_calls row (incl.
-                        turn_id / task_id / api_request_id, schema v18), updates
-                        runs totals.
+                        turn_id / task_id / api_request_id, schema v18, and the
+                        owning profile, schema v19), updates runs totals.
 
 api_request_error       (1) Records EVERY API failure per attempt in the
                         llm_call_errors ledger — any status, retryable or not
@@ -180,9 +180,10 @@ api_request_error       (1) Records EVERY API failure per attempt in the
                         alert. NO token data.
 
 post_tool_call          Records tool name, success/failure, latency, and (v18)
-                        the turn_id + tool_call_id it belongs to. Also records
-                        a proxy row for delegate_task/subagent calls (no token
-                        data there, just a count).
+                        the turn_id + tool_call_id it belongs to, plus (v19) the
+                        owning profile. Also records a proxy row for
+                        delegate_task/subagent calls (no token data there, just a
+                        count — the profile is carried on that row too).
 
 post_llm_call           Fires once per turn after the tool loop. NO token data.
                         Used only to keep runs.ended_at current during multi-turn
@@ -482,6 +483,7 @@ table before applying.
 | v16 | New tables: `endpoint_payload_cache` and `model_efficiency_cache` for standalone-dashboard caches; cache writers share the plugin DB's WAL + 30s busy-timeout posture. |
 | v17 | Data-only repair (issue #89): deletes `known_free_models` rows with no evidence of being genuinely free (no wildcard `provider=''`, and no `llm_calls` row for the same model+provider with `cost_usd = 0` AND tokens > 0), plus their `free_paid_transitions` rows. No shape change. |
 | v18 | Turn identity + failure ledger. `llm_calls`: `turn_id`, `task_id`, `api_request_id`. `tool_calls`: `turn_id`, `tool_call_id`. New table `llm_call_errors` (+ `idx_llm_call_errors_session`), plus `idx_llm_turn` on `llm_calls(turn_id)` and `idx_tool_turn` on `tool_calls(turn_id)` — the two query shapes turn identity exists for. See `§ Turn identity and the failure ledger`. |
+| v19 | Per-row profile attribution. `tool_calls.profile` + `llm_calls.profile` (nullable `TEXT`) + `idx_tool_profile` / `idx_llm_profile`; existing rows backfilled from their `runs.profile`. `record_tool_call` / `record_llm_call` take a new `profile=` keyword (fed from `ctx.profile_name` in the `post_api_request` / `post_tool_call` / `subagent_stop` hooks). The label moves onto the row itself, so a per-profile query over tool/llm traffic has a column to filter on — `runs.profile` alone covers only the session, and only when the plugin saw a profile. |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -668,6 +670,25 @@ already uses `INSERT OR IGNORE`).
 | `sender_id` | Set from `pre_llm_call.sender_id`. First non-null wins (`COALESCE(sender_id, ?)`). |
 | `profile` | Set from `ctx.profile_name` (the only profile-identity surface Hermes exposes to plugins — NOT encoded in `session_id`, no `HERMES_PROFILE` env var). Captured at `on_session_start`, backfilled in `pre_llm_call` via `db.set_profile` (`COALESCE(profile, ?)`, first non-null wins). Powers the `per_profile` budget scope. NULL for pre-v12 rows and sessions whose profile could not be resolved. |
 | `model` / `provider` | Set from first `record_llm_call`. `COALESCE(model, ?)` so they're never overwritten. |
+
+### `profile=` on the observation rows (schema v19)
+
+`runs.profile` (v12) labels the *session*, and only when `ctx.profile_name` reached
+the plugin. Every row below `runs` carried no profile at all, so a per-profile
+query over tool/llm traffic had nothing to filter on — and under a shared cost
+centre (`HERMES_TELEMETRY_HOME`) that is exactly the query a cost centre runs.
+v19 puts the label on the rows themselves:
+
+- `db.record_llm_call(..., profile=...)` and `db.record_tool_call(...,
+  profile=...)` take a new keyword argument. It defaults to `None`, which is
+  the pre-v19 behaviour, so existing callers are unaffected.
+- The hooks pass `getattr(ctx, "profile_name", None)` — on `post_api_request`
+  (`llm_calls`), `post_tool_call` (`tool_calls`) and the `subagent_stop` proxy
+  row. A profile that cannot be resolved stores NULL, same as `runs`.
+- `_migrate_v19` adds the two columns, creates `idx_tool_profile` /
+  `idx_llm_profile`, and backfills existing rows from their run's
+  `runs.profile`. Guarded on the version marker *and* on the columns, so a
+  half-applied DB self-heals; idempotent.
 
 ---
 
