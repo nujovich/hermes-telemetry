@@ -291,6 +291,13 @@ than swallowed by the previous one's suppression.
   is now gathered from the primary profile's sessions dir plus every
   multiplex profile's; the default single-profile setup is unchanged.
 
+- **`session_*.json` files under multiplex profile dirs were silently skipped on
+  Python 3.8.** The session-id extraction used `str.removeprefix()` (added in
+  Python 3.9), so on 3.8 the resulting `AttributeError` was swallowed by the
+  existing `except Exception` guard around the glob loop and those sessions were
+  never collected. Replaced with a `startswith`-guarded slice that is
+  3.8-compatible (the repo declares `requires-python = ">=3.8"` and CI tests it).
+
 ## [0.9.1] - 2026-10-14
 
 ### Fixed
