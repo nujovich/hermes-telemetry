@@ -433,7 +433,8 @@ def _active_hermes_session_ids():
             if sessions_dir.exists():
                 metadata_available = True
                 for path in sessions_dir.glob("session_*.json"):
-                    session_id = path.stem.removeprefix("session_")
+                    name = path.stem
+                    session_id = name[len("session_") :] if name.startswith("session_") else name
                     if session_id:
                         ids.add(session_id)
         except Exception:
