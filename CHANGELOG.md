@@ -312,31 +312,21 @@ than swallowed by the previous one's suppression.
   dry-run by default (`--apply` to write). Rows whose model no longer resolves
   to an explicit price are skipped and reported, never zeroed.
 
-### Fixed
+### Fixed — dashboard reads visibility from state.db across all profile homes (#128)
 
-- **Standalone dashboard hid every session not in the running profile's
-  `sessions.json` under a shared telemetry home (#128).** The dashboard read
-  its DB from `HERMES_TELEMETRY_HOME` but resolved its session-visibility
-  filter from `HERMES_HOME`, so with the #63 consolidation topology the
-  analytics views silently dropped every other profile's runs / requests /
-  tool calls (reporter: ~1/14 of tool calls visible; `/api/summary` on the
-  same page showed the true totals). Under a shared home the visibility list
-  is now gathered from the primary profile's sessions dir plus every
-  multiplex profile's; the default single-profile setup is unchanged.
-
-- **`session_*.json` files under multiplex profile dirs were silently skipped on
-  Python 3.8.** The session-id extraction used `str.removeprefix()` (added in
-  Python 3.9), so on 3.8 the resulting `AttributeError` was swallowed by the
-  existing `except Exception` guard around the glob loop and those sessions were
-  never collected. Replaced with a `startswith`-guarded slice that is
-  3.8-compatible (the repo declares `requires-python = ">=3.8"` and CI tests it).
+The dashboard now gathers the visibility set from `state.db.sessions.id`
+across the root telemetry home and every `profiles/*/` home, fixing both
+#128 topologies (dashboard run as default vs. named profile). The prior
+`sessions.json`-based filter was a legacy mirror that only held the current
+session per gateway key and missed CLI/TUI/subagent runs, sessions replaced
+by `/new` or `/reset`, and installs with `gateway.write_sessions_json: false`.
 
 ## [0.9.1] - 2026-10-14
 
 ### Fixed
 
-- **DeepSeek current ids priced at retired V3 rates (#121).** `deepseek-flash`,
-  `deepseek-v4-flash` and `deepseek-v4-pro` had no built-in entry and fell to the
+- **DeepSeek current ids were priced at retired V3 rates (#121).**
+  `deepseek-flash`, `deepseek-v4-flash` and `deepseek-v4-pro` had no built-in entry and fell to the
   bare `deepseek` prefix (0.27/1.10 plus a generic 0.10x cache read), overstating
   cost for `custom:<name>` providers, which never get a Hermes core snapshot.
   They now carry explicit off-peak rates matching Hermes core (Flash 0.15/0.60,
