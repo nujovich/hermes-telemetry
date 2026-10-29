@@ -1673,9 +1673,7 @@ def test_visibility_single_profile_default_home(serve_module, tmp_path):
     """Default topology (no HERMES_TELEMETRY_HOME): the dashboard runs as the
     default profile, so the telemetry root == HERMES_HOME and only its state.db
     is scanned. #128 must not loosen single-profile behavior."""
-    _seed_sessions_db(
-        tmp_path / "state.db", [("sess-visible", 0), ("sess-archived", 1)]
-    )
+    _seed_sessions_db(tmp_path / "state.db", [("sess-visible", 0), ("sess-archived", 1)])
     ids, available = serve_module._active_hermes_session_ids()
     assert available is True
     assert ids == {"sess-visible", "sess-archived"}
@@ -1732,9 +1730,7 @@ def test_visibility_shared_home_named_profile_running(tmp_path, monkeypatch):
 def test_visibility_keeps_archived_sessions(serve_module, tmp_path):
     """Per the #128 triage, archived sessions (archived=1) are a soft UI flag,
     not a deletion — they stay visible."""
-    _seed_sessions_db(
-        tmp_path / "state.db", [("sess-active", 0), ("sess-archived", 1)]
-    )
+    _seed_sessions_db(tmp_path / "state.db", [("sess-active", 0), ("sess-archived", 1)])
     ids, available = serve_module._active_hermes_session_ids()
     assert available is True
     assert {"sess-active", "sess-archived"} <= ids
@@ -1753,7 +1749,7 @@ def test_visibility_chunks_large_session_set(serve_module, tmp_path):
     999-variable limit (#128). The IN clause is chunked so no single group
     passes more than _SQLITE_MAX_PARAMS bound parameters, and every id still
     appears across the clause params."""
-    many = [("sess-%04d" % i, 0) for i in range(1300)]
+    many = [(f"sess-{i:04d}", 0) for i in range(1300)]
     _seed_sessions_db(tmp_path / "state.db", many)
 
     ids, available = serve_module._active_hermes_session_ids()
