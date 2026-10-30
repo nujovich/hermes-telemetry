@@ -456,6 +456,82 @@ def test_budget_update_returns_viewer_timezone_metadata(serve_module, tmp_path):
     assert updated_daily["window_end_utc"] == expected_daily["window_end_utc"]
 
 
+def test_budget_update_concurrent_no_lost_updates(serve_module, tmp_path):
+    """Issue #147 (second surface): concurrent dashboard budget writes must not lose updates.
+
+    Mirrors the budget.py concurrency test for the standalone dashboard writer,
+    which shares NO code with the plugin (test_dashboard_plugin_isolation.py)
+    and therefore carries its own copy of the ``_budget_lock`` primitive. Six
+    threads — one per distinct (scope, window) combo — are Barrier-synchronized
+    so all read-modify-write cycles begin together. Without the shared
+    ``budget.yaml.lock`` flock, later writers' ``os.replace`` would clobber
+    earlier keys; with the lock all six survive.
+    """
+    import sqlite3
+    import threading
+
+    import yaml
+
+    now_iso = "2026-06-13T01:00:00+00:00"
+    db_path = tmp_path / "telemetry.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE runs (started_at TEXT, cost_usd REAL, "
+        "estimated_llm_calls INTEGER, api_calls INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO runs (started_at, cost_usd, estimated_llm_calls, api_calls) "
+        "VALUES (?, ?, ?, ?)",
+        (now_iso, 0.5, 0, 1),
+    )
+    conn.commit()
+    conn.close()
+
+    budget_path = tmp_path / "budget.yaml"
+    budget_path.write_text("budgets: {}\n")
+
+    serve_module.DB_PATH = db_path
+    serve_module._local.c = None
+
+    combos = [
+        ("global", "daily"),
+        ("global", "monthly"),
+        ("per_cron_job", "daily"),
+        ("per_cron_job", "monthly"),
+        ("per_sender", "daily"),
+        ("per_sender", "monthly"),
+    ]
+    n = len(combos)
+    barrier = threading.Barrier(n)
+    errors = []
+
+    def writer(i):
+        scope, window = combos[i]
+        try:
+            barrier.wait()
+            serve_module.api_budget_update(
+                {"scope": scope, "window": window, "limit_usd": float(i)}, "UTC"
+            )
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"concurrent dashboard writers errored: {errors}"
+
+    # All six distinct scope/window keys must survive the concurrent writes.
+    raw = yaml.safe_load(budget_path.read_text()) or {}
+    budgets = raw.get("budgets", {})
+    for i, (scope, window) in enumerate(combos):
+        assert budgets.get(scope, {}).get(f"{window}_usd") == float(i), (
+            f"{scope}/{window} lost update under concurrency"
+        )
+
+
 def test_api_budget_surfaces_per_profile_budgets(serve_module, tmp_path):
     import sqlite3
 
