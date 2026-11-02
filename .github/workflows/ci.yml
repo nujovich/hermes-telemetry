@@ -98,15 +98,21 @@ jobs:
           PY
 
   # -----------------------------------------------------------------------
-  # Tests — pytest on Python 3.8–3.12
+  # Tests — pytest on Python 3.14 / 3.13 / 3.12
   # -----------------------------------------------------------------------
+  # Matrix changed from ["3.8","3.9","3.10","3.11","3.12"] to match the cross-fleet rule:
+  # tests run on the identical Python we test locally, and every matrix entry must be an
+exact key in actions/setup-python's versions-manifest.json. "3.8" and "3.9" were exact-
+match failures on Ubuntu 26.04 (setup-python aborts before tests run), so CI went red with
+no code change. This project has no 3.8/3.9-only code paths, so 3.14/3.13/3.12 natively
+reproduces our local environment (3.14.4) and is the minimum matrix that hits the full test surface.
   test:
     needs: lint
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.14", "3.13", "3.12"]
 
     steps:
       # See lint job: check out the PR head so tests run the contributor's code.
