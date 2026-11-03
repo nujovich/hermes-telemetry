@@ -350,60 +350,114 @@ def _period_start_expr(col: str, granularity: str, tz_name: str | None = None) -
     return f"dashboard_period_start({col}, {_sql_string_literal(granularity)}, {_sql_string_literal(tz_value)})"
 
 
-def _active_hermes_session_ids():
-    """Return session IDs still present in Hermes' active/session files.
+_SQLITE_MAX_PARAMS = 999
 
-    Telemetry is append-only. Hermes session deletion does not delete rows from
-    telemetry.db, so dashboard session lists soft-hide rows whose session record
-    no longer exists. Cron telemetry is kept separately via session_id LIKE
-    'cron_%' because cron runs are not represented in sessions.json.
+
+def _iter_profile_homes():
+    """Yield every Hermes profile home whose ``state.db`` may hold session records.
+
+    The consolidated telemetry DB lives at ``<root>/telemetry/telemetry.db``
+    where ``<root>`` is the shared telemetry home (``HERMES_TELEMETRY_HOME``,
+    falling back to ``HERMES_HOME``). Every profile writes its sessions into
+    that same DB, so the visibility filter must read every profile's session
+    list from the source of truth — ``state.db`` — across the root home plus
+    every ``<root>/profiles/<name>``.
+
+    Deriving the home set from the *telemetry root* (``_TELEMETRY_HOME.parent``)
+    rather than the running ``HERMES_HOME`` fixes the two topologies from #128:
+
+      * shared home, dashboard run as the default profile
+        (``HERMES_TELEMETRY_HOME == HERMES_HOME``): the root is ``HERMES_HOME``
+        and its ``profiles/`` children are scanned.
+      * shared home, dashboard run as a named profile (``HERMES_HOME ==
+        <root>/profiles/<name>``): the root is still the shared parent, so the
+        root home and the sibling profiles are scanned too — the running
+        ``HERMES_HOME / "profiles"`` path no longer resolves to a phantom
+        ``profiles/<name>/profiles`` that never exists.
     """
-    hermes_home = HERMES_HOME
-    sessions_dir = hermes_home / "sessions"
-    sessions_json = sessions_dir / "sessions.json"
+    root = _TELEMETRY_HOME.parent
+    yield root
+    profiles_dir = root / "profiles"
+    try:
+        if profiles_dir.is_dir():
+            for entry in sorted(profiles_dir.iterdir()):
+                if entry.is_dir():
+                    yield entry
+    except OSError:
+        pass
+
+
+def _active_hermes_session_ids():
+    """Return session IDs still present in Hermes' ``state.db`` across every
+    profile home (issue #128).
+
+    Telemetry is append-only: Hermes session deletion drops the ``sessions``
+    row rather than touching telemetry rows, so the dashboard soft-hides
+    telemetry rows whose session no longer exists anywhere. The source of
+    truth is ``state.db.sessions.id`` — ``sessions.json`` is only a legacy
+    mirror of the gateway routing index, per-chat-key and holding just the
+    *current* session per key, so it misses CLI/TUI/subagent runs, every
+    session predating the last ``/new`` or ``/reset``, and any install with
+    ``gateway.write_sessions_json: false``.
+
+    Archived sessions (``sessions.archived = 1``) are kept visible on purpose:
+    archive is a soft UI flag, not a deletion (per the #128 triage). All
+    session rows are selected. Cron telemetry is additionally retained via
+    the ``LIKE 'cron_%'`` clause in ``_visible_sessions_clause``; cron sessions
+    do appear in ``state.db`` too, but that glob is kept as a belt-and-
+    suspenders guarantee that a corrupt/unreadable cron home never hides cron
+    rows.
+
+    Each ``state.db`` is opened read-only and fail-open: a missing or
+    unreadable home is skipped without aborting the scan. If no home's
+    ``state.db`` could be read at all, ``metadata_available`` stays ``False``
+    and the caller degrades to showing every row (the existing "no metadata"
+    path).
+    """
     ids = set()
     metadata_available = False
-
-    try:
-        if sessions_json.exists():
+    for home in _iter_profile_homes():
+        state_db = home / "state.db"
+        if not state_db.exists():
+            continue
+        conn = None
+        try:
+            # mode=ro: never mutate a profile state.db from a read-only dashboard.
+            conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
+            rows = conn.execute("SELECT id FROM sessions").fetchall()
+            ids.update(str(row[0]) for row in rows)
             metadata_available = True
-            data = json.loads(sessions_json.read_text())
-            if isinstance(data, dict):
-                for item in data.values():
-                    if isinstance(item, dict) and item.get("session_id"):
-                        ids.add(str(item["session_id"]))
-    except Exception:
-        # Missing/corrupt Hermes session metadata should not take down telemetry.
-        pass
-
-    try:
-        if sessions_dir.exists():
-            metadata_available = True
-            for path in sessions_dir.glob("session_*.json"):
-                session_id = path.stem.removeprefix("session_")
-                if session_id:
-                    ids.add(session_id)
-    except Exception:
-        pass
-
+        except sqlite3.Error:
+            # Missing/corrupt/unreadable state.db must not take down telemetry
+            # or over-hide rows. Fail open for this home and continue scanning.
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
     return ids, metadata_available
 
 
 def _visible_sessions_clause(col="session_id", include_deleted=False):
+    """WHERE fragment + params keeping only rows whose session still exists in
+    Hermes (#128), plus cron rows which are always retained."""
     if include_deleted:
         return "1=1", []
     active_ids, metadata_available = _active_hermes_session_ids()
     if not metadata_available:
-        # If Hermes session metadata is unavailable, degrade gracefully instead of
-        # hiding almost every non-cron telemetry row.
+        # If Hermes session metadata is unavailable anywhere, degrade gracefully
+        # instead of hiding almost every non-cron telemetry row.
         return "1=1", []
-    active_ids = sorted(active_ids)
+    active_ids = sorted({str(s) for s in active_ids})
     clauses = [f"{col} LIKE 'cron_%'"]
     params = []
-    if active_ids:
-        placeholders = ",".join("?" for _ in active_ids)
+    # Bound-parameter limit guard (#128): a shared home unions every profile's
+    # full history, which can exceed SQLite's 999-variable limit on older builds.
+    # Chunk the IN list so each group stays under the limit.
+    for i in range(0, len(active_ids), _SQLITE_MAX_PARAMS):
+        chunk = active_ids[i : i + _SQLITE_MAX_PARAMS]
+        placeholders = ",".join("?" for _ in chunk)
         clauses.append(f"{col} IN ({placeholders})")
-        params.extend(active_ids)
+        params.extend(chunk)
     return "(" + " OR ".join(clauses) + ")", params
 
 

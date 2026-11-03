@@ -213,12 +213,21 @@ than swallowed by the previous one's suppression.
   dry-run by default (`--apply` to write). Rows whose model no longer resolves
   to an explicit price are skipped and reported, never zeroed.
 
+### Fixed — dashboard reads visibility from state.db across all profile homes (#128)
+
+The dashboard now gathers the visibility set from `state.db.sessions.id`
+across the root telemetry home and every `profiles/*/` home, fixing both
+#128 topologies (dashboard run as default vs. named profile). The prior
+`sessions.json`-based filter was a legacy mirror that only held the current
+session per gateway key and missed CLI/TUI/subagent runs, sessions replaced
+by `/new` or `/reset`, and installs with `gateway.write_sessions_json: false`.
+
 ## [0.9.1] - 2026-10-14
 
 ### Fixed
 
-- **DeepSeek current ids priced at retired V3 rates (#121).** `deepseek-flash`,
-  `deepseek-v4-flash` and `deepseek-v4-pro` had no built-in entry and fell to the
+- **DeepSeek current ids were priced at retired V3 rates (#121).**
+  `deepseek-flash`, `deepseek-v4-flash` and `deepseek-v4-pro` had no built-in entry and fell to the
   bare `deepseek` prefix (0.27/1.10 plus a generic 0.10x cache read), overstating
   cost for `custom:<name>` providers, which never get a Hermes core snapshot.
   They now carry explicit off-peak rates matching Hermes core (Flash 0.15/0.60,
