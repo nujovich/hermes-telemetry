@@ -102,7 +102,9 @@ jobs:
   # -----------------------------------------------------------------------
   test:
     needs: lint
-    runs-on: ubuntu-latest
+    # Pinned: setup-python ships no 3.8/3.9 builds for Ubuntu 26.04, which
+    # ubuntu-latest is migrating to. Revisit before 24.04 is deprecated.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
