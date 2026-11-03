@@ -116,6 +116,36 @@ def _atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
+@contextlib.contextmanager
+def _budget_lock():
+    """Advisory cross-process lock for budget.yaml RMWs — the dashboard's mirror
+    of ``budget._budget_lock`` (issue #147).
+
+    Held across read -> mutate -> atomic-write in ``api_budget_update``. The
+    lockfile is ``budget.yaml.lock`` in the SAME directory as the budget file —
+    identical to the plugin side (two-surface rule; this standalone dashboard
+    shares no code with the package, see tests/test_dashboard_plugin_isolation.py,
+    so the lockfile path MUST be duplicated by hand and kept in lockstep).
+
+    Windows has no ``fcntl`` — the context is a no-op there.
+    """
+    budget_path = DB_PATH.parent / "budget.yaml"
+    lock_path = budget_path.parent / (budget_path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import fcntl
+    except ImportError:  # Windows / platforms without fcntl
+        yield None
+        return
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield fd
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if "hermes_telemetry" not in sys.modules:
     _pkg = types.ModuleType("hermes_telemetry")
@@ -3012,7 +3042,14 @@ def _validate_threshold(key: str, value, cfg: dict) -> str | None:
 
 
 def api_budget_update(payload, tz_name: str | None = None):
-    """Update budget.yaml from POST payload. Returns updated budget status or error."""
+    """Update budget.yaml from POST payload. Returns updated budget status or error.
+
+    The read-modify-write is serialized by ``_budget_lock`` (issue #147): the
+    per-file atomic replace keeps each write consistent but does not stop two
+    concurrent writers from both reading the same pre-write file and the last
+    one clobbering the other's keys. Payload validation touches no file state,
+    so it runs before the lock is taken.
+    """
     budget_path = DB_PATH.parent / "budget.yaml"
     if not budget_path.exists():
         return {"enabled": False, "error": "budget.yaml not found"}
@@ -3021,11 +3058,6 @@ def api_budget_update(payload, tz_name: str | None = None):
         import yaml
     except ImportError:
         return {"enabled": False, "error": "PyYAML not installed"}
-
-    try:
-        cfg = yaml.safe_load(budget_path.read_text()) or {}
-    except Exception as e:
-        return {"enabled": False, "error": f"Failed to parse budget.yaml: {e}"}
 
     # Expected payload: {"scope": "global", "window": "daily", "limit_usd": 5.0}
     scope = payload.get("scope", "global")
@@ -3049,40 +3081,48 @@ def api_budget_update(payload, tz_name: str | None = None):
     if limit_usd < 0:
         return {"enabled": False, "error": "limit_usd must be >= 0"}
 
-    # Initialize budgets structure if missing
-    if "budgets" not in cfg:
-        cfg["budgets"] = {}
-    if scope not in cfg["budgets"]:
-        cfg["budgets"][scope] = {}
+    # Serialize the read-modify-write across processes (issue #147). One lock
+    # acquisition covers read + mutate + atomic commit so no writer can read a
+    # stale file and overwrite another's keys.
+    with _budget_lock():
+        try:
+            cfg = yaml.safe_load(budget_path.read_text()) or {}
+        except Exception as e:
+            return {"enabled": False, "error": f"Failed to parse budget.yaml: {e}"}
 
-    # Update the limit
-    key = f"{window}_usd"
-    cfg["budgets"][scope][key] = limit_usd
+        # Initialize budgets structure if missing
+        if "budgets" not in cfg:
+            cfg["budgets"] = {}
+        if scope not in cfg["budgets"]:
+            cfg["budgets"][scope] = {}
 
-    # Optional: update thresholds (validated, no silent failures)
-    for field, yaml_key in (("soft_pct", "soft_pct"), ("hard_pct", "hard_pct")):
-        if field in payload:
-            err = _validate_threshold(yaml_key, payload[field], cfg)
-            if err:
-                return {"enabled": False, "error": err}
+        # Update the limit
+        key = f"{window}_usd"
+        cfg["budgets"][scope][key] = limit_usd
 
-    if "on_estimated_mode" in payload:
-        mode = payload["on_estimated_mode"]
-        if mode not in ("warn_only", "enforce"):
-            return {"enabled": False, "error": "on_estimated_mode must be 'warn_only' or 'enforce'"}
-        cfg.setdefault("on_estimated", {})["mode"] = mode
+        # Optional: update thresholds (validated, no silent failures)
+        for field, yaml_key in (("soft_pct", "soft_pct"), ("hard_pct", "hard_pct")):
+            if field in payload:
+                err = _validate_threshold(yaml_key, payload[field], cfg)
+                if err:
+                    return {"enabled": False, "error": err}
 
-    # Write back atomically (unique temp + fsync + os.replace, mode kept,
-    # symlink target followed) — see #135. Mirrors the plugin-side writers
-    # via the duplicated _atomic_write_text above (two-surface rule).
-    try:
-        import yaml
+        if "on_estimated_mode" in payload:
+            mode = payload["on_estimated_mode"]
+            if mode not in ("warn_only", "enforce"):
+                return {
+                    "enabled": False,
+                    "error": "on_estimated_mode must be 'warn_only' or 'enforce'",
+                }
+            cfg.setdefault("on_estimated", {})["mode"] = mode
 
-        _atomic_write_text(
-            budget_path, yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False)
-        )
-    except Exception as e:
-        return {"enabled": False, "error": f"Failed to write budget.yaml: {e}"}
+        # Write back atomically — see _atomic_write_text above (two-surface rule).
+        try:
+            _atomic_write_text(
+                budget_path, yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False)
+            )
+        except Exception as e:
+            return {"enabled": False, "error": f"Failed to write budget.yaml: {e}"}
 
     # Return updated status by calling api_budget()
     return api_budget(tz_name)

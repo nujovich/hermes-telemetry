@@ -763,6 +763,41 @@ def _cron_block() -> str:
     return "\n".join(lines)
 
 
+@contextlib.contextmanager
+def _budget_lock():
+    """Advisory cross-process lock that serializes ``budget.yaml`` writes.
+
+    A sidecar lock file ``budget.yaml.lock`` (same directory as the budget file)
+    is held across the whole read -> mutate -> atomic-write in ``_set_budget``.
+    The per-file atomic rename (#140) keeps each individual write consistent, but
+    does NOT stop two concurrent writers from both reading the same pre-write
+    file and the last one silently clobbering the other's keys — issue #147.
+
+    The standalone dashboard writer (``dashboard/serve.py``) duplicates this exact
+    primitive and the SAME lockfile path: the dashboard shares no code with the
+    plugin by design (see tests/test_dashboard_plugin_isolation.py), so the two
+    surfaces must agree on the lockfile name here — the two-surface rule (#147).
+
+    Windows has no ``fcntl`` — the context is a no-op there, preserving today's
+    best-effort, single-process behaviour instead of raising.
+    """
+    path = _budget_path()
+    lock_path = path.parent / (path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import fcntl
+    except ImportError:  # Windows / platforms without fcntl
+        yield None
+        return
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield fd
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _set_budget(scope: str, window: str, usd: float, scope_id: str = "") -> str:
     """Persist a limit to budget.yaml and hot-reload.
 
@@ -770,9 +805,14 @@ def _set_budget(scope: str, window: str, usd: float, scope_id: str = "") -> str:
     omitted, the limit lands in the scope's shared ``default`` bucket. The
     ``global`` scope takes no id. Mirrors the read structure in
     ``_resolve_limits``.
+
+    The read-modify-write is serialized by ``_budget_lock`` so concurrent
+    callers (threads, plugin instances, the out-of-process dashboard) can no
+    longer trample each other's updates — issue #147.
     """
     import yaml
 
+    # Validate up front — none of these touch shared state, so no lock needed.
     if scope not in ("global", "cron_job", "sender", "profile"):
         return f"Unknown scope {scope!r}. Use: global | cron_job | sender | profile"
     if window not in ("daily", "monthly"):
@@ -781,41 +821,42 @@ def _set_budget(scope: str, window: str, usd: float, scope_id: str = "") -> str:
         return "The global scope takes no id. Use: set global <daily|monthly> <usd>"
     key = f"{window}_usd"
 
-    path = _budget_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw: dict = {}
-    if path.exists():
-        try:
-            with open(path) as f:
-                raw = yaml.safe_load(f) or {}
-        except Exception:
-            raw = {}
-    budgets = raw.setdefault("budgets", {})
-    if scope == "global":
-        budgets.setdefault("global", {})[key] = usd
-    else:
-        per_key = {
-            "cron_job": "per_cron_job",
-            "sender": "per_sender",
-            "profile": "per_profile",
-        }[scope]
-        node = budgets.setdefault(per_key, {})
-        if scope_id:
-            node.setdefault("overrides", {}).setdefault(scope_id, {})[key] = usd
+    with _budget_lock():
+        path = _budget_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw: dict = {}
+        if path.exists():
+            try:
+                with open(path) as f:
+                    raw = yaml.safe_load(f) or {}
+            except Exception:
+                raw = {}
+        budgets = raw.setdefault("budgets", {})
+        if scope == "global":
+            budgets.setdefault("global", {})[key] = usd
         else:
-            node.setdefault("default", {})[key] = usd
+            per_key = {
+                "cron_job": "per_cron_job",
+                "sender": "per_sender",
+                "profile": "per_profile",
+            }[scope]
+            node = budgets.setdefault(per_key, {})
+            if scope_id:
+                node.setdefault("overrides", {}).setdefault(scope_id, {})[key] = usd
+            else:
+                node.setdefault("default", {})[key] = usd
 
-    # Atomic write via the shared primitive (unique temp + fsync + os.replace,
-    # existing mode kept, symlink target followed) — see #134/#135. Prevents a
-    # concurrent reader (watchdog, another plugin instance, out-of-process
-    # dashboard) from ever parsing a partial file. Imported lazily, like
-    # setup_wizard.py does, so the plugin package's import order cannot bite.
-    from . import pricing_refresh
+        # Atomic write via the shared primitive (unique temp + fsync + os.replace,
+        # existing mode kept, symlink target followed) — see #134/#135/#140.
+        # Imported lazily, like setup_wizard.py does, so the plugin package's
+        # import order cannot bite. The flock above is what makes the RMW safe;
+        # this rename is what keeps each individual write crash-safe.
+        from . import pricing_refresh
 
-    pricing_refresh._atomic_write_text(
-        path, yaml.safe_dump(raw, default_flow_style=False, sort_keys=False)
-    )
-    reload_config()
+        pricing_refresh._atomic_write_text(
+            path, yaml.safe_dump(raw, default_flow_style=False, sort_keys=False)
+        )
+        reload_config()
     target = f"{scope} '{scope_id}'" if scope_id else scope
     return f"Set {target} {window} budget to ${usd:.2f}. Saved to {path}."
 

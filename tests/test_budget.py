@@ -390,6 +390,75 @@ def test_budget_set_usage_mentions_profile(tmp_path):
     assert "profile" in out.lower()
 
 
+def test_set_budget_concurrent_no_lost_updates(tmp_path):
+    """Issue #147: N concurrent _set_budget calls must not lose updates.
+
+    Each thread writes a DISTINCT per-profile override (p0..p19) under a
+    ``threading.Barrier``-synchronized start so all N read-modify-write cycles
+    begin together. Without the ``_budget_lock`` flock, several writers read the
+    same pre-write file and the last ``os.replace`` clobbers the others' keys
+    (issue reports 1-8 of 20 surviving). With the lock the RMW is serialized,
+    so every override lands exactly once.
+    """
+    import threading
+
+    import yaml
+
+    n = 20
+    barrier = threading.Barrier(n)
+    errors = []
+
+    def writer(i):
+        try:
+            barrier.wait()
+            budget._set_budget("profile", "daily", float(i), f"p{i}")
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"concurrent _set_budget writers errored: {errors}"
+
+    # All 20 distinct overrides must survive in the final persisted file.
+    raw = yaml.safe_load(budget._budget_path().read_text()) or {}
+    overrides = raw.get("budgets", {}).get("per_profile", {}).get("overrides", {})
+    assert set(overrides.keys()) == {f"p{i}" for i in range(n)}
+    for i in range(n):
+        assert overrides[f"p{i}"]["daily_usd"] == float(i)
+
+
+def test_set_budget_no_flock_regression_on_linux(tmp_path, monkeypatch):
+    """Issue #147 regression guard: confirm the flock path is wired in.
+
+    On a real (Linux) fcntl-capable surface, the lock context must actually
+    hand out a locked fd (not yield None) — i.e. the lock is engaged, not a
+    no-op. Windows/skipped platforms are not asserted here.
+    """
+    import sys
+
+    if "fcntl" not in sys.modules and not _can_import_fcntl():
+        pytest.skip("fcntl not importable on this platform")
+    acquired = {}
+    with budget._budget_lock() as token:
+        # On Linux the sidecar lock fd is real (>= 0); the lock is held.
+        assert token is not None and token >= 0, "flock did not engage"
+        acquired["locked"] = True
+    assert acquired.get("locked"), "flock context did not run its body"
+
+
+def _can_import_fcntl():
+    try:
+        import fcntl as _f  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def test_budget_status_no_config(tmp_path):
     out = budget.handle("")
     assert "No budgets configured" in out

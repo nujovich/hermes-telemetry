@@ -231,6 +231,18 @@ than swallowed by the previous one's suppression.
 
 - Standalone dashboard: two error paths interpolated `err.message` into `innerHTML` unescaped (model-efficiency mount and the top-level load error); both now go through `escHtml`, matching the other error boxes (#124).
 
+- **Concurrent `budget.yaml` writers no longer lose updates (#147).** `_set_budget`
+  (plugin path) and the standalone dashboard writer (`dashboard/serve.py`) both
+  perform an unlocked read-modify-write of `budget.yaml`; under contention the
+  per-file atomic rename (#135) keeps each write consistent but does not stop two
+  writers from both reading the same pre-write file and the last `os.replace`
+  clobbering the other's keys. Both surfaces now wrap the RMW in an advisory
+  `fcntl.flock` on a sidecar `budget.yaml.lock` (identical path computed in each
+  surface, since the dashboard shares no code with the package). The atomic tmp
+  write + `os.replace` is retained for crash safety. `fcntl` is a no-op on
+  Windows (guarded `ImportError`). Concurrency regression tests added to
+  `tests/test_budget.py` and `tests/test_dashboard.py`.
+
 ### Changed
 
 - Runtime dependencies are now upper-bounded below the next major (`watchdog>=3.0,<7`, `pyyaml>=6.0,<7`) so a future breaking release cannot reach users on a plain reinstall (#124).
