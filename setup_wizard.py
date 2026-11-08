@@ -284,12 +284,19 @@ def _write_budget(data: dict) -> Path:
     # place, so a concurrent reader can parse an empty or partial file. The
     # primitive is the shared one in pricing_refresh — the same one the pricing
     # side uses; only the standalone dashboard keeps a copy of its own.
-    from . import pricing_refresh
+    #
+    # The write is serialized under ``budget._budget_lock`` (issue #155): the
+    # atomic rename keeps each write consistent but does NOT stop a concurrent
+    # read-modify-write (``budget._set_budget`` or the dashboard edit) from
+    # clobbering it — the same lost-update class #147 already fixed for the
+    # other two writers.
+    from . import budget, pricing_refresh
 
-    _tele_dir().mkdir(parents=True, exist_ok=True)
     content = _build_budget_yaml(data)
     p = _budget_path()
-    pricing_refresh._atomic_write_text(p, content)
+    with budget._budget_lock():
+        _tele_dir().mkdir(parents=True, exist_ok=True)
+        pricing_refresh._atomic_write_text(p, content)
     return p
 
 

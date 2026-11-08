@@ -459,6 +459,53 @@ def _can_import_fcntl():
         return False
 
 
+def test_setup_wizard_write_budget_takes_budget_lock(tmp_path):
+    """Issue #155: _write_budget must serialize under _budget_lock.
+
+    The atomic writer (#135) keeps each write consistent, but it does NOT stop
+    a concurrent read-modify-write from clobbering the wizard's write. Holding
+    _budget_lock from the main thread must block _write_budget until the lock
+    is released (mirroring #147/#150 for the other two writers).
+    """
+    import sys
+    import threading
+
+    from hermes_telemetry import setup_wizard
+
+    if "fcntl" not in sys.modules and not _can_import_fcntl():
+        pytest.skip("fcntl not importable on this platform")
+
+    data = {"budgets": {"global": {"daily_usd": 5.00, "monthly_usd": 100.00}}}
+    started = threading.Event()
+    finished = threading.Event()
+    errors = []
+
+    def writer():
+        try:
+            started.set()
+            setup_wizard._write_budget(data)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+        finally:
+            finished.set()
+
+    with budget._budget_lock():
+        t = threading.Thread(target=writer)
+        t.start()
+        assert started.wait(timeout=5), "writer thread did not start"
+        t.join(timeout=0.5)
+        assert t.is_alive(), "_write_budget completed while the lock was held"
+        assert not finished.is_set()
+
+    assert finished.wait(timeout=5), (
+        "_write_budget did not complete after the lock was released"
+    )
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert errors == [], f"_write_budget errored: {errors}"
+    assert setup_wizard._budget_path().exists()
+
+
 def test_budget_status_no_config(tmp_path):
     out = budget.handle("")
     assert "No budgets configured" in out
