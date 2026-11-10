@@ -497,9 +497,7 @@ def test_setup_wizard_write_budget_takes_budget_lock(tmp_path):
         assert t.is_alive(), "_write_budget completed while the lock was held"
         assert not finished.is_set()
 
-    assert finished.wait(timeout=5), (
-        "_write_budget did not complete after the lock was released"
-    )
+    assert finished.wait(timeout=5), "_write_budget did not complete after the lock was released"
     t.join(timeout=5)
     assert not t.is_alive()
     assert errors == [], f"_write_budget errored: {errors}"
