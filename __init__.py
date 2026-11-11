@@ -9,7 +9,7 @@ Errors are caught silently — telemetry never takes down a session.
 
 from __future__ import annotations
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 
 import json
 import logging

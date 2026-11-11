@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-11-11
 
 ### Upgrade notes
 
@@ -201,6 +201,28 @@ than swallowed by the previous one's suppression.
   rest of the process's life. An empty parse now rides the same failure
   streak: disabled for that call only, retried as soon as the file changes.
 
+### Fixed — concurrent `budget.yaml` writers no longer lose updates (#147)
+
+- **Concurrent `budget.yaml` writers no longer lose updates (#147).** `_set_budget`
+  (plugin path) and the standalone dashboard writer (`dashboard/serve.py`) both
+  perform an unlocked read-modify-write of `budget.yaml`; under contention the
+  per-file atomic rename (#135) keeps each write consistent but does not stop two
+  writers from both reading the same pre-write file and the last `os.replace`
+  clobbering the other's keys. Both surfaces now wrap the RMW in an advisory
+  `fcntl.flock` on a sidecar `budget.yaml.lock` (identical path computed in each
+  surface, since the dashboard shares no code with the package). The atomic tmp
+  write + `os.replace` is retained for crash safety. `fcntl` is a no-op on
+  Windows (guarded `ImportError`). Concurrency regression tests added to
+  `tests/test_budget.py` and `tests/test_dashboard.py`.
+
+### Added — token aggregates in `stats models` / `stats providers` JSON (#38)
+
+- `hermes-telemetry stats models --json` and `stats providers --json` now carry
+  per-row `tokens_in`, `tokens_out`, `cache_read_tokens`, `cache_write_tokens`
+  and `reasoning_tokens` (`COALESCE(SUM(...), 0)`) alongside call counts and
+  cost, so implied per-token rates and pricing changes can be audited from the
+  CLI without querying `telemetry.db` directly. The text table view is unchanged.
+
 ### Added — `hermes telemetry pricing recalculate` (#83)
 
 - **Historical costs stayed frozen after a pricing correction.** `pricing drift
@@ -230,18 +252,6 @@ than swallowed by the previous one's suppression.
   pricing is tracked in #122.
 
 - Standalone dashboard: two error paths interpolated `err.message` into `innerHTML` unescaped (model-efficiency mount and the top-level load error); both now go through `escHtml`, matching the other error boxes (#124).
-
-- **Concurrent `budget.yaml` writers no longer lose updates (#147).** `_set_budget`
-  (plugin path) and the standalone dashboard writer (`dashboard/serve.py`) both
-  perform an unlocked read-modify-write of `budget.yaml`; under contention the
-  per-file atomic rename (#135) keeps each write consistent but does not stop two
-  writers from both reading the same pre-write file and the last `os.replace`
-  clobbering the other's keys. Both surfaces now wrap the RMW in an advisory
-  `fcntl.flock` on a sidecar `budget.yaml.lock` (identical path computed in each
-  surface, since the dashboard shares no code with the package). The atomic tmp
-  write + `os.replace` is retained for crash safety. `fcntl` is a no-op on
-  Windows (guarded `ImportError`). Concurrency regression tests added to
-  `tests/test_budget.py` and `tests/test_dashboard.py`.
 
 ### Changed
 
@@ -1017,6 +1027,7 @@ brings both surfaces up to date in lockstep. Verified against
 - MIT License
 - README with architecture, usage, screenshots
 
+[0.10.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/nujovich/hermes-telemetry/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.7.0...v0.8.0
