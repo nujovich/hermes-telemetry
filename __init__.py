@@ -454,10 +454,15 @@ def register(ctx) -> None:  # noqa: ANN001
             )
             # api_duration arrives from the wire (untrusted, like the
             # api_request_error path): a non-finite / non-numeric / missing
-            # value costs the latency field (NULL), never the row (#160).
+            # value costs the latency field (NULL), never the row (#160). A
+            # finite but absurd value (negative, or beyond 24h) is also NULL:
+            # a huge int overflows SQLite INTEGER and would drop the row, and
+            # a negative one would skew AVG(latency_ms).
             try:
                 latency_ms: int | None = int(float(api_duration) * 1000)
             except (TypeError, ValueError, OverflowError):
+                latency_ms = None
+            if latency_ms is not None and not 0 <= latency_ms <= 86_400_000:
                 latency_ms = None
 
             # Provider-assumed pricing (issue #42): the cost is real spend, but it

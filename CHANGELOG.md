@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   treated as untrusted, like on the `api_request_error` path: an unreadable
   value is stored as `latency_ms = NULL` (readers use `AVG`, which ignores NULL,
   so latency aggregates stay correct) and the cost and tokens are recorded.
+  Finite but out-of-range values (negative, or above 24h) are also stored as
+  NULL: a huge value would overflow SQLite INTEGER and drop the row, a negative
+  one would skew `AVG(latency_ms)`.
 
 ## [0.10.0] - 2026-11-11
 

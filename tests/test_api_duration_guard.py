@@ -119,3 +119,26 @@ def test_readable_api_duration_still_recorded_in_ms(monkeypatch):
     sid = "sess-dur-ok"
     _fire(monkeypatch, 1.25, sid)
     assert _rows(sid)[0]["latency_ms"] == 1250
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [1e16, 1e300, -1.0, 86400.001],
+    ids=["1e16", "1e300", "negative", "just-over-24h"],
+)
+def test_out_of_range_api_duration_stores_null_and_keeps_the_row(monkeypatch, request, bad):
+    sid = "sess-dur-range-" + request.node.callspec.id
+    _fire(monkeypatch, bad, sid)
+    rows = _rows(sid)
+    assert len(rows) == 1, "a finite but absurd duration must not drop the row"
+    assert rows[0]["cost_usd"] > 0, "cost must stay intact"
+    assert rows[0]["latency_ms"] is None
+
+
+@pytest.mark.parametrize(
+    ("ok", "expected"), [(0.0, 0), (86400.0, 86_400_000)], ids=["zero", "24h-boundary"]
+)
+def test_in_range_boundaries_are_kept(monkeypatch, request, ok, expected):
+    sid = "sess-dur-bound-" + request.node.callspec.id
+    _fire(monkeypatch, ok, sid)
+    assert _rows(sid)[0]["latency_ms"] == expected

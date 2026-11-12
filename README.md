@@ -16,7 +16,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 841 passing](https://img.shields.io/badge/Tests-841%20passing-green.svg)](https://img.shields.io/badge/Tests-841%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e744d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 847 passing](https://img.shields.io/badge/Tests-847%20passing-green.svg)](https://img.shields.io/badge/Tests-847%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e744d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -146,7 +146,7 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (841 tests, 841 passing):**
+**Test suite (847 tests, 847 passing):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
@@ -175,7 +175,7 @@ pytest tests/ -v
 |`test_pricing_backfill.py`       |7    |Seed pricing snapshots for historical models (coverage seed, fail-open, idempotent)                                            |
 |`test_pricing_recalculate.py`    |9    |Historical cost recalc vs current `pricing.yaml`: explicit-row filter (estimated/assumed excluded), dry-run vs `--apply`, run rollup refresh, unpriced-model skip, CLI|
 |`test_telemetry_home_sites.py`   |7    |Every telemetry-file site (stats pricing footer, dashboard budget path, `telemetry.log`, startup DB-path line, pricing sentinel) honors `HERMES_TELEMETRY_HOME` (#159)|
-|`test_api_duration_guard.py`     |8    |Unreadable `api_duration` (NaN, inf, None, garbage, overflow) keeps the `llm_calls` row with cost intact and `latency_ms` NULL (#160)|
+|`test_api_duration_guard.py`     |14   |Unreadable or out-of-range (negative, >24h, 1e16) `api_duration` keeps the `llm_calls` row with cost intact and `latency_ms` NULL (#160)|
 |`test_paths.py`                  |6    |Telemetry path resolution precedence: `HERMES_TELEMETRY_HOME` > `HERMES_HOME` > `~/.hermes`                                     |
 |`test_dashboard_plugin_isolation.py`|6 |Enforces zero shared Python code between the two dashboard surfaces                                                             |
 |`test_isolation.py`              |5    |`HERMES_HOME` redirect, no writes to real `~/.hermes`                                                                          |
@@ -190,7 +190,7 @@ pytest tests/ -v
 |`test_stats_profile_filter_eff_smells.py`|9 |`--profile` on the efficiency and smells slash views, incl. the `-` bucket|
 |`test_stats_profile_filter_cron_raw.py`|16 |`--profile` on cron and raw views (slash + CLI), `cost_by_job` / `recent_runs` / `unattributed_child_cost` filtering, empty-result labels, unfiltered default unchanged|
 
-Counts above are per-file collected totals, measured on this branch with `pytest tests/ -q` and the optional `fastapi` test dependency installed (841 passed, 0 skipped). CI installs only `pytest` + `pyyaml`, so `test_dashboard_plugin_api.py` skips there and the same command reports **805 passed, 36 skipped**.
+Counts above are per-file collected totals, measured on this branch with `pytest tests/ -q` and the optional `fastapi` test dependency installed (847 passed, 0 skipped). CI installs only `pytest` + `pyyaml`, so `test_dashboard_plugin_api.py` skips there and the same command reports **811 passed, 36 skipped**.
 
 No live Hermes is required — all tests are self-contained with in-memory SQLite.
 
