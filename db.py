@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 18
+_SCHEMA_VERSION = 19
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -182,6 +182,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v16(conn)
     _migrate_v17(conn)
     _migrate_v18(conn)
+    _migrate_v19(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -753,6 +754,26 @@ def _migrate_v18(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (18, ?)",
+        (_utcnow(),),
+    )
+
+
+def _migrate_v19(conn: sqlite3.Connection) -> None:
+    """Index ``llm_call_errors(ts)`` for age-based retention and period readers.
+
+    The ledger's only index, ``idx_llm_call_errors_session``, leads with
+    ``session_id``, so a filter on ``ts`` alone (the retention DELETE in
+    ``prune_llm_call_errors`` and the period-scoped ``/stats`` error readers)
+    cannot use it and would scan the whole table. ``IF NOT EXISTS`` keeps the
+    migration idempotent across cross-process first-connect races.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 19")
+    if cur.fetchone() is not None:
+        return
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_call_errors_ts ON llm_call_errors(ts)")
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (19, ?)",
         (_utcnow(),),
     )
 

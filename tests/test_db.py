@@ -2386,3 +2386,43 @@ def test_record_llm_call_error_unknown_retryable_is_null():
     db.record_llm_call_error("err-sess", "2026-06-20T20:00:00+00:00", retryable=None)
     row = db._get_conn().execute("SELECT retryable FROM llm_call_errors").fetchone()
     assert row["retryable"] is None
+
+
+# ---------------------------------------------------------------------------
+# v19 — idx_llm_call_errors_ts (retention prune + error-rate readers)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_v19_ts_index():
+    """v19 indexes llm_call_errors(ts): the prune DELETE and the period-scoped
+    /stats readers filter on ts alone, which idx_llm_call_errors_session
+    (session_id, ts) cannot serve."""
+    conn = db._get_conn()
+    indexes = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_llm_call_errors_ts" in indexes
+    assert [r["name"] for r in conn.execute("PRAGMA index_info(idx_llm_call_errors_ts)")] == ["ts"]
+
+
+def test_schema_v19_recorded():
+    conn = db._get_conn()
+    assert _SCHEMA_VERSION == 19
+    assert conn.execute("SELECT 1 FROM schema_version WHERE version = 19").fetchone() is not None
+
+
+def test_migrate_v19_adds_ts_index_from_v18():
+    """Upgrade path v18 -> v19: a DB at v18 (no ts index) gains the index on the
+    next connect and keeps its ledger rows."""
+    conn = db._get_conn()
+    db.record_llm_call_error("s", "2026-06-20T20:00:00+00:00", error_type="RateLimit")
+    conn.execute("DROP INDEX IF EXISTS idx_llm_call_errors_ts")
+    conn.execute("DELETE FROM schema_version WHERE version >= 19")
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_llm_call_errors_ts" not in names  # v18 state confirmed
+
+    db._ensure_schema(conn)
+
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_llm_call_errors_ts" in names
+    assert conn.execute("SELECT version FROM schema_version WHERE version = 19").fetchone()
+    assert conn.execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == _SCHEMA_VERSION
