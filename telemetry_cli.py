@@ -23,6 +23,9 @@ _STATS_WINDOW_HOURS: dict[str, int] = {
     "models": 24,
     "models-week": 168,
     "models-month": 720,
+    "errors": 24,
+    "errors-week": 168,
+    "errors-month": 720,
 }
 
 _STATS_CHOICES = list(_STATS_WINDOW_HOURS)
@@ -88,7 +91,7 @@ def _subcommand_to_date_range(subcommand: str) -> tuple[str | None, str | None]:
     if preset_result != (None, None):
         return preset_result
 
-    # For other subcommands (cron, providers, models, cron-week, etc.),
+    # For other subcommands (cron, providers, models, errors, cron-week, etc.),
     # use their default window hours
     window_hours = _STATS_WINDOW_HOURS.get(subcommand)
     if window_hours is not None:
@@ -140,7 +143,7 @@ def _build_parser_into(sub) -> None:
         "--profile",
         dest="profile",
         default=None,
-        help="Restrict summary/providers/models/cron views to one profile ('-' = unattributed)",
+        help="Restrict summary/providers/models/errors/cron views to one profile ('-' = unattributed)",
     )
 
     bp = sub.add_parser("budget", help="Show budget status or set limits")
@@ -271,6 +274,8 @@ def _stats_text(
         print(stats._providers_block(date_from=date_from, date_to=date_to, profile=profile))
     elif subcommand.startswith("models"):
         print(stats._models_block(date_from=date_from, date_to=date_to, profile=profile))
+    elif subcommand.startswith("errors"):
+        print(stats._errors_block(date_from=date_from, date_to=date_to, profile=profile))
     else:
         # today, week, month, last-N-days
         print(stats._summary_block(date_from=date_from, date_to=date_to, profile=profile))
@@ -285,6 +290,11 @@ def _stats_json(
         data = db.stats_by_provider(date_from=date_from, date_to=date_to, profile=profile)
     elif subcommand.startswith("models"):
         data = db.stats_by_model(date_from=date_from, date_to=date_to, profile=profile)
+    elif subcommand.startswith("errors"):
+        data = {
+            **db.llm_error_rate(date_from=date_from, date_to=date_to, profile=profile),
+            **db.stats_errors(date_from=date_from, date_to=date_to, profile=profile),
+        }
     else:
         # today, week, month, last-N-days
         data = db.stats_summary(date_from=date_from, date_to=date_to, profile=profile)

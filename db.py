@@ -14,6 +14,7 @@ Public API used by __init__.py (hooks) and stats.py (/stats command):
   record_tool_call(session_id, ts, tool_name, ok, latency_ms,
                    turn_id=None, tool_call_id=None)
   record_llm_call_error(session_id, ts, ...)   # per-attempt failure ledger (v18)
+  prune_llm_call_errors(conn, days)            # age-based ledger retention
   set_sender(session_id, sender_id)
   get_run(session_id)          -> dict | None
   stats_summary(window_hours)  -> dict
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -46,7 +48,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 18
+_SCHEMA_VERSION = 19
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -182,6 +184,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v16(conn)
     _migrate_v17(conn)
     _migrate_v18(conn)
+    _migrate_v19(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -757,6 +760,26 @@ def _migrate_v18(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v19(conn: sqlite3.Connection) -> None:
+    """Index ``llm_call_errors(ts)`` for age-based retention and period readers.
+
+    The ledger's only index, ``idx_llm_call_errors_session``, leads with
+    ``session_id``, so a filter on ``ts`` alone (the retention DELETE in
+    ``prune_llm_call_errors`` and the period-scoped ``/stats`` error readers)
+    cannot use it and would scan the whole table. ``IF NOT EXISTS`` keeps the
+    migration idempotent across cross-process first-connect races.
+    """
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 19")
+    if cur.fetchone() is not None:
+        return
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_call_errors_ts ON llm_call_errors(ts)")
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (19, ?)",
+        (_utcnow(),),
+    )
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1034,6 +1057,68 @@ def record_llm_call_error(
             duration_ms,
         ),
     )
+
+
+DEFAULT_ERROR_RETENTION_DAYS = 30
+_ERROR_RETENTION_ENV = "HERMES_TELEMETRY_ERROR_RETENTION_DAYS"
+
+
+def get_error_retention_days() -> int:
+    """Ledger retention in days — the ONE place the policy is resolved.
+
+    Reads ``HERMES_TELEMETRY_ERROR_RETENTION_DAYS``: unset/blank → 30,
+    ``0`` → retention disabled (nothing is ever pruned), a positive integer →
+    that many days. Anything else (non-integer, negative) falls back to the
+    default with a warning rather than raising: a typo in an env var must not
+    take the plugin down, and must not silently disable pruning either.
+    """
+    raw = os.environ.get(_ERROR_RETENTION_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_ERROR_RETENTION_DAYS
+    try:
+        days = int(raw.strip())
+    except ValueError:
+        days = -1
+    if days < 0:
+        logger.warning(
+            "invalid %s=%r (want a non-negative integer; 0 disables); using default %d",
+            _ERROR_RETENTION_ENV,
+            raw,
+            DEFAULT_ERROR_RETENTION_DAYS,
+        )
+        return DEFAULT_ERROR_RETENTION_DAYS
+    return days
+
+
+_PRUNE_BUSY_TIMEOUT_MS = 1000
+
+
+def prune_llm_call_errors(conn: sqlite3.Connection, days: int) -> int:
+    """Delete ledger rows older than ``days`` days; return how many were removed.
+
+    ``days <= 0`` is a no-op returning 0 (retention disabled). ``ts`` is stored
+    by the writer as ``datetime.now(timezone.utc).isoformat()``, so the cutoff
+    is built with the same call: same ``+00:00`` suffix, and ISO-8601 strings
+    in one fixed offset order lexically, which lets ``idx_llm_call_errors_ts``
+    (v19) serve the range delete. A single DELETE is atomic; the ledger is
+    append-only, so there is nothing to coordinate with concurrent writers.
+
+    The DELETE runs with a short ``busy_timeout`` (``_PRUNE_BUSY_TIMEOUT_MS``)
+    instead of the connection's 30s: this is housekeeping called from plugin
+    load and a hook thread, so under cross-process contention it must give up
+    quickly (``sqlite3.OperationalError``, "database is locked") rather than
+    stall them. The per-thread connection is cached and reused by every other
+    writer on that thread, so the previous timeout is restored in ``finally``.
+    """
+    if days <= 0:
+        return 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    previous = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute(f"PRAGMA busy_timeout={_PRUNE_BUSY_TIMEOUT_MS}")
+    try:
+        return conn.execute("DELETE FROM llm_call_errors WHERE ts < ?", (cutoff,)).rowcount
+    finally:
+        conn.execute(f"PRAGMA busy_timeout={int(previous)}")
 
 
 def record_subagent_start(
@@ -1665,6 +1750,90 @@ def stats_by_provider(
         row["provider_assumed_pct"] = (assumed / total) if total else 0.0
         result.append(row)
     return result
+
+
+def llm_error_rate(
+    window_hours: int | None = None,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    profile: str | None = None,
+) -> dict[str, Any]:
+    """Failed-attempt count and error rate for the selected period.
+
+    ``errors`` counts ``llm_call_errors`` rows (one per failed ATTEMPT, so a
+    call retried 3 times before succeeding contributes 3 errors and 1 success);
+    ``successes`` counts ``llm_calls`` rows. ``error_rate`` is
+    ``errors / (errors + successes)`` — 0.0 when both are zero. Both tables are
+    windowed and profile-filtered through the same helpers as the other
+    ``/stats`` readers so the numerator and denominator always cover the same
+    period.
+    """
+    conn = _get_conn()
+    where_sql, params = _build_where_clause_ts(window_hours, date_from, date_to)
+    prof_sub, prof_sub_params = _profile_subquery(profile)
+    where = f"{where_sql} AND {prof_sub}" if prof_sub else where_sql
+    args = [*params, *prof_sub_params]
+    errors = conn.execute(f"SELECT COUNT(*) FROM llm_call_errors WHERE {where}", args).fetchone()[0]
+    successes = conn.execute(f"SELECT COUNT(*) FROM llm_calls WHERE {where}", args).fetchone()[0]
+    attempts = errors + successes
+    return {
+        "errors": errors,
+        "successes": successes,
+        "error_rate": (errors / attempts) if attempts else 0.0,
+    }
+
+
+def stats_errors(
+    window_hours: int | None = None,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    profile: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Failure-ledger breakdowns for /stats errors.
+
+    Returns ``{"by_type": [...], "by_model": [...]}``:
+      by_type  — one row per (error_type, status_code): count, last_seen
+      by_model — one row per (provider, model): count, last_seen
+
+    ``last_seen`` is the newest ``ts`` string in the group. Both lists are
+    ordered busiest first. Empty provider/model strings (the writer stores
+    ``''`` when the payload omits them) are shown as ``(unknown)``.
+    """
+    conn = _get_conn()
+    where_sql, params = _build_where_clause_ts(window_hours, date_from, date_to)
+    prof_sub, prof_sub_params = _profile_subquery(profile)
+    where = f"{where_sql} AND {prof_sub}" if prof_sub else where_sql
+    args = [*params, *prof_sub_params]
+
+    by_type = conn.execute(
+        f"""
+        SELECT COALESCE(NULLIF(error_type, ''), '(unknown)') AS error_type,
+               status_code,
+               COUNT(*)  AS count,
+               MAX(ts)   AS last_seen
+        FROM llm_call_errors
+        WHERE {where}
+        GROUP BY 1, status_code
+        ORDER BY count DESC, last_seen DESC
+        """,
+        args,
+    ).fetchall()
+    by_model = conn.execute(
+        f"""
+        SELECT COALESCE(NULLIF(provider, ''), '(unknown)') AS provider,
+               COALESCE(NULLIF(model, ''), '(unknown)')    AS model,
+               COUNT(*)  AS count,
+               MAX(ts)   AS last_seen
+        FROM llm_call_errors
+        WHERE {where}
+        GROUP BY 1, 2
+        ORDER BY count DESC, last_seen DESC
+        """,
+        args,
+    ).fetchall()
+    return {"by_type": [dict(r) for r in by_type], "by_model": [dict(r) for r in by_model]}
 
 
 def stats_by_model(

@@ -35,7 +35,7 @@ Per-profile tags are accurate only when each profile runs in its own process. A 
 
 ## Database retention
 
-`telemetry.db` grows without bound, and no automatic purge exists. For high-frequency cron jobs or more than about 100,000 rows, consider manual cleanup of old rows. A retention policy is not implemented yet.
+`telemetry.db` grows without bound, and no automatic purge exists, with one exception: the failed-attempt ledger (`llm_call_errors`) is pruned by age, 30 days by default (see [`HERMES_TELEMETRY_ERROR_RETENTION_DAYS`](/hermes-telemetry/reference/configuration/#environment-variables)). For high-frequency cron jobs or more than about 100,000 rows in the other tables, consider manual cleanup of old rows. A general retention policy is not implemented yet.
 
 ## Gateway restart required
 

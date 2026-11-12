@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
@@ -61,6 +62,59 @@ _CHARS_PER_TOKEN = 4
 _PRICING_SNAPSHOT_TTL_S = 6 * 60 * 60  # 6 hours
 _pricing_snapshot_seen: dict[tuple[str, str], float] = {}
 _pricing_snapshot_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Failure-ledger retention (issue #137). llm_call_errors is append-only, so a
+# retry storm grows it without bound; rows older than the retention policy
+# (db.get_error_retention_days) are pruned once at plugin load and then at most
+# once per _ERROR_PRUNE_INTERVAL_S per process from the api_request_error
+# handler — never from pre_tool_call (the hot path, issue #104). The throttle
+# slot is claimed under the lock BEFORE the DELETE runs, so concurrent hook
+# threads (Hermes dispatches each callback on its own thread) cannot stampede
+# the DB. The DELETE itself runs with a short busy_timeout (db.py), so a
+# contended DB (cron + gateway) skips the prune quietly instead of stalling
+# register() for the 30s connection default. The slot is claimed optimistically
+# for 24h; on a skip or failure it is pulled back to _ERROR_PRUNE_RETRY_S so
+# the prune is retried in an hour, not a day.
+# ---------------------------------------------------------------------------
+_ERROR_PRUNE_INTERVAL_S = 24 * 60 * 60
+_ERROR_PRUNE_RETRY_S = 60 * 60
+_error_prune_next_at: float | None = None  # time.monotonic() before which a prune is skipped
+_error_prune_lock = threading.Lock()
+
+
+def _maybe_prune_error_ledger(log: logging.Logger, force: bool = False) -> None:
+    """Prune the failure ledger if the throttle allows. Never raises."""
+    global _error_prune_next_at
+    now = time.monotonic()
+    with _error_prune_lock:
+        if not force and _error_prune_next_at is not None and now < _error_prune_next_at:
+            return
+        _error_prune_next_at = now + _ERROR_PRUNE_INTERVAL_S
+    failed = False
+    try:
+        from . import db
+
+        days = db.get_error_retention_days()
+        if days <= 0:
+            return
+        deleted = db.prune_llm_call_errors(db._get_conn(), days)
+        if deleted:
+            log.info("pruned %d llm_call_errors row(s) older than %d day(s)", deleted, days)
+    except sqlite3.OperationalError as exc:
+        failed = True
+        msg = str(exc).lower()
+        if "locked" in msg or "busy" in msg:
+            log.info("llm_call_errors prune skipped (database busy); retrying in 1h")
+        else:
+            log.error("llm_call_errors prune failed: %s", exc)
+    except Exception as exc:
+        failed = True
+        log.error("llm_call_errors prune failed: %s", exc)
+    if failed:
+        with _error_prune_lock:
+            _error_prune_next_at = time.monotonic() + _ERROR_PRUNE_RETRY_S
+
 
 # ---------------------------------------------------------------------------
 # Cron session ID regex
@@ -298,6 +352,9 @@ def register(ctx) -> None:  # noqa: ANN001
                 tele_log.info("backfilled %d known-free model(s) for free→paid alert", _n)
     except Exception as exc:
         tele_log.error("known_free_models backfill failed: %s", exc)
+
+    # Failure-ledger retention: one prune per plugin load (issue #137).
+    _maybe_prune_error_ledger(tele_log, force=True)
 
     # ------------------------------------------------------------------
     # on_session_start
@@ -650,6 +707,11 @@ def register(ctx) -> None:  # noqa: ANN001
             except Exception as ledger_exc:
                 tele_log.error("llm_call_errors write failed: %s", ledger_exc)
 
+            # Retention (issue #137): AFTER the row above is written, throttled to
+            # once per 24h per process, and self-guarded — it can never block or
+            # lose the ledger write or the 404 alert path below.
+            _maybe_prune_error_ledger(tele_log)
+
             if status_code != 404:
                 return
             # Conservative filter: 404 must be non-retryable to count as a true
@@ -1001,7 +1063,7 @@ def register(ctx) -> None:  # noqa: ANN001
         "stats",
         stats.handle,
         description="Show telemetry: tokens, cost, latency, tool usage per session/cron job",
-        args_hint="[today|week|month|cron|providers|models|raw]",
+        args_hint="[today|week|month|cron|providers|models|errors|raw]",
     )
 
     # ------------------------------------------------------------------

@@ -459,3 +459,58 @@ def _args(**kwargs):
     for k, v in kwargs.items():
         setattr(ns, k, v)
     return ns
+
+
+# ---------------------------------------------------------------------------
+# stats errors (issue #11) — CLI parity with the /stats errors chat view
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["stats", "errors"], ["stats", "errors-week"], ["stats", "errors-month"]],
+)
+def test_stats_errors_text(argv, capsys):
+    with patch("hermes_telemetry.stats._errors_block", return_value="E") as m:
+        main(argv)
+    out, _ = capsys.readouterr()
+    assert out == "E\n"
+    args, kwargs = m.call_args
+    assert "202" in kwargs["date_from"]
+    assert kwargs.get("date_to") is None
+
+
+def test_stats_errors_passes_profile(capsys):
+    with patch("hermes_telemetry.stats._errors_block", return_value="E") as m:
+        main(["stats", "errors", "--profile", "faro"])
+    assert m.call_args.kwargs["profile"] == "faro"
+
+
+def test_stats_errors_json(capsys):
+    fake = {"by_type": [{"error_type": "x", "status_code": 429, "count": 2}], "by_model": []}
+    rate = {"errors": 2, "successes": 8, "error_rate": 0.2}
+    with patch("hermes_telemetry.telemetry_cli.db.stats_errors", return_value=fake) as m, patch(
+        "hermes_telemetry.telemetry_cli.db.llm_error_rate", return_value=rate
+    ):
+        main(["stats", "errors", "--json"])
+    data = _json.loads(capsys.readouterr().out)
+    assert data["by_type"][0]["count"] == 2
+    assert data["error_rate"] == 0.2
+    assert data["errors"] == 2
+    assert m.call_args.kwargs["date_from"] is not None
+
+
+def test_stats_errors_cli_output_matches_chat_view(capsys):
+    """Same renderer, same rows: the CLI view differs from chat only in the
+    period label, exactly like every other /stats view."""
+    import hermes_telemetry.db as tdb
+
+    tdb._local.conn = None
+    tdb.record_llm_call_error(
+        "s1", tdb._utcnow(), model="m", provider="nous", status_code=429, error_type="RateLimit"
+    )
+    main(["stats", "errors"])
+    cli_out = capsys.readouterr().out
+    assert "RateLimit" in cli_out and "429" in cli_out and "nous" in cli_out
+    tdb._local.conn.close()
+    tdb._local.conn = None

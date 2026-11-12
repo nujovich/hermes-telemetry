@@ -93,8 +93,8 @@ hermes-telemetry/
 │                          verdict cache, anti-spam ledger, tool-gate helpers,
 │                          /budget command, burn-rate forecast.
 ├── stats.py             ← /stats command implementation. All subcommands:
-│                          summary, cron, providers, models, raw, efficiency,
-│                          smells.
+│                          summary, cron, providers, models, errors, raw,
+│                          efficiency, smells.
 ├── smell_detector.py    ← AI smell detection. Read-only heuristics over existing
 │                          runs/tool_calls that flag session anti-patterns
 │                          (context rotation, loop traps, tool thrashing, high
@@ -175,7 +175,9 @@ post_api_request        PRIMARY TOKEN SOURCE. One call per individual API call
 
 api_request_error       (1) Records EVERY API failure per attempt in the
                         llm_call_errors ledger — any status, retryable or not
-                        (schema v18). (2) Captures 404 "model removed /
+                        (schema v18), then (throttled, at most once per 24h
+                        per process) prunes ledger rows past the retention
+                        window. (2) Captures 404 "model removed /
                         unavailable" errors to power the model-unavailable
                         alert. NO token data.
 
@@ -482,6 +484,7 @@ table before applying.
 | v16 | New tables: `endpoint_payload_cache` and `model_efficiency_cache` for standalone-dashboard caches; cache writers share the plugin DB's WAL + 30s busy-timeout posture. |
 | v17 | Data-only repair (issue #89): deletes `known_free_models` rows with no evidence of being genuinely free (no wildcard `provider=''`, and no `llm_calls` row for the same model+provider with `cost_usd = 0` AND tokens > 0), plus their `free_paid_transitions` rows. No shape change. |
 | v18 | Turn identity + failure ledger. `llm_calls`: `turn_id`, `task_id`, `api_request_id`. `tool_calls`: `turn_id`, `tool_call_id`. New table `llm_call_errors` (+ `idx_llm_call_errors_session`), plus `idx_llm_turn` on `llm_calls(turn_id)` and `idx_tool_turn` on `tool_calls(turn_id)` — the two query shapes turn identity exists for. See `§ Turn identity and the failure ledger`. |
+| v19 | `idx_llm_call_errors_ts` on `llm_call_errors(ts)` (index only, no shape change). The ledger's other index leads with `session_id`, so the retention `DELETE` and the period-scoped `/stats` error readers, which filter on `ts` alone, could not use it. See `§ Turn identity and the failure ledger` → *Retention*. (#137) |
 
 `_SCHEMA_VERSION` in `db.py` is the latest applied version — keep it in lockstep
 with the highest `_migrate_vN`. `test_schema_idempotent` asserts the count of
@@ -536,19 +539,51 @@ The two writes for a 404 are intentional: history (`llm_call_errors`) **and** th
 alert (`model_unavailable_alerts` + the one-shot `pre_llm_call` injection). The
 alert's filter, upsert, and queueing are unchanged.
 
-**Retention: this table has no cap and no prune.** One row per failed attempt
-means a 429 retry storm, or a cron job failing auth on every run, grows
-`llm_call_errors` without bound — on a long-lived instance it accumulates rows
-faster than any other table the plugin writes. Left deliberate for now: the
-ledger exists to make failures visible, and choosing what to discard (and
-whether the answer differs for 429 vs auth vs 404, or should be a count rather
-than an age) is its own decision rather than something to guess at in the same
-change that adds the table. Tracked as a follow-up; until it lands, pruning is
-yours:
+**Retention (v19, issue #137).** One row per failed attempt means a 429 retry
+storm, or a cron job failing auth on every run, would grow `llm_call_errors`
+without bound, so the ledger is pruned by **age**:
 
-```sql
-DELETE FROM llm_call_errors WHERE ts < '2026-01-01T00:00:00+00:00';
-```
+- **Policy** — `db.get_error_retention_days()` is the only place it is resolved,
+  from env `HERMES_TELEMETRY_ERROR_RETENTION_DAYS`: unset/blank → **30**,
+  `0` → retention disabled (never prune), a positive integer → that many days.
+  Anything else (non-integer, negative) falls back to 30 and logs a warning.
+  Age, not a row cap, because the readers are period-scoped (`/stats errors
+  week|month`): a count cap would silently shrink the window a busy day can
+  answer for. One policy for all error classes — 429, auth and 404 rows alike.
+- **Mechanism** — `db.prune_llm_call_errors(conn, days)` deletes rows whose `ts`
+  is older than now − N days and returns the count; `days <= 0` is a no-op. The
+  cutoff is built with the writer's own `datetime.now(timezone.utc).isoformat()`
+  so the lexical comparison is exact, and `idx_llm_call_errors_ts` (v19) serves
+  the range delete.
+- **Schedule** — `_maybe_prune_error_ledger` in `__init__.py` runs once at
+  plugin load and then at most once per 24h per process from the
+  `api_request_error` handler, **after** the ledger row is written. The
+  throttle slot is claimed under a lock before the `DELETE` runs: Hermes
+  dispatches every hook callback on its own thread, so without the lock a burst
+  of errors would stampede the DB. The slot is claimed for 24h; if the prune is
+  skipped (DB busy) or fails, the next-allowed time is pulled back to now + 1h,
+  so it is retried in an hour rather than a day. The `DELETE` runs with a short
+  `busy_timeout` (1s, restored in a `finally` — the per-thread connection is
+  cached and shared by every other writer on that thread, which keep 30s), so a
+  contended DB skips the prune quietly (info log) instead of stalling
+  `register()` or the hook thread for 30s. It is self-guarded (logged, never
+  raised), so it cannot lose the ledger write or the 404 alert. It is **never**
+  called from `pre_tool_call` (issue #104: nothing is added to the hot path).
+- **Cross-process** — cron jobs and the gateway each prune on their own load;
+  the `DELETE` is a single atomic statement on an append-only table, so
+  concurrent prunes are harmless, and a prune that loses the write lock gives up
+  after 1s and retries in 1h.
+
+The readers are `/stats` (a `Failed attempts` line with
+`errors / (errors + successful llm_calls)` for the selected period, omitted
+when there are zero errors) and `/stats errors` (grouped by error type + status
+and by provider/model, with count and last-seen), also available as
+`hermes-telemetry stats errors`. Both go through `db.llm_error_rate` /
+`db.stats_errors`, which reuse `_build_where_clause_ts` and `_profile_subquery`
+like the other `llm_calls` readers. Under `--profile`, an error is attributed
+through its session's `runs` row; a session with no `runs` row (the hook fired
+before `on_session_start` created one) is therefore outside every profile
+filter, including `-`.
 
 **Read the payload as it actually arrives.** The emitter
 (`agent/api_request_hooks.py::_invoke_api_request_error_hook`) sends:
@@ -2026,8 +2061,10 @@ Enable with `git config core.hooksPath .githooks`.
 
 ### DB retention
 
-`telemetry.db` grows without bound. No automatic purge. For >100K rows, consider
-manual cleanup.
+`telemetry.db` grows without bound. No automatic purge — with one exception: the
+`llm_call_errors` failure ledger is pruned by age (default 30 days, configurable via
+`HERMES_TELEMETRY_ERROR_RETENTION_DAYS`, `0` disables; see `§ Turn identity and the
+failure ledger`). For >100K rows in the other tables, consider manual cleanup.
 
 ---
 
@@ -2100,7 +2137,7 @@ correct shape for optional query params in this file.
 ### `/stats --profile` filter semantics
 
 `--profile <name>` (slash and standalone CLI) filters the summary, providers, models, cron,
-efficiency, smells, and raw views (CLI: the first four; it has no efficiency/smells/raw
+efficiency, smells, errors, and raw views (CLI: summary, providers, models, errors, cron; it has no efficiency/smells/raw
 subcommands). The helpers live in `db.py`:
 
 - **`runs`-based queries** use `_profile_where(profile, col)` against `runs.profile`

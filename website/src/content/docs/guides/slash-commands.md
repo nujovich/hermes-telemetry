@@ -22,6 +22,8 @@ hermes-telemetry adds three slash commands to Hermes chat: `/stats`, `/budget`, 
 /stats providers week   provider breakdown, last 7 days
 /stats models           per model within each provider (last 24 hours)
 /stats models week      model breakdown, last 7 days
+/stats errors           failed LLM attempts by error type and provider/model (last 24 hours)
+/stats errors week      failed-attempt breakdown, last 7 days
 /stats efficiency       per-session efficiency scores (last 24 hours)
 /stats efficiency week  efficiency scores, last 7 days
 /stats smells           anti-pattern detection (last 24 hours)
@@ -79,6 +81,8 @@ hermes-telemetry — last 24 h
 ```
 
 When some calls used estimated tokens, the cost is prefixed with `~` and an `Estimated data` line shows the share of affected API calls.
+
+When the period contains failed LLM attempts, a line such as `Failed attempts: 3  (6.0% error rate — see /stats errors)` follows the API calls count. The error rate is failed attempts divided by failed attempts plus successful LLM calls, so a call that is retried twice before succeeding counts as two failures and one success. The line is omitted when there are no failures.
 
 ### Cron jobs
 
@@ -138,6 +142,31 @@ The `Notes` column explains every `$0.000000` row, so you can tell an intentiona
 | `no price entry` | Nothing in `pricing.yaml` or the built-in table prices this model, so Hermes had nothing to multiply by. Add an entry to `pricing.yaml` manually. `/setup pricing auto` regenerates the whole file and overwrites hand edits, so back it up first. |
 
 The footer summarizes each applicable group.
+
+### Errors
+
+`/stats errors` shows every failed LLM attempt recorded for the period, grouped two ways: by error type and HTTP status, and by provider and model. Each group has a count and the time it was last seen (UTC). Use `week` or `month` for a longer window.
+
+```text
+hermes-telemetry — errors (last 24 h)
+========================================================================
+  Failed attempts: 5  (4.5% of 111 attempts)
+
+  By error type:
+  Error type                         Status  Count  Last seen (UTC)
+  ------------------------------------------------------------------
+  rate_limit_error                      429      4  2026-11-12 09:41
+  APITimeoutError                         -      1  2026-11-12 08:02
+
+  By provider / model:
+  Provider       Model                              Count  Last seen (UTC)
+  --------------------------------------------------------------------------
+  nous           deepseek/deepseek-v4-pro-20260423      5  2026-11-12 09:41
+```
+
+Rows are per failed attempt: the ledger does not deduplicate retries. A dash in `Status` means the failure had no HTTP status (a timeout or connection error, for example). The view honors `--from`, `--to`, and `--profile`.
+
+The ledger keeps 30 days by default and prunes older rows automatically; see the `HERMES_TELEMETRY_ERROR_RETENTION_DAYS` setting in [Configuration](/hermes-telemetry/reference/configuration/#environment-variables).
 
 ### Efficiency and smells
 

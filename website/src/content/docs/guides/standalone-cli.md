@@ -32,6 +32,7 @@ The full set of `stats` subcommands is:
 | Cron jobs | `cron`, `cron-week`, `cron-month` |
 | Providers | `providers`, `providers-week`, `providers-month` |
 | Models | `models`, `models-week`, `models-month` |
+| Errors | `errors`, `errors-week`, `errors-month` |
 
 :::note
 The CLI spells window variants with a hyphen (`providers-week`), where the chat command uses a space (`/stats providers week`). The `efficiency`, `smells`, and `raw` views are chat-only: they are available through [`/stats`](/hermes-telemetry/guides/slash-commands/) but not through the standalone CLI.

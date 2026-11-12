@@ -1180,3 +1180,317 @@ def test_post_tool_call_none_status_uses_fallback(monkeypatch):
     ctx = _register_hooks(monkeypatch)
     _fire_tool(ctx, call_id="n1", result='{"exit_code": 2}', status=None)
     assert _tool_ok_by_call("n1") == [0]
+
+
+# ---------------------------------------------------------------------------
+# Failure-ledger retention wiring (issue #137): prune at load + throttled in
+# the api_request_error handler, never on pre_tool_call.
+# ---------------------------------------------------------------------------
+
+_OLD_TS = "2001-01-01T00:00:00+00:00"
+
+
+def _plugin_db():
+    """The ``db`` module object register() actually calls (see the note above on
+    the standalone-loaded package): patch THIS one, not ``hermes_telemetry.db``."""
+    import importlib
+    import sys
+
+    sys.modules[_init_mod.__name__] = _init_mod
+    return importlib.import_module(f"{_init_mod.__name__}.db")
+
+
+def _seed_old_ledger_row(session="ancient"):
+    import hermes_telemetry.db as tdb
+
+    tdb.record_llm_call_error(session, _OLD_TS, error_type="RateLimit")
+
+
+def _ledger_sessions():
+    return [r["session_id"] for r in _ledger_rows()]
+
+
+def test_retention_prunes_old_rows_once_at_plugin_load(monkeypatch):
+    _seed_old_ledger_row()
+    assert _ledger_sessions() == ["ancient"]
+    _register_hooks(monkeypatch)
+    assert _ledger_sessions() == []
+
+
+def test_retention_disabled_by_zero_keeps_everything(monkeypatch):
+    monkeypatch.setenv("HERMES_TELEMETRY_ERROR_RETENTION_DAYS", "0")
+    _seed_old_ledger_row()
+    ctx = _register_hooks(monkeypatch)
+    _init_mod._error_prune_next_at = None  # throttle open: only the 0 setting protects the row
+    _fire_live_429(ctx)
+    assert "ancient" in _ledger_sessions()
+
+
+def test_handler_prunes_after_writing_the_ledger_row_when_throttle_open(monkeypatch):
+    tdb = _plugin_db()
+    ctx = _register_hooks(monkeypatch)
+    _seed_old_ledger_row()
+    _init_mod._error_prune_next_at = None  # as if 24h elapsed
+
+    seen = {}
+    real_prune = tdb.prune_llm_call_errors
+
+    def spy(conn, days):
+        # The fresh row must already be in the table when the prune runs.
+        seen["rows_at_prune"] = sorted(_ledger_sessions())
+        return real_prune(conn, days)
+
+    monkeypatch.setattr(tdb, "prune_llm_call_errors", spy)
+    _fire_live_429(ctx)
+
+    assert seen["rows_at_prune"] == ["ancient", "sess-429"]
+    assert _ledger_sessions() == ["sess-429"]
+
+
+def test_handler_does_not_prune_again_within_24h(monkeypatch):
+    ctx = _register_hooks(monkeypatch)  # load-time prune claims the throttle slot
+    _seed_old_ledger_row()
+    _fire_live_429(ctx)
+    _fire_live_429(ctx)
+    assert "ancient" in _ledger_sessions()
+    assert _ledger_sessions().count("sess-429") == 2
+
+
+def test_handler_prunes_again_after_24h_elapsed(monkeypatch):
+    ctx = _register_hooks(monkeypatch)
+    _seed_old_ledger_row()
+    _init_mod._error_prune_next_at = time.monotonic() - 5
+    _fire_live_429(ctx)
+    assert _ledger_sessions() == ["sess-429"]
+
+
+def test_prune_failure_is_logged_and_never_loses_the_ledger_row(monkeypatch):
+    tdb = _plugin_db()
+    ctx = _register_hooks(monkeypatch)
+    _init_mod._error_prune_next_at = None
+
+    def boom(conn, days):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(tdb, "prune_llm_call_errors", boom)
+    # register() sets propagate=False on the plugin logger, so caplog (root
+    # handler) cannot see it: attach a handler to the logger itself.
+    records = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Collect(level=logging.ERROR)
+    plugin_log = logging.getLogger("hermes_telemetry")
+    plugin_log.addHandler(handler)
+    try:
+        _fire_live_429(ctx)  # must not raise
+    finally:
+        plugin_log.removeHandler(handler)
+
+    assert _ledger_sessions() == ["sess-429"]
+    assert any("prune" in m and "disk I/O" in m for m in records)
+
+
+def test_prune_failure_still_lets_the_404_alert_path_run(monkeypatch):
+    import hermes_telemetry.db as tdb
+
+    pdb = _plugin_db()
+
+    _init_mod._pending_model_unavailable_alerts.clear()
+    ctx = _register_hooks(monkeypatch)
+    _init_mod._error_prune_next_at = None
+    monkeypatch.setattr(
+        pdb, "prune_llm_call_errors", lambda conn, days: (_ for _ in ()).throw(RuntimeError("x"))
+    )
+    _live_404(ctx)
+    assert len(_ledger_rows()) == 1
+    assert (
+        tdb._get_conn().execute("SELECT COUNT(*) FROM model_unavailable_alerts").fetchone()[0] == 1
+    )
+
+
+def test_prune_throttle_is_thread_safe(monkeypatch):
+    """N concurrent handler threads with the throttle open → exactly one prune."""
+    import threading
+
+    tdb = _plugin_db()
+    calls = []
+    gate = threading.Barrier(8)
+    monkeypatch.setattr(tdb, "prune_llm_call_errors", lambda conn, days: calls.append(1) or 0)
+    _init_mod._error_prune_next_at = None
+    log = logging.getLogger("hermes_telemetry")
+
+    def worker():
+        gate.wait()
+        _init_mod._maybe_prune_error_ledger(log)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(calls) == 1
+
+
+def test_pre_tool_call_never_prunes(monkeypatch):
+    """Issue #104: nothing may be added to the pre_tool_call hot path."""
+    tdb = _plugin_db()
+    hooks = _registered_hooks(monkeypatch)
+    _seed_old_ledger_row()
+    _init_mod._error_prune_next_at = None
+    calls = []
+    monkeypatch.setattr(tdb, "prune_llm_call_errors", lambda conn, days: calls.append(1) or 0)
+    hooks["pre_tool_call"](session_id="sess-hot")
+    assert calls == []
+    assert "ancient" in _ledger_sessions()
+
+
+def test_stats_command_args_hint_lists_the_errors_view(monkeypatch):
+    hints = {}
+
+    class _Ctx(_MockPluginContext):
+        def register_command(self, name, fn, description="", args_hint=""):
+            hints[name] = args_hint
+
+    import sys
+
+    tele = Path(os.environ["HERMES_HOME"]) / "telemetry"
+    tele.mkdir(parents=True, exist_ok=True)
+    (tele / ".pricing_refresh").touch()
+    monkeypatch.setitem(sys.modules, _init_mod.__name__, _init_mod)
+    _init_mod.register(_Ctx())
+    assert "errors" in hints["stats"]
+
+
+# ---------------------------------------------------------------------------
+# Retention prune: short busy timeout + 1h retry backoff
+# ---------------------------------------------------------------------------
+
+
+def _hold_write_lock():
+    """Second connection holding the DB write lock (BEGIN IMMEDIATE)."""
+    tdb = _plugin_db()
+    blocker = sqlite3.connect(str(tdb._get_db_path()), isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+    return blocker
+
+
+def _busy_timeout(conn):
+    return conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+
+def test_prune_under_write_lock_returns_fast_and_does_not_raise(monkeypatch):
+    tdb = _plugin_db()
+    _register_hooks(monkeypatch)
+    _seed_old_ledger_row()
+    _init_mod._error_prune_next_at = None
+    blocker = _hold_write_lock()
+    try:
+        t0 = time.monotonic()
+        _init_mod._maybe_prune_error_ledger(logging.getLogger("hermes_telemetry"), force=True)
+        elapsed = time.monotonic() - t0
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+    assert elapsed < 5, f"prune blocked {elapsed:.1f}s on a busy DB (busy_timeout not shortened)"
+    assert "ancient" in _ledger_sessions()
+    assert tdb is not None
+
+
+def test_prune_restores_the_connection_busy_timeout_after_a_busy_skip(monkeypatch):
+    tdb = _plugin_db()
+    _register_hooks(monkeypatch)
+    _seed_old_ledger_row()
+    conn = tdb._get_conn()
+    before = _busy_timeout(conn)
+    assert before == 30000
+    blocker = _hold_write_lock()
+    try:
+        _init_mod._maybe_prune_error_ledger(logging.getLogger("hermes_telemetry"), force=True)
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+    assert _busy_timeout(conn) == before
+
+
+def test_prune_restores_the_busy_timeout_after_success(monkeypatch):
+    tdb = _plugin_db()
+    _register_hooks(monkeypatch)
+    conn = tdb._get_conn()
+    _seed_old_ledger_row()
+    assert tdb.prune_llm_call_errors(conn, 30) == 1
+    assert _busy_timeout(conn) == 30000
+
+
+def _frozen_clock(monkeypatch, start=1000.0):
+    clock = {"t": start}
+    monkeypatch.setattr(_init_mod.time, "monotonic", lambda: clock["t"])
+    return clock
+
+
+def test_busy_skip_is_retried_after_1h_and_not_before(monkeypatch):
+    tdb = _plugin_db()
+    _register_hooks(monkeypatch)
+    clock = _frozen_clock(monkeypatch)
+    calls = []
+    real_prune = tdb.prune_llm_call_errors
+    busy = {"on": True}
+
+    def flaky(conn, days):
+        calls.append(clock["t"])
+        if busy["on"]:
+            raise sqlite3.OperationalError("database is locked")
+        return real_prune(conn, days)
+
+    monkeypatch.setattr(tdb, "prune_llm_call_errors", flaky)
+    log = logging.getLogger("hermes_telemetry")
+    _init_mod._error_prune_next_at = None
+    _init_mod._maybe_prune_error_ledger(log)
+    assert len(calls) == 1
+
+    clock["t"] += 3600 - 1
+    _init_mod._maybe_prune_error_ledger(log)
+    assert len(calls) == 1  # not before 1h
+
+    busy["on"] = False
+    clock["t"] += 2
+    _init_mod._maybe_prune_error_ledger(log)
+    assert len(calls) == 2  # retried at 1h
+
+
+def test_generic_failure_is_also_retried_after_1h(monkeypatch):
+    tdb = _plugin_db()
+    _register_hooks(monkeypatch)
+    clock = _frozen_clock(monkeypatch)
+    calls = []
+
+    def boom(conn, days):
+        calls.append(1)
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(tdb, "prune_llm_call_errors", boom)
+    log = logging.getLogger("hermes_telemetry")
+    _init_mod._error_prune_next_at = None
+    _init_mod._maybe_prune_error_ledger(log)
+    clock["t"] += 3600 + 1
+    _init_mod._maybe_prune_error_ledger(log)
+    assert len(calls) == 2
+
+
+def test_successful_prune_waits_24h_for_the_next_attempt(monkeypatch):
+    tdb = _plugin_db()
+    _register_hooks(monkeypatch)
+    clock = _frozen_clock(monkeypatch)
+    calls = []
+    monkeypatch.setattr(tdb, "prune_llm_call_errors", lambda conn, days: calls.append(1) or 0)
+    log = logging.getLogger("hermes_telemetry")
+    _init_mod._error_prune_next_at = None
+    _init_mod._maybe_prune_error_ledger(log)
+    clock["t"] += 24 * 3600 - 1
+    _init_mod._maybe_prune_error_ledger(log)
+    assert len(calls) == 1
+    clock["t"] += 2
+    _init_mod._maybe_prune_error_ledger(log)
+    assert len(calls) == 2

@@ -2386,3 +2386,118 @@ def test_record_llm_call_error_unknown_retryable_is_null():
     db.record_llm_call_error("err-sess", "2026-06-20T20:00:00+00:00", retryable=None)
     row = db._get_conn().execute("SELECT retryable FROM llm_call_errors").fetchone()
     assert row["retryable"] is None
+
+
+# ---------------------------------------------------------------------------
+# v19 — idx_llm_call_errors_ts (retention prune + error-rate readers)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_v19_ts_index():
+    """v19 indexes llm_call_errors(ts): the prune DELETE and the period-scoped
+    /stats readers filter on ts alone, which idx_llm_call_errors_session
+    (session_id, ts) cannot serve."""
+    conn = db._get_conn()
+    indexes = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_llm_call_errors_ts" in indexes
+    assert [r["name"] for r in conn.execute("PRAGMA index_info(idx_llm_call_errors_ts)")] == ["ts"]
+
+
+def test_schema_v19_recorded():
+    conn = db._get_conn()
+    assert _SCHEMA_VERSION == 19
+    assert conn.execute("SELECT 1 FROM schema_version WHERE version = 19").fetchone() is not None
+
+
+def test_migrate_v19_adds_ts_index_from_v18():
+    """Upgrade path v18 -> v19: a DB at v18 (no ts index) gains the index on the
+    next connect and keeps its ledger rows."""
+    conn = db._get_conn()
+    db.record_llm_call_error("s", "2026-06-20T20:00:00+00:00", error_type="RateLimit")
+    conn.execute("DROP INDEX IF EXISTS idx_llm_call_errors_ts")
+    conn.execute("DELETE FROM schema_version WHERE version >= 19")
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_llm_call_errors_ts" not in names  # v18 state confirmed
+
+    db._ensure_schema(conn)
+
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_llm_call_errors_ts" in names
+    assert conn.execute("SELECT version FROM schema_version WHERE version = 19").fetchone()
+    assert conn.execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == _SCHEMA_VERSION
+
+
+# ---------------------------------------------------------------------------
+# Ledger retention — prune_llm_call_errors
+# ---------------------------------------------------------------------------
+
+
+def _iso_days_ago(days: float) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def test_prune_llm_call_errors_deletes_only_rows_older_than_cutoff():
+    conn = db._get_conn()
+    db.record_llm_call_error("old", _iso_days_ago(45), error_type="RateLimit")
+    db.record_llm_call_error("old", _iso_days_ago(31), error_type="RateLimit")
+    db.record_llm_call_error("new", _iso_days_ago(29), error_type="Timeout")
+    db.record_llm_call_error("new", _iso_days_ago(0), error_type="Timeout")
+
+    deleted = db.prune_llm_call_errors(conn, 30)
+
+    assert deleted == 2
+    assert {r[0] for r in conn.execute("SELECT session_id FROM llm_call_errors")} == {"new"}
+    assert conn.execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("days", [0, -1, -30])
+def test_prune_llm_call_errors_non_positive_days_is_a_noop(days):
+    conn = db._get_conn()
+    db.record_llm_call_error("ancient", "2001-01-01T00:00:00+00:00", error_type="X")
+
+    assert db.prune_llm_call_errors(conn, days) == 0
+    assert conn.execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 1
+
+
+def test_prune_llm_call_errors_uses_the_writers_ts_format():
+    """The writer stores ``datetime.now(utc).isoformat()`` (``+00:00`` suffix);
+    the cutoff must compare correctly against exactly that string shape."""
+    conn = db._get_conn()
+    db.record_llm_call_error("s", db._utcnow(), error_type="X")
+    assert db.prune_llm_call_errors(conn, 1) == 0
+    assert conn.execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Ledger retention — HERMES_TELEMETRY_ERROR_RETENTION_DAYS resolution
+# ---------------------------------------------------------------------------
+
+
+def test_error_retention_days_default_is_30(monkeypatch):
+    monkeypatch.delenv("HERMES_TELEMETRY_ERROR_RETENTION_DAYS", raising=False)
+    assert db.DEFAULT_ERROR_RETENTION_DAYS == 30
+    assert db.get_error_retention_days() == 30
+
+
+@pytest.mark.parametrize("raw,expected", [("7", 7), (" 90 ", 90), ("0", 0), ("1", 1)])
+def test_error_retention_days_reads_env(monkeypatch, raw, expected):
+    monkeypatch.setenv("HERMES_TELEMETRY_ERROR_RETENTION_DAYS", raw)
+    assert db.get_error_retention_days() == expected
+
+
+@pytest.mark.parametrize("raw", ["abc", "-5", "1.5", "7d", "nan"])
+def test_error_retention_days_invalid_falls_back_and_warns(monkeypatch, caplog, raw):
+    monkeypatch.setenv("HERMES_TELEMETRY_ERROR_RETENTION_DAYS", raw)
+    with caplog.at_level("WARNING", logger="hermes_telemetry"):
+        assert db.get_error_retention_days() == 30
+    assert any("HERMES_TELEMETRY_ERROR_RETENTION_DAYS" in r.getMessage() for r in caplog.records)
+
+
+def test_error_retention_days_blank_is_default_without_warning(monkeypatch, caplog):
+    monkeypatch.setenv("HERMES_TELEMETRY_ERROR_RETENTION_DAYS", "  ")
+    with caplog.at_level("WARNING", logger="hermes_telemetry"):
+        assert db.get_error_retention_days() == 30
+    assert not caplog.records
