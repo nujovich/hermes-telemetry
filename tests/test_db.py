@@ -2426,3 +2426,46 @@ def test_migrate_v19_adds_ts_index_from_v18():
     assert conn.execute("SELECT version FROM schema_version WHERE version = 19").fetchone()
     assert conn.execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == _SCHEMA_VERSION
+
+
+# ---------------------------------------------------------------------------
+# Ledger retention — prune_llm_call_errors
+# ---------------------------------------------------------------------------
+
+
+def _iso_days_ago(days: float) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def test_prune_llm_call_errors_deletes_only_rows_older_than_cutoff():
+    conn = db._get_conn()
+    db.record_llm_call_error("old", _iso_days_ago(45), error_type="RateLimit")
+    db.record_llm_call_error("old", _iso_days_ago(31), error_type="RateLimit")
+    db.record_llm_call_error("new", _iso_days_ago(29), error_type="Timeout")
+    db.record_llm_call_error("new", _iso_days_ago(0), error_type="Timeout")
+
+    deleted = db.prune_llm_call_errors(conn, 30)
+
+    assert deleted == 2
+    assert {r[0] for r in conn.execute("SELECT session_id FROM llm_call_errors")} == {"new"}
+    assert conn.execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("days", [0, -1, -30])
+def test_prune_llm_call_errors_non_positive_days_is_a_noop(days):
+    conn = db._get_conn()
+    db.record_llm_call_error("ancient", "2001-01-01T00:00:00+00:00", error_type="X")
+
+    assert db.prune_llm_call_errors(conn, days) == 0
+    assert conn.execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 1
+
+
+def test_prune_llm_call_errors_uses_the_writers_ts_format():
+    """The writer stores ``datetime.now(utc).isoformat()`` (``+00:00`` suffix);
+    the cutoff must compare correctly against exactly that string shape."""
+    conn = db._get_conn()
+    db.record_llm_call_error("s", db._utcnow(), error_type="X")
+    assert db.prune_llm_call_errors(conn, 1) == 0
+    assert conn.execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 1

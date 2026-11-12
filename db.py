@@ -14,6 +14,7 @@ Public API used by __init__.py (hooks) and stats.py (/stats command):
   record_tool_call(session_id, ts, tool_name, ok, latency_ms,
                    turn_id=None, tool_call_id=None)
   record_llm_call_error(session_id, ts, ...)   # per-attempt failure ledger (v18)
+  prune_llm_call_errors(conn, days)            # age-based ledger retention
   set_sender(session_id, sender_id)
   get_run(session_id)          -> dict | None
   stats_summary(window_hours)  -> dict
@@ -1055,6 +1056,22 @@ def record_llm_call_error(
             duration_ms,
         ),
     )
+
+
+def prune_llm_call_errors(conn: sqlite3.Connection, days: int) -> int:
+    """Delete ledger rows older than ``days`` days; return how many were removed.
+
+    ``days <= 0`` is a no-op returning 0 (retention disabled). ``ts`` is stored
+    by the writer as ``datetime.now(timezone.utc).isoformat()``, so the cutoff
+    is built with the same call: same ``+00:00`` suffix, and ISO-8601 strings
+    in one fixed offset order lexically, which lets ``idx_llm_call_errors_ts``
+    (v19) serve the range delete. A single DELETE is atomic; the ledger is
+    append-only, so there is nothing to coordinate with concurrent writers.
+    """
+    if days <= 0:
+        return 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return conn.execute("DELETE FROM llm_call_errors WHERE ts < ?", (cutoff,)).rowcount
 
 
 def record_subagent_start(
