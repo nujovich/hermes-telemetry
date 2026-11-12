@@ -63,6 +63,46 @@ _pricing_snapshot_seen: dict[tuple[str, str], float] = {}
 _pricing_snapshot_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
+# Failure-ledger retention (issue #137). llm_call_errors is append-only, so a
+# retry storm grows it without bound; rows older than the retention policy
+# (db.get_error_retention_days) are pruned once at plugin load and then at most
+# once per _ERROR_PRUNE_INTERVAL_S per process from the api_request_error
+# handler — never from pre_tool_call (the hot path, issue #104). The throttle
+# slot is claimed under the lock BEFORE the DELETE runs, so concurrent hook
+# threads (Hermes dispatches each callback on its own thread) cannot stampede
+# the DB, and a failing prune is not retried on every subsequent error.
+# ---------------------------------------------------------------------------
+_ERROR_PRUNE_INTERVAL_S = 24 * 60 * 60
+_error_prune_last: float | None = None  # time.monotonic() of the last claimed slot
+_error_prune_lock = threading.Lock()
+
+
+def _maybe_prune_error_ledger(log: logging.Logger, force: bool = False) -> None:
+    """Prune the failure ledger if the throttle allows. Never raises."""
+    global _error_prune_last
+    now = time.monotonic()
+    with _error_prune_lock:
+        if (
+            not force
+            and _error_prune_last is not None
+            and now - _error_prune_last < _ERROR_PRUNE_INTERVAL_S
+        ):
+            return
+        _error_prune_last = now
+    try:
+        from . import db
+
+        days = db.get_error_retention_days()
+        if days <= 0:
+            return
+        deleted = db.prune_llm_call_errors(db._get_conn(), days)
+        if deleted:
+            log.info("pruned %d llm_call_errors row(s) older than %d day(s)", deleted, days)
+    except Exception as exc:
+        log.error("llm_call_errors prune failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Cron session ID regex
 # ---------------------------------------------------------------------------
 CRON_SESSION_RE = re.compile(r"^cron_(?P<job_id>.+)_\d{8}_\d{6}$")
@@ -298,6 +338,9 @@ def register(ctx) -> None:  # noqa: ANN001
                 tele_log.info("backfilled %d known-free model(s) for free→paid alert", _n)
     except Exception as exc:
         tele_log.error("known_free_models backfill failed: %s", exc)
+
+    # Failure-ledger retention: one prune per plugin load (issue #137).
+    _maybe_prune_error_ledger(tele_log, force=True)
 
     # ------------------------------------------------------------------
     # on_session_start
@@ -649,6 +692,11 @@ def register(ctx) -> None:  # noqa: ANN001
                 )
             except Exception as ledger_exc:
                 tele_log.error("llm_call_errors write failed: %s", ledger_exc)
+
+            # Retention (issue #137): AFTER the row above is written, throttled to
+            # once per 24h per process, and self-guarded — it can never block or
+            # lose the ledger write or the 404 alert path below.
+            _maybe_prune_error_ledger(tele_log)
 
             if status_code != 404:
                 return
