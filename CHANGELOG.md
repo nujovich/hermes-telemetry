@@ -30,8 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`HERMES_TELEMETRY_ERROR_RETENTION_DAYS`, default 30, `0` disables; invalid
   values fall back to 30 with a warning). The prune runs once at plugin load and
   at most once per 24h per process from the `api_request_error` handler, after
-  the row is written; a prune failure is logged and never loses the ledger
-  write. Nothing was added to the `pre_tool_call` path.
+  the row is written. The prune uses a short (1s) busy timeout and skips quietly
+  when the DB is busy; a skipped or failed prune is retried after 1h instead of
+  24h, and never loses the ledger write or stalls plugin load. Nothing was added to the `pre_tool_call` path.
 
 ### Fixed
 

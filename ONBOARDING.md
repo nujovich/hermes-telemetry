@@ -560,13 +560,19 @@ without bound, so the ledger is pruned by **age**:
   `api_request_error` handler, **after** the ledger row is written. The
   throttle slot is claimed under a lock before the `DELETE` runs: Hermes
   dispatches every hook callback on its own thread, so without the lock a burst
-  of errors would stampede the DB, and claiming first means a failing prune is
-  not retried on every subsequent error. It is self-guarded (logged, never
+  of errors would stampede the DB. The slot is claimed for 24h; if the prune is
+  skipped (DB busy) or fails, the next-allowed time is pulled back to now + 1h,
+  so it is retried in an hour rather than a day. The `DELETE` runs with a short
+  `busy_timeout` (1s, restored in a `finally` — the per-thread connection is
+  cached and shared by every other writer on that thread, which keep 30s), so a
+  contended DB skips the prune quietly (info log) instead of stalling
+  `register()` or the hook thread for 30s. It is self-guarded (logged, never
   raised), so it cannot lose the ledger write or the 404 alert. It is **never**
   called from `pre_tool_call` (issue #104: nothing is added to the hot path).
 - **Cross-process** — cron jobs and the gateway each prune on their own load;
   the `DELETE` is a single atomic statement on an append-only table, so
-  concurrent prunes are harmless (`busy_timeout` covers write contention).
+  concurrent prunes are harmless, and a prune that loses the write lock gives up
+  after 1s and retries in 1h.
 
 The readers are `/stats` (a `Failed attempts` line with
 `errors / (errors + successful llm_calls)` for the selected period, omitted

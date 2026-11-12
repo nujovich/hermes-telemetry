@@ -1090,6 +1090,9 @@ def get_error_retention_days() -> int:
     return days
 
 
+_PRUNE_BUSY_TIMEOUT_MS = 1000
+
+
 def prune_llm_call_errors(conn: sqlite3.Connection, days: int) -> int:
     """Delete ledger rows older than ``days`` days; return how many were removed.
 
@@ -1099,11 +1102,23 @@ def prune_llm_call_errors(conn: sqlite3.Connection, days: int) -> int:
     in one fixed offset order lexically, which lets ``idx_llm_call_errors_ts``
     (v19) serve the range delete. A single DELETE is atomic; the ledger is
     append-only, so there is nothing to coordinate with concurrent writers.
+
+    The DELETE runs with a short ``busy_timeout`` (``_PRUNE_BUSY_TIMEOUT_MS``)
+    instead of the connection's 30s: this is housekeeping called from plugin
+    load and a hook thread, so under cross-process contention it must give up
+    quickly (``sqlite3.OperationalError``, "database is locked") rather than
+    stall them. The per-thread connection is cached and reused by every other
+    writer on that thread, so the previous timeout is restored in ``finally``.
     """
     if days <= 0:
         return 0
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    return conn.execute("DELETE FROM llm_call_errors WHERE ts < ?", (cutoff,)).rowcount
+    previous = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute(f"PRAGMA busy_timeout={_PRUNE_BUSY_TIMEOUT_MS}")
+    try:
+        return conn.execute("DELETE FROM llm_call_errors WHERE ts < ?", (cutoff,)).rowcount
+    finally:
+        conn.execute(f"PRAGMA busy_timeout={int(previous)}")
 
 
 def record_subagent_start(

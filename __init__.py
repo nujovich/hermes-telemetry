@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
@@ -70,25 +71,27 @@ _pricing_snapshot_lock = threading.Lock()
 # handler — never from pre_tool_call (the hot path, issue #104). The throttle
 # slot is claimed under the lock BEFORE the DELETE runs, so concurrent hook
 # threads (Hermes dispatches each callback on its own thread) cannot stampede
-# the DB, and a failing prune is not retried on every subsequent error.
+# the DB. The DELETE itself runs with a short busy_timeout (db.py), so a
+# contended DB (cron + gateway) skips the prune quietly instead of stalling
+# register() for the 30s connection default. The slot is claimed optimistically
+# for 24h; on a skip or failure it is pulled back to _ERROR_PRUNE_RETRY_S so
+# the prune is retried in an hour, not a day.
 # ---------------------------------------------------------------------------
 _ERROR_PRUNE_INTERVAL_S = 24 * 60 * 60
-_error_prune_last: float | None = None  # time.monotonic() of the last claimed slot
+_ERROR_PRUNE_RETRY_S = 60 * 60
+_error_prune_next_at: float | None = None  # time.monotonic() before which a prune is skipped
 _error_prune_lock = threading.Lock()
 
 
 def _maybe_prune_error_ledger(log: logging.Logger, force: bool = False) -> None:
     """Prune the failure ledger if the throttle allows. Never raises."""
-    global _error_prune_last
+    global _error_prune_next_at
     now = time.monotonic()
     with _error_prune_lock:
-        if (
-            not force
-            and _error_prune_last is not None
-            and now - _error_prune_last < _ERROR_PRUNE_INTERVAL_S
-        ):
+        if not force and _error_prune_next_at is not None and now < _error_prune_next_at:
             return
-        _error_prune_last = now
+        _error_prune_next_at = now + _ERROR_PRUNE_INTERVAL_S
+    failed = False
     try:
         from . import db
 
@@ -98,8 +101,19 @@ def _maybe_prune_error_ledger(log: logging.Logger, force: bool = False) -> None:
         deleted = db.prune_llm_call_errors(db._get_conn(), days)
         if deleted:
             log.info("pruned %d llm_call_errors row(s) older than %d day(s)", deleted, days)
+    except sqlite3.OperationalError as exc:
+        failed = True
+        msg = str(exc).lower()
+        if "locked" in msg or "busy" in msg:
+            log.info("llm_call_errors prune skipped (database busy); retrying in 1h")
+        else:
+            log.error("llm_call_errors prune failed: %s", exc)
     except Exception as exc:
+        failed = True
         log.error("llm_call_errors prune failed: %s", exc)
+    if failed:
+        with _error_prune_lock:
+            _error_prune_next_at = time.monotonic() + _ERROR_PRUNE_RETRY_S
 
 
 # ---------------------------------------------------------------------------
