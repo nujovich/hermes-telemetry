@@ -11,6 +11,7 @@ Subcommands:
   /stats models       → per-model breakdown within each provider (last 24h)
   /stats efficiency   → per-session efficiency scores (0-100, last 24h)
   /stats smells       → AI smell detection: anti-patterns in sessions (last 24h)
+  /stats errors       → failed LLM attempts by error type and by provider/model (last 24h)
 
 Date range support:
   --from YYYY-MM-DD   → start date (inclusive)
@@ -150,6 +151,17 @@ def _summary_block(
         f"  Avg latency   : {_fmt_ms(s.get('avg_latency_ms'))}",
         f"  Avg duration  : {_fmt_ms(s.get('avg_duration_ms'))}",
     ]
+
+    # Failed LLM attempts (llm_call_errors ledger). Shown only when there are
+    # any: a zero line on every summary is noise, and pre-v18 history has none.
+    err = db.llm_error_rate(
+        window_hours=window_hours, date_from=date_from, date_to=date_to, profile=profile
+    )
+    if err["errors"]:
+        lines.append(
+            f"  Failed attempts: {_fmt_int(err['errors'])}  "
+            f"({err['error_rate'] * 100:.1f}% error rate — see /stats errors)"
+        )
 
     if has_estimated:
         est_pct = f"{estimated_calls / api_calls * 100:.1f}%" if api_calls else "100%"
@@ -549,6 +561,65 @@ def _extract_profile_flag(raw_args: str) -> tuple[str, str | None, str | None]:
     return (" ".join(out), profile, None)
 
 
+def _errors_block(
+    window_hours: int | None = None,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    profile: str | None = None,
+) -> str:
+    label = _window_label(window_hours) if window_hours else _date_range_label(date_from, date_to)
+    label += _profile_label_suffix(profile)
+    rate = db.llm_error_rate(
+        window_hours=window_hours, date_from=date_from, date_to=date_to, profile=profile
+    )
+    if not rate["errors"]:
+        return f"No LLM call errors recorded in {label}."
+    data = db.stats_errors(
+        window_hours=window_hours, date_from=date_from, date_to=date_to, profile=profile
+    )
+
+    def _seen(ts: str | None) -> str:
+        return (ts or "")[:16].replace("T", " ")
+
+    lines = [
+        f"hermes-telemetry — errors ({label})",
+        "=" * 72,
+        f"  Failed attempts: {_fmt_int(rate['errors'])}  "
+        f"({rate['error_rate'] * 100:.1f}% of {_fmt_int(rate['errors'] + rate['successes'])} "
+        "attempts)",
+        "",
+        "  By error type:",
+        f"  {'Error type':<34} {'Status':>6} {'Count':>6}  {'Last seen (UTC)':<16}",
+        "  " + "-" * 66,
+    ]
+    for r in data["by_type"]:
+        status = "-" if r.get("status_code") is None else str(r["status_code"])
+        lines.append(
+            f"  {(r.get('error_type') or '')[:34]:<34} {status:>6} "
+            f"{_fmt_int(r.get('count')):>6}  {_seen(r.get('last_seen')):<16}"
+        )
+    lines += [
+        "",
+        "  By provider / model:",
+        f"  {'Provider':<14} {'Model':<34} {'Count':>6}  {'Last seen (UTC)':<16}",
+        "  " + "-" * 74,
+    ]
+    for r in data["by_model"]:
+        lines.append(
+            f"  {(r.get('provider') or '')[:14]:<14} {(r.get('model') or '')[:34]:<34} "
+            f"{_fmt_int(r.get('count')):>6}  {_seen(r.get('last_seen')):<16}"
+        )
+    lines += [
+        "",
+        "  One row per failed ATTEMPT (a call retried 3 times before succeeding counts 3).",
+        "  Error rate = failed attempts / (failed attempts + successful LLM calls).",
+        "  Rows older than the retention window are pruned "
+        "(HERMES_TELEMETRY_ERROR_RETENTION_DAYS, default 30).",
+    ]
+    return "\n".join(lines)
+
+
 def _efficiency_block(
     window_hours: int | None = None,
     *,
@@ -658,7 +729,7 @@ def handle(raw_args: str) -> str:
     alongside the preset subcommands so the in-chat surface has parity with the
     standalone CLI. When a date flag is supplied, the matching block ignores the
     preset window and queries the (possibly bounded) date range instead. The
-    profile flag filters summary/providers/models/efficiency/smells/cron/raw views
+    profile flag filters summary/providers/models/errors/efficiency/smells/cron/raw views
     to one profile (``--profile -`` selects unattributed, NULL-profile runs).
     """
     remaining, date_from, date_to, err = _extract_date_flags(raw_args or "")
@@ -739,6 +810,17 @@ def handle(raw_args: str) -> str:
         if sub == "month":
             return _models_block(720, profile=profile)
 
+    if args.startswith("errors"):
+        sub = args[len("errors") :].strip()
+        if has_range and sub in ("", "today", "week", "month"):
+            return _errors_block(date_from=date_from, date_to=date_to, profile=profile)
+        if sub in ("", "today"):
+            return _errors_block(24, profile=profile)
+        if sub == "week":
+            return _errors_block(168, profile=profile)
+        if sub == "month":
+            return _errors_block(720, profile=profile)
+
     if args.startswith("efficiency"):
         sub = args[len("efficiency") :].strip()
         if has_range and sub in ("", "today", "week", "month"):
@@ -762,7 +844,7 @@ def handle(raw_args: str) -> str:
             return _smells_block(720, profile=profile)
 
     return (
-        "Usage: /stats [today|week|month|cron|cron week|cron month|providers|models|efficiency|smells|raw [N]]\n"
+        "Usage: /stats [today|week|month|cron|cron week|cron month|providers|models|errors|efficiency|smells|raw [N]]\n"
         "             [--from YYYY-MM-DD[THH:MM:SS[Z]]] [--to YYYY-MM-DD[THH:MM:SS[Z]]] [--profile <name>|-]\n"
         "  /stats               — last 24h summary\n"
         "  /stats week          — last 7 days summary\n"
@@ -772,6 +854,8 @@ def handle(raw_args: str) -> str:
         "  /stats providers week — provider breakdown, last 7 days\n"
         "  /stats models        — per-model breakdown within each provider (24h)\n"
         "  /stats models week   — per-model breakdown, last 7 days\n"
+        "  /stats errors        — failed LLM attempts by error type and provider/model (24h)\n"
+        "  /stats errors week   — failed attempts, last 7 days\n"
         "  /stats efficiency    — per-session efficiency scores (0-100, 24h)\n"
         "  /stats efficiency week — efficiency scores, last 7 days\n"
         "  /stats smells        — AI smell detection (24h)\n"
@@ -782,7 +866,7 @@ def handle(raw_args: str) -> str:
         "  /stats models --from 2026-06-16T12:00:00Z\n"
         "  /stats providers --from 2026-06-10 --to 2026-06-15\n"
         "\n"
-        "Profile filter (summary/providers/models/efficiency/smells views):\n"
+        "Profile filter (summary/providers/models/errors/efficiency/smells views):\n"
         "  /stats models --profile faro    — only runs tagged profile 'faro'\n"
         "  /stats --profile -              — only unattributed (NULL-profile) runs"
     )

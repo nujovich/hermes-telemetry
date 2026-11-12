@@ -1049,7 +1049,7 @@ def register(ctx) -> None:  # noqa: ANN001
         "stats",
         stats.handle,
         description="Show telemetry: tokens, cost, latency, tool usage per session/cron job",
-        args_hint="[today|week|month|cron|providers|models|raw]",
+        args_hint="[today|week|month|cron|providers|models|errors|raw]",
     )
 
     # ------------------------------------------------------------------

@@ -1345,3 +1345,20 @@ def test_pre_tool_call_never_prunes(monkeypatch):
     hooks["pre_tool_call"](session_id="sess-hot")
     assert calls == []
     assert "ancient" in _ledger_sessions()
+
+
+def test_stats_command_args_hint_lists_the_errors_view(monkeypatch):
+    hints = {}
+
+    class _Ctx(_MockPluginContext):
+        def register_command(self, name, fn, description="", args_hint=""):
+            hints[name] = args_hint
+
+    import sys
+
+    tele = Path(os.environ["HERMES_HOME"]) / "telemetry"
+    tele.mkdir(parents=True, exist_ok=True)
+    (tele / ".pricing_refresh").touch()
+    monkeypatch.setitem(sys.modules, _init_mod.__name__, _init_mod)
+    _init_mod.register(_Ctx())
+    assert "errors" in hints["stats"]

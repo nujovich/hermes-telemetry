@@ -1737,6 +1737,90 @@ def stats_by_provider(
     return result
 
 
+def llm_error_rate(
+    window_hours: int | None = None,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    profile: str | None = None,
+) -> dict[str, Any]:
+    """Failed-attempt count and error rate for the selected period.
+
+    ``errors`` counts ``llm_call_errors`` rows (one per failed ATTEMPT, so a
+    call retried 3 times before succeeding contributes 3 errors and 1 success);
+    ``successes`` counts ``llm_calls`` rows. ``error_rate`` is
+    ``errors / (errors + successes)`` — 0.0 when both are zero. Both tables are
+    windowed and profile-filtered through the same helpers as the other
+    ``/stats`` readers so the numerator and denominator always cover the same
+    period.
+    """
+    conn = _get_conn()
+    where_sql, params = _build_where_clause_ts(window_hours, date_from, date_to)
+    prof_sub, prof_sub_params = _profile_subquery(profile)
+    where = f"{where_sql} AND {prof_sub}" if prof_sub else where_sql
+    args = [*params, *prof_sub_params]
+    errors = conn.execute(f"SELECT COUNT(*) FROM llm_call_errors WHERE {where}", args).fetchone()[0]
+    successes = conn.execute(f"SELECT COUNT(*) FROM llm_calls WHERE {where}", args).fetchone()[0]
+    attempts = errors + successes
+    return {
+        "errors": errors,
+        "successes": successes,
+        "error_rate": (errors / attempts) if attempts else 0.0,
+    }
+
+
+def stats_errors(
+    window_hours: int | None = None,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    profile: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Failure-ledger breakdowns for /stats errors.
+
+    Returns ``{"by_type": [...], "by_model": [...]}``:
+      by_type  — one row per (error_type, status_code): count, last_seen
+      by_model — one row per (provider, model): count, last_seen
+
+    ``last_seen`` is the newest ``ts`` string in the group. Both lists are
+    ordered busiest first. Empty provider/model strings (the writer stores
+    ``''`` when the payload omits them) are shown as ``(unknown)``.
+    """
+    conn = _get_conn()
+    where_sql, params = _build_where_clause_ts(window_hours, date_from, date_to)
+    prof_sub, prof_sub_params = _profile_subquery(profile)
+    where = f"{where_sql} AND {prof_sub}" if prof_sub else where_sql
+    args = [*params, *prof_sub_params]
+
+    by_type = conn.execute(
+        f"""
+        SELECT COALESCE(NULLIF(error_type, ''), '(unknown)') AS error_type,
+               status_code,
+               COUNT(*)  AS count,
+               MAX(ts)   AS last_seen
+        FROM llm_call_errors
+        WHERE {where}
+        GROUP BY 1, status_code
+        ORDER BY count DESC, last_seen DESC
+        """,
+        args,
+    ).fetchall()
+    by_model = conn.execute(
+        f"""
+        SELECT COALESCE(NULLIF(provider, ''), '(unknown)') AS provider,
+               COALESCE(NULLIF(model, ''), '(unknown)')    AS model,
+               COUNT(*)  AS count,
+               MAX(ts)   AS last_seen
+        FROM llm_call_errors
+        WHERE {where}
+        GROUP BY 1, 2
+        ORDER BY count DESC, last_seen DESC
+        """,
+        args,
+    ).fetchall()
+    return {"by_type": [dict(r) for r in by_type], "by_model": [dict(r) for r in by_model]}
+
+
 def stats_by_model(
     window_hours: int | None = None,
     *,
