@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `.pricing_refresh` sentinel move to `<HERMES_TELEMETRY_HOME>/telemetry/`;
   installs that do not set it are unaffected. The old `telemetry.log` under
   `HERMES_HOME` is left in place and can be deleted.
+- **A non-finite `api_duration` no longer drops the `llm_calls` row (#160).**
+  `post_api_request` converted the wire-supplied duration with a bare
+  `int(api_duration * 1000)`, so `NaN` / `inf` / a non-numeric string / `None`
+  raised and the row (and its `runs` totals) was lost. The duration is now
+  treated as untrusted, like on the `api_request_error` path: an unreadable
+  value is stored as `latency_ms = NULL` (readers use `AVG`, which ignores NULL,
+  so latency aggregates stay correct) and the cost and tokens are recorded.
 
 ## [0.10.0] - 2026-11-11
 
@@ -140,11 +147,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The `retryable` and `api_duration` gaps were both found by a community reviewer.
 
-**Known, out of scope:** `__init__.py:383` (`latency_ms = int(api_duration * 1000)`)
-carries the same unguarded-coercion shape as the failure path fixed above. It is
-pre-existing on `main`, sits in the *success* path, and a non-finite `api_duration`
-there silently loses the `llm_calls` row and its `runs` totals. Deliberately not
-changed here — this change stays limited to the four requested items.
+**Known, out of scope (resolved in Unreleased, #160):** the success-path
+`latency_ms = int(api_duration * 1000)` in `post_api_request` carried the same
+unguarded-coercion shape as the failure path fixed above, and a non-finite
+`api_duration` there silently lost the `llm_calls` row and its `runs` totals. It
+was deliberately not changed in this release.
 
 ### Fixed — sync_profiles repair hint branches on plugin install state (#132)
 

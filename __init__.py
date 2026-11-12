@@ -452,7 +452,13 @@ def register(ctx) -> None:  # noqa: ANN001
             cost = pricing.estimate_cost(
                 full_usage, effective_model, provider, core_price=core_price
             )
-            latency_ms = int(api_duration * 1000)
+            # api_duration arrives from the wire (untrusted, like the
+            # api_request_error path): a non-finite / non-numeric / missing
+            # value costs the latency field (NULL), never the row (#160).
+            try:
+                latency_ms: int | None = int(float(api_duration) * 1000)
+            except (TypeError, ValueError, OverflowError):
+                latency_ms = None
 
             # Provider-assumed pricing (issue #42): the cost is real spend, but it
             # used a source-ineligible (OpenRouter) rate because no source-eligible

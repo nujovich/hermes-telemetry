@@ -835,7 +835,7 @@ def record_llm_call(
     tokens_in: int,
     tokens_out: int,
     cost_usd: float,
-    latency_ms: int,
+    latency_ms: int | None,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
     reasoning_tokens: int = 0,
