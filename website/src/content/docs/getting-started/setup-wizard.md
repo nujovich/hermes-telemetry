@@ -65,7 +65,7 @@ Existing files are never overwritten. To skip auto-setup entirely, set `HERMES_T
 
 ## Re-running setup
 
-Only the **first-load auto-setup** skips files that already exist. The `/setup pricing auto`, `/setup pricing minimal`, and `/setup budget default` commands **overwrite** `pricing.yaml` or `budget.yaml` unconditionally, so running them discards hand edits such as `_subscription` tags, custom prices, and custom limits. Back the file up first, or edit it directly (or use `/budget set`) when you only want to change a value.
+Only the **first-load auto-setup** skips files that already exist. The `/setup pricing auto` and `/setup pricing minimal` commands **overwrite** `pricing.yaml` unconditionally, so running them discards hand edits such as `_subscription` tags and custom prices. `/setup budget default` **merges** into `budget.yaml`: it resets `global`, `thresholds`, and `on_estimated` to the defaults but preserves `per_*` entries (per cron job, profile, sender) and any other keys; if the file cannot be parsed it is left untouched and the command reports the failure. Back the file up first, or edit it directly (or use `/budget set`) when you only want to change a value.
 
 To start over from the defaults, back up and delete the file, then run the matching command:
 
@@ -94,4 +94,5 @@ Pricing changes take effect immediately. Budget file changes are picked up by th
 :::note
 The wizard resolves `pricing.yaml` and `budget.yaml` through the same path logic as the rest of the plugin, so the shared [`HERMES_TELEMETRY_HOME`](/hermes-telemetry/guides/profiles/) override is honored. Writes to `budget.yaml` take the same lock as `/budget set`, and merge into whatever is already in the file.
 :::
+
 See [Configuration and data location](/hermes-telemetry/reference/configuration/) for the full file layout and [Pricing](/hermes-telemetry/guides/pricing/) and [Budgets](/hermes-telemetry/guides/budgets/) for the file formats.

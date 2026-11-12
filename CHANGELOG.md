@@ -13,7 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first-load setup write `budget.yaml` under the same flock as `/budget set` and
   the dashboard, re-read the file inside the lock, and merge instead of
   replacing it, so a concurrent writer's entries are no longer clobbered. The
-  "already configured" skip is re-checked under the lock.
+  "already configured" skip is re-checked under the lock. `/setup budget
+  default` now merges rather than overwrites: it resets `global`, `thresholds`
+  and `on_estimated` to the defaults but preserves `per_*` entries and other
+  keys. An unparseable `budget.yaml` (or one whose top level is not a mapping)
+  is left untouched and the wizard reports the failure instead of replacing it.
 - **Setup wizard honors `HERMES_TELEMETRY_HOME` (#159, wizard part).** Its
   `pricing.yaml` / `budget.yaml` / telemetry-dir paths now resolve through
   `paths.py`, matching the rest of the plugin and the budget lock.

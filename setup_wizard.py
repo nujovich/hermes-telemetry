@@ -289,7 +289,10 @@ def _write_budget(data: dict, *, only_if_missing: bool = False) -> Path | None:
     """Merge ``data`` into budget.yaml under ``budget._budget_lock``.
 
     Returns the path written, or ``None`` when ``only_if_missing`` is set and
-    the file already exists (re-checked INSIDE the lock).
+    the file already exists (re-checked INSIDE the lock). Raises ``ValueError``
+    (nothing written) when the existing file is unparseable or its top level is
+    not a mapping; callers turn that into a user-facing message. An empty file
+    is treated as ``{}``.
 
     Issue #155: the whole read -> merge -> atomic write runs under the same
     flock ``budget._set_budget`` and the dashboard use. The atomic rename alone
@@ -315,11 +318,22 @@ def _write_budget(data: dict, *, only_if_missing: bool = False) -> Path | None:
         if p.exists():
             try:
                 with open(p) as f:
-                    loaded = yaml.safe_load(f) or {}
-                if isinstance(loaded, dict):
-                    current = loaded
-            except Exception:
-                current = {}
+                    loaded = yaml.safe_load(f)
+            except Exception as exc:
+                logger.warning(
+                    "setup: budget.yaml at %s is unparseable, not overwriting: %s", p, exc
+                )
+                raise ValueError(f"{p} is not valid YAML ({exc.__class__.__name__})") from exc
+            if loaded is None:
+                loaded = {}
+            if not isinstance(loaded, dict):
+                logger.warning(
+                    "setup: budget.yaml at %s is not a mapping (%s), not overwriting",
+                    p,
+                    type(loaded).__name__,
+                )
+                raise ValueError(f"{p} is not valid: top level must be a mapping")
+            current = loaded
         merged = _deep_merge(current, data)
         pricing_refresh._atomic_write_text(p, _build_budget_yaml(merged))
     return p
@@ -428,7 +442,12 @@ def run(
                     "thresholds": {"soft_pct": 0.80, "hard_pct": 1.00},
                     "on_estimated": {"mode": "warn_only"},
                 }
-                path = _write_budget(bdata, only_if_missing=True)
+                try:
+                    path = _write_budget(bdata, only_if_missing=True)
+                except ValueError as exc:
+                    lines.append(f"\n[Budget] Could not write budget: {exc}")
+                    lines.append("  Left the file untouched — fix or remove it, then re-run setup.")
+                    return "\n".join(lines)
                 if path is None:
                     # Another writer configured it between the pre-check and
                     # the lock — leave their file alone (#155).
@@ -467,7 +486,9 @@ def handle_command(raw_args: str) -> str:
         /setup pricing auto       → auto-generate pricing (defaults + OpenRouter)
         /setup pricing minimal    → built-in defaults only
         /setup pricing skip       → don't configure pricing
-        /setup budget default     → recommended global budget ($5/d, $100/mo)
+        /setup budget default     → recommended global budget ($5/d, $100/mo);
+                                    resets global/thresholds/on_estimated, keeps
+                                    per_* entries and other keys
         /setup budget custom      → set your own limits
         /setup budget skip        → no budgets
     """
@@ -533,7 +554,13 @@ def handle_command(raw_args: str) -> str:
                 "thresholds": {"soft_pct": 0.80, "hard_pct": 1.00},
                 "on_estimated": {"mode": "warn_only"},
             }
-            path = _write_budget(bdata)
+            try:
+                path = _write_budget(bdata)
+            except ValueError as exc:
+                return (
+                    f"Budget NOT configured: {exc}\n"
+                    f"  The file was left untouched. Fix or remove it, then re-run."
+                )
             return (
                 f"Budget configured: global $5.00/day, $100.00/month\n"
                 f"  Written to {path}\n"

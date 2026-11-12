@@ -789,3 +789,77 @@ def test_budget_forecast_command_accepts_profile_scope(tmp_path):
     out = budget.handle("forecast daily profile my-profile")
     assert "Unknown scope" not in out
     assert "No daily budget" in out  # no per_profile limit configured in this test
+
+
+def test_setup_budget_default_resets_defaults_but_preserves_per_entries(tmp_path):
+    """Issue #155: `/setup budget default` merges instead of overwriting.
+
+    global/thresholds/on_estimated are reset to the defaults; per_* entries
+    and unrelated keys already in the file survive.
+    """
+    import yaml
+    from hermes_telemetry import setup_wizard
+
+    p = setup_wizard._budget_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        textwrap.dedent(
+            """\
+            budgets:
+              global:
+                daily_usd: 99.0
+                monthly_usd: 999.0
+              per_cron_job:
+                overrides:
+                  nightly:
+                    daily_usd: 2.0
+            thresholds:
+              soft_pct: 0.5
+              hard_pct: 0.9
+            custom_key: keep-me
+            """
+        )
+    )
+    out = setup_wizard.handle_command("budget default")
+    assert "Budget configured" in out
+    data = yaml.safe_load(p.read_text())
+    assert data["budgets"]["global"] == {"daily_usd": 5.0, "monthly_usd": 100.0}
+    assert data["thresholds"] == {"soft_pct": 0.8, "hard_pct": 1.0}
+    assert data["on_estimated"] == {"mode": "warn_only"}
+    assert data["budgets"]["per_cron_job"]["overrides"]["nightly"]["daily_usd"] == 2.0
+    assert data["custom_key"] == "keep-me"
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["budgets: [unclosed\n  global: {", "- a\n- b\n", "just a string\n"],
+    ids=["malformed-yaml", "list-toplevel", "scalar-toplevel"],
+)
+def test_setup_budget_default_refuses_unparseable_file(tmp_path, body, caplog):
+    """Issue #155: never destroy a budget.yaml we cannot parse."""
+    from hermes_telemetry import setup_wizard
+
+    p = setup_wizard._budget_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(body.encode())
+    before = p.read_bytes()
+
+    with caplog.at_level("WARNING"):
+        out = setup_wizard.handle_command("budget default")
+
+    assert p.read_bytes() == before
+    assert "Budget configured" not in out
+    assert "not valid" in out or "could not" in out.lower()
+    assert any("budget.yaml" in r.getMessage() for r in caplog.records)
+
+
+def test_setup_budget_default_empty_file_is_treated_as_empty(tmp_path):
+    import yaml
+    from hermes_telemetry import setup_wizard
+
+    p = setup_wizard._budget_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("")
+    out = setup_wizard.handle_command("budget default")
+    assert "Budget configured" in out
+    assert yaml.safe_load(p.read_text())["budgets"]["global"]["daily_usd"] == 5.0
