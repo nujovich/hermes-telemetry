@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Schema v18 → v19.** One forward-only migration runs automatically on first
+  load: it only adds `idx_llm_call_errors_ts` on `llm_call_errors(ts)` (no
+  shape change, no data change).
+- **The failure ledger is now pruned.** Rows in `llm_call_errors` older than 30
+  days are deleted at plugin load and at most once per 24h afterwards. Set
+  `HERMES_TELEMETRY_ERROR_RETENTION_DAYS` to change the window; `0` keeps
+  everything.
+
+### Added
+
+- **`/stats errors` and an error rate on the `/stats` summary (closes #11).** The
+  summary shows `Failed attempts: N (X% error rate)` for the selected period
+  (error rate = failed attempts / (failed attempts + successful LLM calls); the
+  line is omitted when there are none). `/stats errors [today|week|month]`
+  breaks the ledger down by error type + HTTP status and by provider/model,
+  with count and last-seen. Honors `--from`/`--to` and `--profile`. Also
+  available as `hermes-telemetry stats errors[-week|-month]` (`--json` included).
+- **Failure-ledger retention (closes #137).** `llm_call_errors` is pruned by age
+  (`HERMES_TELEMETRY_ERROR_RETENTION_DAYS`, default 30, `0` disables; invalid
+  values fall back to 30 with a warning). The prune runs once at plugin load and
+  at most once per 24h per process from the `api_request_error` handler, after
+  the row is written; a prune failure is logged and never loses the ledger
+  write. Nothing was added to the `pre_tool_call` path.
+
 ### Fixed
 
 - **Setup wizard budget write is now lost-update safe (#155).** `/setup` and

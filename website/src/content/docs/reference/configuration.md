@@ -19,7 +19,7 @@ All telemetry state lives in a `telemetry/` directory under your Hermes home:
 
 If `pricing.yaml` and `budget.yaml` do not exist, the plugin still works. It falls back to its built-in prices and runs with budgets disabled, and the [setup wizard](/hermes-telemetry/getting-started/setup-wizard/) creates defaults on first load.
 
-The database grows over time and nothing purges old rows automatically. See [Known limitations](/hermes-telemetry/reference/known-limitations/#database-retention).
+The database grows over time and nothing purges old rows automatically, except the failed-attempt ledger, which is pruned by age (see [`HERMES_TELEMETRY_ERROR_RETENTION_DAYS`](#environment-variables)). See [Known limitations](/hermes-telemetry/reference/known-limitations/#database-retention).
 
 ## Plugin setting
 
@@ -41,6 +41,7 @@ plugins:
 | --- | --- |
 | `HERMES_HOME` | The Hermes home. Telemetry lives in `$HERMES_HOME/telemetry/`. Defaults to `~/.hermes`. |
 | `HERMES_TELEMETRY_HOME` | Opt-in shared telemetry root. Outranks `HERMES_HOME` for `telemetry.db`, `budget.yaml`, and `pricing.yaml`. See [Profiles and shared home](/hermes-telemetry/guides/profiles/). |
+| `HERMES_TELEMETRY_ERROR_RETENTION_DAYS` | How many days of failed LLM attempts to keep in the `llm_call_errors` ledger. Default `30`; `0` disables pruning. A non-integer or negative value falls back to `30` and logs a warning. Pruning runs once at plugin load and at most once every 24 hours per process afterwards. |
 | `HERMES_TELEMETRY_NO_SETUP` | Set to `1` to skip the first-load auto-setup. |
 | `HERMES_PYTHON` | Python interpreter used by the `hermes-telemetry` launcher. Defaults to the interpreter Hermes uses. |
 
