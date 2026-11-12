@@ -47,7 +47,7 @@ plugins:
 Telemetry paths resolve with the precedence `HERMES_TELEMETRY_HOME`, then `HERMES_HOME`, then `~/.hermes`.
 
 :::note
-With `HERMES_TELEMETRY_HOME` set, the database, `budget.yaml`, `pricing.yaml`, and `enforcement_mode` move to the shared root. `telemetry.log`, the `.pricing_refresh` sentinel, and the setup wizard's file lookups still use `HERMES_HOME`. Hermes's own `state.db` and `cron/` are never relocated.
+With `HERMES_TELEMETRY_HOME` set, the database, `budget.yaml`, `pricing.yaml`, and `enforcement_mode` move to the shared root. `telemetry.log` and the `.pricing_refresh` sentinel still use `HERMES_HOME`. Hermes's own `state.db` and `cron/` are never relocated.
 :::
 
 ## File formats

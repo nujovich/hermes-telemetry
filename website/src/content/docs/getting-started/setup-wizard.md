@@ -91,8 +91,7 @@ rm ~/.hermes/telemetry/budget.yaml
 Pricing changes take effect immediately. Budget file changes are picked up by the plugin's file watcher when `watchdog` is installed. Without it, restart the gateway after editing `budget.yaml` by hand.
 :::
 
-:::caution
-The setup wizard locates `pricing.yaml` and `budget.yaml` under `HERMES_HOME`. It does not yet honor the shared [`HERMES_TELEMETRY_HOME`](/hermes-telemetry/guides/profiles/) override, even though the rest of the plugin does. If you consolidate profiles, create or edit the shared files directly, or with `/budget set`, rather than through `/setup`.
+:::note
+The wizard resolves `pricing.yaml` and `budget.yaml` through the same path logic as the rest of the plugin, so the shared [`HERMES_TELEMETRY_HOME`](/hermes-telemetry/guides/profiles/) override is honored. Writes to `budget.yaml` take the same lock as `/budget set`, and merge into whatever is already in the file.
 :::
-
 See [Configuration and data location](/hermes-telemetry/reference/configuration/) for the full file layout and [Pricing](/hermes-telemetry/guides/pricing/) and [Budgets](/hermes-telemetry/guides/budgets/) for the file formats.

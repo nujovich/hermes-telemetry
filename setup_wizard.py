@@ -14,30 +14,27 @@ Usage (programmatic):
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
+
+from . import paths
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Paths (resolved lazily so tests can monkeypatch HERMES_HOME)
+# Paths (resolved lazily via paths.py: HERMES_TELEMETRY_HOME > HERMES_HOME)
 # ---------------------------------------------------------------------------
 
 
 def _pricing_path() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    return hermes_home / "telemetry" / "pricing.yaml"
+    return paths.get_pricing_path()
 
 
 def _budget_path() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    return hermes_home / "telemetry" / "budget.yaml"
+    return paths.get_budget_path()
 
 
 def _tele_dir() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    d = hermes_home / "telemetry"
-    return d
+    return paths.get_telemetry_home()
 
 
 # ---------------------------------------------------------------------------
@@ -278,25 +275,53 @@ def _build_budget_yaml(data: dict) -> str:
     return header + _dump_yaml(data)
 
 
-def _write_budget(data: dict) -> Path:
-    # Route through the atomic writer (unique temp + fsync + os.replace, mode
-    # kept, symlink followed) — see #134/#135. A plain write_text() truncates in
-    # place, so a concurrent reader can parse an empty or partial file. The
-    # primitive is the shared one in pricing_refresh — the same one the pricing
-    # side uses; only the standalone dashboard keeps a copy of its own.
-    #
-    # The write is serialized under ``budget._budget_lock`` (issue #155): the
-    # atomic rename keeps each write consistent but does NOT stop a concurrent
-    # read-modify-write (``budget._set_budget`` or the dashboard edit) from
-    # clobbering it — the same lost-update class #147 already fixed for the
-    # other two writers.
+def _deep_merge(base: dict, new: dict) -> dict:
+    """Merge ``new`` into ``base`` in place: dicts recurse, leaves are replaced."""
+    for k, v in new.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+def _write_budget(data: dict, *, only_if_missing: bool = False) -> Path | None:
+    """Merge ``data`` into budget.yaml under ``budget._budget_lock``.
+
+    Returns the path written, or ``None`` when ``only_if_missing`` is set and
+    the file already exists (re-checked INSIDE the lock).
+
+    Issue #155: the whole read -> merge -> atomic write runs under the same
+    flock ``budget._set_budget`` and the dashboard use. The atomic rename alone
+    keeps each write consistent but does not stop a concurrent
+    read-modify-write from being lost; and because the file is re-read under
+    the lock and merged (not replaced), entries another writer added after the
+    caller's unlocked pre-check survive. Path comes from paths.py so the lock
+    and the file are always the same one (HERMES_TELEMETRY_HOME).
+
+    Atomic writer: the shared primitive in pricing_refresh (unique temp +
+    fsync + os.replace, mode kept, symlink followed) — see #134/#135.
+    """
+    import yaml
+
     from . import budget, pricing_refresh
 
-    content = _build_budget_yaml(data)
     p = _budget_path()
     with budget._budget_lock():
         _tele_dir().mkdir(parents=True, exist_ok=True)
-        pricing_refresh._atomic_write_text(p, content)
+        if only_if_missing and p.exists():
+            return None
+        current: dict = {}
+        if p.exists():
+            try:
+                with open(p) as f:
+                    loaded = yaml.safe_load(f) or {}
+                if isinstance(loaded, dict):
+                    current = loaded
+            except Exception:
+                current = {}
+        merged = _deep_merge(current, data)
+        pricing_refresh._atomic_write_text(p, _build_budget_yaml(merged))
     return p
 
 
@@ -403,9 +428,15 @@ def run(
                     "thresholds": {"soft_pct": 0.80, "hard_pct": 1.00},
                     "on_estimated": {"mode": "warn_only"},
                 }
-                path = _write_budget(bdata)
-                lines.append(f"  Wrote default budget to {path}")
-                lines.append(f"  Global: ${daily_usd:.2f}/day, ${monthly_usd:.2f}/month")
+                path = _write_budget(bdata, only_if_missing=True)
+                if path is None:
+                    # Another writer configured it between the pre-check and
+                    # the lock — leave their file alone (#155).
+                    lines.append(f"\n[Budget] Already configured: {_budget_path()}")
+                    lines.append("  Skipping (delete the file to re-run budget setup).")
+                else:
+                    lines.append(f"  Wrote default budget to {path}")
+                    lines.append(f"  Global: ${daily_usd:.2f}/day, ${monthly_usd:.2f}/month")
                 budget_done = True
 
     # ---- Summary ----

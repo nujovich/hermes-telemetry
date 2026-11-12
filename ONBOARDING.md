@@ -1381,6 +1381,15 @@ route through the same primitive — the former still propagates a write
 failure to the CLI (unchanged), the latter still propagates to `/setup`'s
 caller (unchanged).
 
+**`setup_wizard._write_budget` (#155).** Runs read -> deep-merge -> atomic write
+under `budget._budget_lock` (the same flock `/budget set` and the dashboard use),
+re-reading the file INSIDE the lock so entries another writer landed after the
+caller's unlocked `exists()` pre-check survive. `run()` passes `only_if_missing=True`
+so the "already configured" skip is re-evaluated under the lock too. The wizard's
+`_budget_path` / `_pricing_path` / `_tele_dir` route through `paths.py`, so the lock
+and the file always agree under `HERMES_TELEMETRY_HOME` (also closes the wizard part
+of #159).
+
 **Symlinks are followed, not replaced.** `_atomic_write_text()` resolves
 `path` with `os.path.realpath` first and uses the resolved target for the
 mode lookup, the temp file's directory and the `os.replace`. Without that,

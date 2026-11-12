@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Setup wizard budget write is now lost-update safe (#155).** `/setup` and
+  first-load setup write `budget.yaml` under the same flock as `/budget set` and
+  the dashboard, re-read the file inside the lock, and merge instead of
+  replacing it, so a concurrent writer's entries are no longer clobbered. The
+  "already configured" skip is re-checked under the lock.
+- **Setup wizard honors `HERMES_TELEMETRY_HOME` (#159, wizard part).** Its
+  `pricing.yaml` / `budget.yaml` / telemetry-dir paths now resolve through
+  `paths.py`, matching the rest of the plugin and the budget lock.
+
 ## [0.10.0] - 2026-11-11
 
 ### Upgrade notes
