@@ -176,6 +176,7 @@ pytest tests/ -v
 |`test_sync_profiles_cli.py`      |7    |`sync-profiles` CLI wiring, dry-run + `--apply`                                                                                |
 |`test_pricing_backfill.py`       |7    |Seed pricing snapshots for historical models (coverage seed, fail-open, idempotent)                                            |
 |`test_pricing_recalculate.py`    |9    |Historical cost recalc vs current `pricing.yaml`: explicit-row filter (estimated/assumed excluded), dry-run vs `--apply`, run rollup refresh, unpriced-model skip, CLI|
+|`test_telemetry_home_sites.py`   |7    |Every telemetry-file site (stats pricing footer, dashboard budget path, `telemetry.log`, startup DB-path line, pricing sentinel) honors `HERMES_TELEMETRY_HOME` (#159)|
 |`test_paths.py`                  |6    |Telemetry path resolution precedence: `HERMES_TELEMETRY_HOME` > `HERMES_HOME` > `~/.hermes`                                     |
 |`test_dashboard_plugin_isolation.py`|6 |Enforces zero shared Python code between the two dashboard surfaces                                                             |
 |`test_isolation.py`              |5    |`HERMES_HOME` redirect, no writes to real `~/.hermes`                                                                          |
