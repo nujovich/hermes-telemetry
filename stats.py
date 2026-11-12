@@ -20,10 +20,9 @@ Date range support:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
-from . import db, smell_detector
+from . import db, paths, smell_detector
 
 
 def _fmt_cost(v: Any) -> str:
@@ -298,7 +297,7 @@ def _providers_block(
     try:
         import yaml
 
-        pricing_file = Path.home() / ".hermes" / "telemetry" / "pricing.yaml"
+        pricing_file = paths.get_pricing_path()
         if pricing_file.exists():
             cfg = yaml.safe_load(pricing_file.read_text()) or {}
             est_models = cfg.get("_meta", {}).get("estimated_price_models", [])

@@ -37,7 +37,7 @@ router = APIRouter()
 _local = threading.local()
 
 
-def _db_path() -> Path:
+def _telemetry_dir() -> Path:
     # Telemetry files honor the opt-in canonical home (HERMES_TELEMETRY_HOME), so a
     # multi-profile user who consolidated via that var sees every profile's data here.
     # Replicated inline: plugin_api.py is loaded standalone (self-contained — no import
@@ -47,7 +47,11 @@ def _db_path() -> Path:
         or os.environ.get("HERMES_HOME")
         or str(Path.home() / ".hermes")
     )
-    return Path(base) / "telemetry" / "telemetry.db"
+    return Path(base) / "telemetry"
+
+
+def _db_path() -> Path:
+    return _telemetry_dir() / "telemetry.db"
 
 
 def _conn() -> sqlite3.Connection:
@@ -369,8 +373,7 @@ def _enforcement_mode() -> str:
 
 
 def _budget_path() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    return hermes_home / "telemetry" / "budget.yaml"
+    return _telemetry_dir() / "budget.yaml"
 
 
 def _window_start_utc(window: str) -> str:

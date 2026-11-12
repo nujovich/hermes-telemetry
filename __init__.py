@@ -70,8 +70,11 @@ CRON_SESSION_RE = re.compile(r"^cron_(?P<job_id>.+)_\d{8}_\d{6}$")
 
 
 def _setup_log_file() -> None:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    log_dir = hermes_home / "telemetry"
+    from . import paths
+
+    # Log lives beside the DB, under the telemetry home (HERMES_TELEMETRY_HOME >
+    # HERMES_HOME > ~/.hermes) — see paths.py.
+    log_dir = paths.get_telemetry_home()
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "telemetry.log"
 
@@ -91,16 +94,14 @@ def _utcnow() -> str:
 def _try_pricing_refresh(log: logging.Logger) -> None:
     """Refresh pricing from remote sources once per 24h.
 
-    Uses a sentinel file (~/.hermes/telemetry/.pricing_refresh) to track
+    Uses a sentinel file (<telemetry home>/.pricing_refresh) to track
     last refresh time. Safe to call on every plugin load.
     """
     import time as _time
 
-    sentinel = (
-        Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-        / "telemetry"
-        / ".pricing_refresh"
-    )
+    from . import paths
+
+    sentinel = paths.get_telemetry_home() / ".pricing_refresh"
     ttl = 86400  # 24h
     try:
         if sentinel.exists():
@@ -1065,7 +1066,8 @@ def register(ctx) -> None:  # noqa: ANN001
 
 def _db_path_info() -> str:
     try:
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-        return str(hermes_home / "telemetry" / "telemetry.db")
+        from . import paths
+
+        return str(paths.get_telemetry_home() / "telemetry.db")
     except Exception:
         return "~/.hermes/telemetry/telemetry.db"

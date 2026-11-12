@@ -1033,11 +1033,11 @@ Note: `pricing_refresh.py` (the remote-source auto-refresh) previously used a
 module-level `PRICING_FILE` constant computed from `HERMES_HOME` at import time —
 it ignored `HERMES_TELEMETRY_HOME` and could freeze a stale path. Fixed to resolve
 `paths.get_pricing_path()` at call time, matching `pricing.py` and `pricing_drift`.
-Remaining follow-up: `__init__.py::_try_pricing_refresh` still derives its 24h
-`.pricing_refresh` throttle sentinel from `HERMES_HOME` directly, so on a
-consolidated (`HERMES_TELEMETRY_HOME`) install each profile keeps its own timer and
-may trigger redundant remote refreshes — harmless (all merge into the one shared
-file), but should also route through `paths.get_telemetry_home()`.
+`__init__.py::_try_pricing_refresh` (the 24h `.pricing_refresh` throttle sentinel),
+`_setup_log_file` (`telemetry.log`) and `_db_path_info` (the startup log line) also
+route through `paths.get_telemetry_home()` (#159); so does `stats.py`'s
+estimated-pricing footer, and `dashboard/plugin_api.py::_budget_path()` shares the
+inline `_telemetry_dir()` helper with `_db_path()`.
 
 ---
 
@@ -1363,7 +1363,7 @@ models via `estimated_price_share()` and degrades hard verdicts under `warn_only
 ### Sentinel file
 
 The 24h refresh cadence is tracked via a sentinel file at
-`~/.hermes/telemetry/.pricing_refresh`. Touch it to force a refresh on next
+`<telemetry home>/.pricing_refresh` (`~/.hermes/telemetry/` by default). Touch it to force a refresh on next
 plugin load. Delete it to trigger auto-refresh.
 
 ### Atomic write (issue #105/#106)
@@ -2042,7 +2042,7 @@ manual cleanup.
 └── .pricing_refresh      ← Sentinel: mtime = last successful refresh
 ```
 
-All paths derived from `os.environ.get("HERMES_HOME", Path.home() / ".hermes")`.
+All paths resolve through `paths.py` (`HERMES_TELEMETRY_HOME` > `HERMES_HOME` > `~/.hermes`).
 **Never use `Path.home()` directly** — breaks test isolation.
 
 ---

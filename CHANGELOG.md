@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Setup wizard honors `HERMES_TELEMETRY_HOME` (#159, wizard part).** Its
   `pricing.yaml` / `budget.yaml` / telemetry-dir paths now resolve through
   `paths.py`, matching the rest of the plugin and the budget lock.
+- **Remaining sites honor `HERMES_TELEMETRY_HOME` (#159).** The `/stats
+  providers` estimated-pricing footer, the embedded dashboard's `budget.yaml`
+  (`plugin_api._budget_path()`), the startup "SQLite at ..." log line, the 24h
+  `.pricing_refresh` sentinel and `telemetry.log` all resolve through the same
+  precedence as the DB (`HERMES_TELEMETRY_HOME` > `HERMES_HOME` > `~/.hermes`).
+  **Behavior change:** when `HERMES_TELEMETRY_HOME` is set, `telemetry.log` and
+  the `.pricing_refresh` sentinel move to `<HERMES_TELEMETRY_HOME>/telemetry/`;
+  installs that do not set it are unaffected. The old `telemetry.log` under
+  `HERMES_HOME` is left in place and can be deleted.
 
 ## [0.10.0] - 2026-11-11
 
