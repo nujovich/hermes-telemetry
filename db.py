@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -1056,6 +1057,37 @@ def record_llm_call_error(
             duration_ms,
         ),
     )
+
+
+DEFAULT_ERROR_RETENTION_DAYS = 30
+_ERROR_RETENTION_ENV = "HERMES_TELEMETRY_ERROR_RETENTION_DAYS"
+
+
+def get_error_retention_days() -> int:
+    """Ledger retention in days — the ONE place the policy is resolved.
+
+    Reads ``HERMES_TELEMETRY_ERROR_RETENTION_DAYS``: unset/blank → 30,
+    ``0`` → retention disabled (nothing is ever pruned), a positive integer →
+    that many days. Anything else (non-integer, negative) falls back to the
+    default with a warning rather than raising: a typo in an env var must not
+    take the plugin down, and must not silently disable pruning either.
+    """
+    raw = os.environ.get(_ERROR_RETENTION_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_ERROR_RETENTION_DAYS
+    try:
+        days = int(raw.strip())
+    except ValueError:
+        days = -1
+    if days < 0:
+        logger.warning(
+            "invalid %s=%r (want a non-negative integer; 0 disables); using default %d",
+            _ERROR_RETENTION_ENV,
+            raw,
+            DEFAULT_ERROR_RETENTION_DAYS,
+        )
+        return DEFAULT_ERROR_RETENTION_DAYS
+    return days
 
 
 def prune_llm_call_errors(conn: sqlite3.Connection, days: int) -> int:

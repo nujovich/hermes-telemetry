@@ -2469,3 +2469,35 @@ def test_prune_llm_call_errors_uses_the_writers_ts_format():
     db.record_llm_call_error("s", db._utcnow(), error_type="X")
     assert db.prune_llm_call_errors(conn, 1) == 0
     assert conn.execute("SELECT COUNT(*) FROM llm_call_errors").fetchone()[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Ledger retention — HERMES_TELEMETRY_ERROR_RETENTION_DAYS resolution
+# ---------------------------------------------------------------------------
+
+
+def test_error_retention_days_default_is_30(monkeypatch):
+    monkeypatch.delenv("HERMES_TELEMETRY_ERROR_RETENTION_DAYS", raising=False)
+    assert db.DEFAULT_ERROR_RETENTION_DAYS == 30
+    assert db.get_error_retention_days() == 30
+
+
+@pytest.mark.parametrize("raw,expected", [("7", 7), (" 90 ", 90), ("0", 0), ("1", 1)])
+def test_error_retention_days_reads_env(monkeypatch, raw, expected):
+    monkeypatch.setenv("HERMES_TELEMETRY_ERROR_RETENTION_DAYS", raw)
+    assert db.get_error_retention_days() == expected
+
+
+@pytest.mark.parametrize("raw", ["abc", "-5", "1.5", "7d", "nan"])
+def test_error_retention_days_invalid_falls_back_and_warns(monkeypatch, caplog, raw):
+    monkeypatch.setenv("HERMES_TELEMETRY_ERROR_RETENTION_DAYS", raw)
+    with caplog.at_level("WARNING", logger="hermes_telemetry"):
+        assert db.get_error_retention_days() == 30
+    assert any("HERMES_TELEMETRY_ERROR_RETENTION_DAYS" in r.getMessage() for r in caplog.records)
+
+
+def test_error_retention_days_blank_is_default_without_warning(monkeypatch, caplog):
+    monkeypatch.setenv("HERMES_TELEMETRY_ERROR_RETENTION_DAYS", "  ")
+    with caplog.at_level("WARNING", logger="hermes_telemetry"):
+        assert db.get_error_retention_days() == 30
+    assert not caplog.records
