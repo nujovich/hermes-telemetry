@@ -14,30 +14,27 @@ Usage (programmatic):
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
+
+from . import paths
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Paths (resolved lazily so tests can monkeypatch HERMES_HOME)
+# Paths (resolved lazily via paths.py: HERMES_TELEMETRY_HOME > HERMES_HOME)
 # ---------------------------------------------------------------------------
 
 
 def _pricing_path() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    return hermes_home / "telemetry" / "pricing.yaml"
+    return paths.get_pricing_path()
 
 
 def _budget_path() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    return hermes_home / "telemetry" / "budget.yaml"
+    return paths.get_budget_path()
 
 
 def _tele_dir() -> Path:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    d = hermes_home / "telemetry"
-    return d
+    return paths.get_telemetry_home()
 
 
 # ---------------------------------------------------------------------------
@@ -278,18 +275,67 @@ def _build_budget_yaml(data: dict) -> str:
     return header + _dump_yaml(data)
 
 
-def _write_budget(data: dict) -> Path:
-    # Route through the atomic writer (unique temp + fsync + os.replace, mode
-    # kept, symlink followed) — see #134/#135. A plain write_text() truncates in
-    # place, so a concurrent reader can parse an empty or partial file. The
-    # primitive is the shared one in pricing_refresh — the same one the pricing
-    # side uses; only the standalone dashboard keeps a copy of its own.
-    from . import pricing_refresh
+def _deep_merge(base: dict, new: dict) -> dict:
+    """Merge ``new`` into ``base`` in place: dicts recurse, leaves are replaced."""
+    for k, v in new.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
 
-    _tele_dir().mkdir(parents=True, exist_ok=True)
-    content = _build_budget_yaml(data)
+
+def _write_budget(data: dict, *, only_if_missing: bool = False) -> Path | None:
+    """Merge ``data`` into budget.yaml under ``budget._budget_lock``.
+
+    Returns the path written, or ``None`` when ``only_if_missing`` is set and
+    the file already exists (re-checked INSIDE the lock). Raises ``ValueError``
+    (nothing written) when the existing file is unparseable or its top level is
+    not a mapping; callers turn that into a user-facing message. An empty file
+    is treated as ``{}``.
+
+    Issue #155: the whole read -> merge -> atomic write runs under the same
+    flock ``budget._set_budget`` and the dashboard use. The atomic rename alone
+    keeps each write consistent but does not stop a concurrent
+    read-modify-write from being lost; and because the file is re-read under
+    the lock and merged (not replaced), entries another writer added after the
+    caller's unlocked pre-check survive. Path comes from paths.py so the lock
+    and the file are always the same one (HERMES_TELEMETRY_HOME).
+
+    Atomic writer: the shared primitive in pricing_refresh (unique temp +
+    fsync + os.replace, mode kept, symlink followed) — see #134/#135.
+    """
+    import yaml
+
+    from . import budget, pricing_refresh
+
     p = _budget_path()
-    pricing_refresh._atomic_write_text(p, content)
+    with budget._budget_lock():
+        _tele_dir().mkdir(parents=True, exist_ok=True)
+        if only_if_missing and p.exists():
+            return None
+        current: dict = {}
+        if p.exists():
+            try:
+                with open(p) as f:
+                    loaded = yaml.safe_load(f)
+            except Exception as exc:
+                logger.warning(
+                    "setup: budget.yaml at %s is unparseable, not overwriting: %s", p, exc
+                )
+                raise ValueError(f"{p} is not valid YAML ({exc.__class__.__name__})") from exc
+            if loaded is None:
+                loaded = {}
+            if not isinstance(loaded, dict):
+                logger.warning(
+                    "setup: budget.yaml at %s is not a mapping (%s), not overwriting",
+                    p,
+                    type(loaded).__name__,
+                )
+                raise ValueError(f"{p} is not valid: top level must be a mapping")
+            current = loaded
+        merged = _deep_merge(current, data)
+        pricing_refresh._atomic_write_text(p, _build_budget_yaml(merged))
     return p
 
 
@@ -396,9 +442,20 @@ def run(
                     "thresholds": {"soft_pct": 0.80, "hard_pct": 1.00},
                     "on_estimated": {"mode": "warn_only"},
                 }
-                path = _write_budget(bdata)
-                lines.append(f"  Wrote default budget to {path}")
-                lines.append(f"  Global: ${daily_usd:.2f}/day, ${monthly_usd:.2f}/month")
+                try:
+                    path = _write_budget(bdata, only_if_missing=True)
+                except ValueError as exc:
+                    lines.append(f"\n[Budget] Could not write budget: {exc}")
+                    lines.append("  Left the file untouched — fix or remove it, then re-run setup.")
+                    return "\n".join(lines)
+                if path is None:
+                    # Another writer configured it between the pre-check and
+                    # the lock — leave their file alone (#155).
+                    lines.append(f"\n[Budget] Already configured: {_budget_path()}")
+                    lines.append("  Skipping (delete the file to re-run budget setup).")
+                else:
+                    lines.append(f"  Wrote default budget to {path}")
+                    lines.append(f"  Global: ${daily_usd:.2f}/day, ${monthly_usd:.2f}/month")
                 budget_done = True
 
     # ---- Summary ----
@@ -429,7 +486,9 @@ def handle_command(raw_args: str) -> str:
         /setup pricing auto       → auto-generate pricing (defaults + OpenRouter)
         /setup pricing minimal    → built-in defaults only
         /setup pricing skip       → don't configure pricing
-        /setup budget default     → recommended global budget ($5/d, $100/mo)
+        /setup budget default     → recommended global budget ($5/d, $100/mo);
+                                    resets global/thresholds/on_estimated, keeps
+                                    per_* entries and other keys
         /setup budget custom      → set your own limits
         /setup budget skip        → no budgets
     """
@@ -495,7 +554,13 @@ def handle_command(raw_args: str) -> str:
                 "thresholds": {"soft_pct": 0.80, "hard_pct": 1.00},
                 "on_estimated": {"mode": "warn_only"},
             }
-            path = _write_budget(bdata)
+            try:
+                path = _write_budget(bdata)
+            except ValueError as exc:
+                return (
+                    f"Budget NOT configured: {exc}\n"
+                    f"  The file was left untouched. Fix or remove it, then re-run."
+                )
             return (
                 f"Budget configured: global $5.00/day, $100.00/month\n"
                 f"  Written to {path}\n"

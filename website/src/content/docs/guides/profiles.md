@@ -72,7 +72,6 @@ Runs whose profile could not be resolved keep a null profile and are excluded fr
 
 ## Known gaps with a shared home
 
-- The [setup wizard](/hermes-telemetry/getting-started/setup-wizard/) still looks for its files under `HERMES_HOME`. Create the shared `pricing.yaml` and `budget.yaml` directly, or with `/budget set`.
 - The 24-hour pricing refresh timer is tracked per profile, so each profile may trigger its own refresh. This is harmless, because every refresh merges into the one shared file.
 
 For the design details, see [Canonical telemetry home](/hermes-telemetry/internals/telemetry-home/).

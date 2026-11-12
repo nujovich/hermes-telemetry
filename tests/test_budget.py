@@ -459,6 +459,137 @@ def _can_import_fcntl():
         return False
 
 
+def test_setup_wizard_write_budget_takes_budget_lock(tmp_path):
+    """Issue #155: _write_budget must serialize under _budget_lock.
+
+    The atomic writer (#135) keeps each write consistent, but it does NOT stop
+    a concurrent read-modify-write from clobbering the wizard's write. Holding
+    _budget_lock from the main thread must block _write_budget until the lock
+    is released (mirroring #147/#150 for the other two writers).
+    """
+    import sys
+    import threading
+
+    from hermes_telemetry import setup_wizard
+
+    if "fcntl" not in sys.modules and not _can_import_fcntl():
+        pytest.skip("fcntl not importable on this platform")
+
+    data = {"budgets": {"global": {"daily_usd": 5.00, "monthly_usd": 100.00}}}
+    started = threading.Event()
+    finished = threading.Event()
+    errors = []
+
+    def writer():
+        try:
+            started.set()
+            setup_wizard._write_budget(data)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+        finally:
+            finished.set()
+
+    with budget._budget_lock():
+        t = threading.Thread(target=writer)
+        t.start()
+        assert started.wait(timeout=5), "writer thread did not start"
+        t.join(timeout=0.5)
+        assert t.is_alive(), "_write_budget completed while the lock was held"
+        assert not finished.is_set()
+
+    assert finished.wait(timeout=5), "_write_budget did not complete after the lock was released"
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert errors == [], f"_write_budget errored: {errors}"
+    assert setup_wizard._budget_path().exists()
+
+
+def test_setup_wizard_paths_honor_telemetry_home(tmp_path, monkeypatch):
+    """Issue #155/#159: the wizard must resolve files through paths.py.
+
+    With HERMES_TELEMETRY_HOME set, the lock (budget._budget_lock) guards
+    paths.get_budget_path(); the wizard must write that exact file, not one
+    under HERMES_HOME.
+    """
+    from hermes_telemetry import paths, setup_wizard
+
+    shared = tmp_path / "shared"
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(shared))
+
+    assert setup_wizard._budget_path() == paths.get_budget_path()
+    assert setup_wizard._pricing_path() == paths.get_pricing_path()
+    assert setup_wizard._tele_dir() == paths.get_telemetry_home()
+
+    written = setup_wizard._write_budget({"budgets": {"global": {"daily_usd": 5.0}}})
+    assert written == shared / "telemetry" / "budget.yaml"
+    assert written.exists()
+    assert not (tmp_path / "telemetry" / "budget.yaml").exists()
+
+
+def _inject_write_before_lock(monkeypatch, body: str):
+    """Simulate a concurrent writer landing after the wizard's unlocked
+    pre-check but before it acquires the lock (deterministic, no threads)."""
+    import contextlib
+
+    real_lock = budget._budget_lock
+
+    @contextlib.contextmanager
+    def racing_lock():
+        p = budget._budget_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(textwrap.dedent(body))
+        with real_lock() as fd:
+            yield fd
+
+    monkeypatch.setattr(budget, "_budget_lock", racing_lock)
+
+
+def test_setup_wizard_write_budget_merges_concurrent_entries(tmp_path, monkeypatch):
+    """Issue #155: a writer landing before the wizard takes the lock must not
+    be clobbered — the wizard merges its keys into the current file."""
+    import yaml
+    from hermes_telemetry import setup_wizard
+
+    _inject_write_before_lock(
+        monkeypatch,
+        """\
+        budgets:
+          per_cron_job:
+            overrides:
+              nightly:
+                daily_usd: 2.0
+        """,
+    )
+    p = setup_wizard._write_budget(
+        {
+            "budgets": {"global": {"daily_usd": 5.0, "monthly_usd": 100.0}},
+            "thresholds": {"soft_pct": 0.8, "hard_pct": 1.0},
+        }
+    )
+    merged = yaml.safe_load(p.read_text())
+    assert merged["budgets"]["per_cron_job"]["overrides"]["nightly"]["daily_usd"] == 2.0
+    assert merged["budgets"]["global"] == {"daily_usd": 5.0, "monthly_usd": 100.0}
+    assert merged["thresholds"] == {"soft_pct": 0.8, "hard_pct": 1.0}
+
+
+def test_setup_wizard_skip_rechecked_inside_lock(tmp_path, monkeypatch):
+    """Issue #155: run()'s 'already configured' skip is re-evaluated under the
+    lock — a file created after the unlocked pre-check is left untouched."""
+    from hermes_telemetry import setup_wizard
+
+    (tmp_path / "telemetry").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "telemetry" / "pricing.yaml").write_text("models: {}\n")
+    assert not setup_wizard._budget_path().exists()
+
+    _inject_write_before_lock(monkeypatch, "budgets:\n  global:\n    daily_usd: 42.0\n")
+    setup_wizard.run(interactive=False)
+
+    import yaml
+
+    data = yaml.safe_load(setup_wizard._budget_path().read_text())
+    assert data == {"budgets": {"global": {"daily_usd": 42.0}}}
+
+
 def test_budget_status_no_config(tmp_path):
     out = budget.handle("")
     assert "No budgets configured" in out
@@ -658,3 +789,77 @@ def test_budget_forecast_command_accepts_profile_scope(tmp_path):
     out = budget.handle("forecast daily profile my-profile")
     assert "Unknown scope" not in out
     assert "No daily budget" in out  # no per_profile limit configured in this test
+
+
+def test_setup_budget_default_resets_defaults_but_preserves_per_entries(tmp_path):
+    """Issue #155: `/setup budget default` merges instead of overwriting.
+
+    global/thresholds/on_estimated are reset to the defaults; per_* entries
+    and unrelated keys already in the file survive.
+    """
+    import yaml
+    from hermes_telemetry import setup_wizard
+
+    p = setup_wizard._budget_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        textwrap.dedent(
+            """\
+            budgets:
+              global:
+                daily_usd: 99.0
+                monthly_usd: 999.0
+              per_cron_job:
+                overrides:
+                  nightly:
+                    daily_usd: 2.0
+            thresholds:
+              soft_pct: 0.5
+              hard_pct: 0.9
+            custom_key: keep-me
+            """
+        )
+    )
+    out = setup_wizard.handle_command("budget default")
+    assert "Budget configured" in out
+    data = yaml.safe_load(p.read_text())
+    assert data["budgets"]["global"] == {"daily_usd": 5.0, "monthly_usd": 100.0}
+    assert data["thresholds"] == {"soft_pct": 0.8, "hard_pct": 1.0}
+    assert data["on_estimated"] == {"mode": "warn_only"}
+    assert data["budgets"]["per_cron_job"]["overrides"]["nightly"]["daily_usd"] == 2.0
+    assert data["custom_key"] == "keep-me"
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["budgets: [unclosed\n  global: {", "- a\n- b\n", "just a string\n"],
+    ids=["malformed-yaml", "list-toplevel", "scalar-toplevel"],
+)
+def test_setup_budget_default_refuses_unparseable_file(tmp_path, body, caplog):
+    """Issue #155: never destroy a budget.yaml we cannot parse."""
+    from hermes_telemetry import setup_wizard
+
+    p = setup_wizard._budget_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(body.encode())
+    before = p.read_bytes()
+
+    with caplog.at_level("WARNING"):
+        out = setup_wizard.handle_command("budget default")
+
+    assert p.read_bytes() == before
+    assert "Budget configured" not in out
+    assert "not valid" in out or "could not" in out.lower()
+    assert any("budget.yaml" in r.getMessage() for r in caplog.records)
+
+
+def test_setup_budget_default_empty_file_is_treated_as_empty(tmp_path):
+    import yaml
+    from hermes_telemetry import setup_wizard
+
+    p = setup_wizard._budget_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("")
+    out = setup_wizard.handle_command("budget default")
+    assert "Budget configured" in out
+    assert yaml.safe_load(p.read_text())["budgets"]["global"]["daily_usd"] == 5.0
