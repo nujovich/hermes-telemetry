@@ -594,6 +594,63 @@ def test_api_budget_surfaces_per_profile_budgets(serve_module, tmp_path):
     assert "global/daily" in by_scope
 
 
+def test_budget_update_per_profile_round_trip(serve_module, tmp_path):
+    """per_profile must be writable via POST /api/budget and surface in the panel.
+
+    Regression for #161: ALLOWED_SCOPES rejected per_profile, so the standalone
+    dashboard could not create or edit a profile-scoped budget even though chat
+    (/budget) and the CLI accept it. The form has no scope_id field, so the edit
+    lands in the shared default bucket, mirroring budget._resolve_limits.
+    """
+    import sqlite3
+
+    import yaml
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    db_path = tmp_path / "telemetry.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE runs (started_at TEXT, cost_usd REAL, estimated_llm_calls INTEGER, "
+        "api_calls INTEGER, profile TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO runs (started_at, cost_usd, estimated_llm_calls, api_calls, profile) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (now_iso, 1.5, 0, 1, "faro"),
+    )
+    conn.commit()
+    conn.close()
+
+    budget_path = tmp_path / "budget.yaml"
+    budget_path.write_text("budgets: {}\n")
+
+    serve_module.DB_PATH = db_path
+    serve_module._local.c = None
+
+    # Create: per_profile daily limit via the same path the form uses.
+    updated = serve_module.api_budget_update(
+        {"scope": "per_profile", "window": "daily", "limit_usd": 20.0}, "UTC"
+    )
+    assert "error" not in updated, updated
+
+    # The write lands in the nested default bucket the engine reads from.
+    raw = yaml.safe_load(budget_path.read_text()) or {}
+    assert raw["budgets"]["per_profile"]["default"]["daily_usd"] == 20.0
+
+    # List: the panel now surfaces the profile-scoped budget.
+    out = serve_module.api_budget("UTC")
+    by_scope = {x["scope"]: x for x in out["budgets"]}
+    faro = by_scope["profile:faro/daily"]
+    assert faro["scope_id"] == "faro"
+    assert faro["limit"] == 20.0
+    assert faro["spent"] == 1.5
+
+    # Detail pre-fill resolves the default bucket, not a flat key.
+    detail = serve_module.api_budget_detail("per_profile", "daily", "UTC")
+    assert detail["limit_usd"] == 20.0
+
+
 def test_budget_panel_edit_button_skips_per_profile_rows():
     """Per-profile rows are read-only in the standalone panel: the edit modal
     (api_budget_detail / api_budget_update) only accepts ALLOWED_SCOPES, so an

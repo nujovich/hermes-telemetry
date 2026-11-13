@@ -3025,7 +3025,7 @@ def _parse_window_hours(value, name: str = "hours") -> float:
 
 
 # Allowed values for budget config — prevents YAML key injection
-ALLOWED_SCOPES = {"global", "per_cron_job", "per_sender"}
+ALLOWED_SCOPES = {"global", "per_cron_job", "per_sender", "per_profile"}
 ALLOWED_WINDOWS = {"daily", "monthly"}
 
 
@@ -3096,9 +3096,14 @@ def api_budget_update(payload, tz_name: str | None = None):
         if scope not in cfg["budgets"]:
             cfg["budgets"][scope] = {}
 
-        # Update the limit
+        # Update the limit. per_profile is a nested {default, overrides} shape
+        # (mirrors budget._resolve_limits); the dashboard form has no scope_id
+        # field, so a per_profile edit lands in the shared default bucket.
         key = f"{window}_usd"
-        cfg["budgets"][scope][key] = limit_usd
+        if scope == "per_profile":
+            cfg["budgets"][scope].setdefault("default", {})[key] = limit_usd
+        else:
+            cfg["budgets"][scope][key] = limit_usd
 
         # Optional: update thresholds (validated, no silent failures)
         for field, yaml_key in (("soft_pct", "soft_pct"), ("hard_pct", "hard_pct")):
@@ -3148,7 +3153,12 @@ def api_budget_detail(scope: str, window: str, tz_name: str | None = None):
     thresholds = cfg.get("thresholds", {})
     on_est = cfg.get("on_estimated", {})
 
-    limit = budgets.get(scope, {}).get(f"{window}_usd")
+    node = budgets.get(scope, {})
+    # per_profile is nested ({default, overrides}); the form edits the default
+    # bucket (no scope_id), so pre-fill resolves the same way.
+    if scope == "per_profile":
+        node = node.get("default", {})
+    limit = node.get(f"{window}_usd")
 
     return {
         "scope": scope,
