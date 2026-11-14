@@ -76,10 +76,12 @@ and addresses [NousResearch/hermes-agent#6642](https://github.com/NousResearch/h
 
 ```
 hermes-telemetry/
-├── __init__.py          ← Plugin entry point. Registers all 10 hooks + 3 slash
+├── __init__.py          ← Plugin entry point. Registers all 12 hooks + 3 slash
 │                          commands. Contains the cron regex, approx-token store,
 │                          and the fallback estimation logic for usage=None.
-├── db.py                ← SQLite persistence layer. Schema v1→v3 migrations,
+├── paths.py             ← Single source of truth for state-file locations.
+│                          Resolves HERMES_TELEMETRY_HOME vs HERMES_HOME.
+├── db.py                ← SQLite persistence layer. Schema v1→v19 migrations,
 │                          per-thread connections, WAL mode, write API and
 │                          read/budget query API.
 ├── pricing.py           ← Cost estimation engine. Priority-chain lookup
@@ -89,6 +91,14 @@ hermes-telemetry/
 ├── pricing_refresh.py   ← Auto-refresh from remote pricing APIs. PricingSource
 │                          ABC, OpenRouterSource, GoogleAISource. Merge strategy
 │                          preserves manual overrides.
+├── pricing_drift.py     ← `pricing drift` command. Compare pricing.yaml against
+│                          core pricing_snapshots; report / repair drift.
+├── pricing_backfill.py  ← `pricing backfill` command. Seed pricing snapshots for
+│                          historical (provider, model) pairs that lack one.
+├── pricing_recalculate.py ← `pricing recalculate` command. Recompute historical
+│                          llm_calls.cost_usd against the current pricing.yaml.
+├── core_pricing.py      ← Bridge to Hermes core pricing (agent.usage_pricing).
+│                          The ONLY module that imports the Hermes core.
 ├── budget.py            ← Budget verdict engine. Window math in local tz,
 │                          verdict cache, anti-spam ledger, tool-gate helpers,
 │                          /budget command, burn-rate forecast.
@@ -105,6 +115,13 @@ hermes-telemetry/
 │                          correctly. See `§ Mixture of Agents (MoA)`.
 ├── setup_wizard.py      ← /setup command + auto-setup on first load. Generates
 │                          pricing.yaml and budget.yaml with defaults.
+├── telemetry_cli.py     ← CLI dispatch for `hermes telemetry ...` subcommands
+│                          (stats, budget, pricing drift/backfill/recalculate,
+│                          sync-profiles, and the standalone CLI).
+├── _cli_entrypoint.py   ← Standalone CLI entry point. Registers the package so
+│                          telemetry_cli.py relative imports resolve, then runs.
+├── sync_profiles.py     ← Point every Hermes profile at one shared telemetry
+│                          home (HERMES_TELEMETRY_HOME consolidation).
 ├── plugin.yaml          ← Plugin metadata: name, version, declared hooks.
 │                          `provides_hooks` is declarative only (the loader does
 │                          NOT filter against it). Keep it accurate so it matches
@@ -113,10 +130,12 @@ hermes-telemetry/
 │                          `name`-collision trap that bit us with PR #44.
 ├── dashboard/
 │   ├── index.html       ← Standalone SPA. Vendored Chart.js, no build step, no auth.
+│   ├── plugin_api.py    ← FastAPI router for the dashboard plugin, mounted at
+│   │                      /api/plugins/hermes-telemetry/*.
 │   └── serve.py         ← stdlib HTTP server, port 8765, --host flag.
 ├── tests/
 │   ├── conftest.py      ← Autouse HERMES_HOME isolation (see Test Isolation).
-│   └── test_*.py        ← 262 tests. All in-memory SQLite, no live gateway.
+│   └── test_*.py        ← 890 tests. All in-memory SQLite, no live gateway.
 ├── config.example.yaml  ← Annotated pricing.yaml example.
 └── budget.example.yaml  ← Annotated budget.yaml example.
 ```
