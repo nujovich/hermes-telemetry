@@ -182,7 +182,7 @@ api_request_error       (1) Records EVERY API failure per attempt in the
                         alert. NO token data.
 
 post_tool_call          Records tool name, success/failure, latency, and (v18)
-                        the turn_id + tool_call_id it belongs to, plus (v19) the
+                        the turn_id + tool_call_id it belongs to, plus (v20) the
                         owning profile. Also records a proxy row for
                         delegate_task/subagent calls (no token data there, just a
                         count — the profile is carried on that row too).

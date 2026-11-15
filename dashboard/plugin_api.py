@@ -94,9 +94,9 @@ def _calls_profile_clause(
 ) -> tuple[str, tuple]:
     """AND-clause restricting an `llm_calls` query to one profile.
 
-    Prefers the row's own ``profile`` column (schema v19) and falls back to the
+    Prefers the row's own ``profile`` column (schema v20) and falls back to the
     ``runs`` correlation for a row whose label was never captured — so a
-    half-applied v19 DB still filters correctly. Avoids a JOIN and the
+    half-applied v20 DB still filters correctly. Avoids a JOIN and the
     column-name ambiguity between runs and llm_calls (both have provider,
     cost_usd, tokens_in, …). Pass a qualified session_col (e.g. "lc.session_id")
     when the query already aliases llm_calls; the profile column is qualified
