@@ -288,12 +288,19 @@ across the root telemetry home and every `profiles/*/` home, fixing both
 session per gateway key and missed CLI/TUI/subagent runs, sessions replaced
 by `/new` or `/reset`, and installs with `gateway.write_sessions_json: false`.
 
+The visibility set is bound as ONE parameter (a JSON array) and expanded
+inside SQLite via `json_each`, instead of one `?` per session id. The id set
+is a union of every profile's full session history under a shared home, and
+several dashboard queries bind TWO visibility clauses in one statement, so
+the per-id binding could exceed `SQLITE_MAX_VARIABLE_NUMBER` (999 on SQLite
+< 3.32) and raise "too many SQL variables" instead of returning rows.
+
 ## [0.9.1] - 2026-10-14
 
 ### Fixed
 
-- **DeepSeek current ids were priced at retired V3 rates (#121).**
-  `deepseek-flash`, `deepseek-v4-flash` and `deepseek-v4-pro` had no built-in entry and fell to the
+- **DeepSeek current ids priced at retired V3 rates (#121).** `deepseek-flash`,
+  `deepseek-v4-flash` and `deepseek-v4-pro` had no built-in entry and fell to the
   bare `deepseek` prefix (0.27/1.10 plus a generic 0.10x cache read), overstating
   cost for `custom:<name>` providers, which never get a Hermes core snapshot.
   They now carry explicit off-peak rates matching Hermes core (Flash 0.15/0.60,
