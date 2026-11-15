@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Schema v18 → v19.** One forward-only migration runs automatically on first
   load: it only adds `idx_llm_call_errors_ts` on `llm_call_errors(ts)` (no
   shape change, no data change).
+- **Schema v19 → v20.** One forward-only migration runs automatically on first
+  load. It adds `tool_calls.profile` and `llm_calls.profile` (both nullable
+  `TEXT`) plus `idx_tool_profile` / `idx_llm_profile`. Existing rows are
+  backfilled from their `runs.profile`; rows whose run carried no profile keep
+  **NULL** — the plugin could not resolve a profile for them, and NULL is the
+  honest value. `db.record_tool_call` / `db.record_llm_call` gain a `profile=`
+  keyword that defaults to `None`, so existing callers are unaffected.
 - **The failure ledger is now pruned.** Rows in `llm_call_errors` older than 30
   days are deleted at plugin load and at most once per 24h afterwards. Set
   `HERMES_TELEMETRY_ERROR_RETENTION_DAYS` to change the window; `0` keeps
@@ -33,6 +40,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the row is written. The prune uses a short (1s) busy timeout and skips quietly
   when the DB is busy; a skipped or failed prune is retried after 1h instead of
   24h, and never loses the ledger write or stalls plugin load. Nothing was added to the `pre_tool_call` path.
+
+### Added — Per-row profile attribution on `tool_calls` / `llm_calls` (schema v20)
+
+- `runs.profile` (v12) labels the *session* and is only present when the plugin
+  saw `ctx.profile_name`. Rows below `runs` carried no profile at all, so a
+  per-profile query over tool/llm traffic had nothing to filter on — the exact
+  query a shared cost centre (`HERMES_TELEMETRY_HOME`) runs. v20 stores the
+  owning profile on each `tool_calls` / `llm_calls` row, so the attribution is
+  self-describing: a row's profile no longer depends on its `runs` row having
+  resolved one.
+- New `profile=` keyword on `db.record_llm_call` / `db.record_tool_call`
+  (default `None`). The hooks pass `getattr(ctx, "profile_name", None)` on
+  `post_api_request`, `post_tool_call` and the `subagent_stop` proxy row. A
+  profile that cannot be resolved stores NULL, exactly as `runs` does.
+- `_migrate_v20` backfills existing rows from their `runs.profile` (rows that
+  already carry one are left alone) and creates `idx_tool_profile` /
+  `idx_llm_profile` — the indexes a per-profile filter on those columns needs.
+  Guarded on the version marker *and* on the columns, so a half-applied DB
+  self-heals; idempotent.
+- **Reader wired.** `dashboard/plugin_api.py::_calls_profile_clause` now prefers the
+  row's own ``profile`` column (schema v20) and falls back to the ``runs``
+  correlation for an unlabelled row — so the per-profile filter over tool/llm
+  traffic has a column to filter on after all. `dashboard/serve.py`'s
+  profile surfaces are run-level (they read `runs.profile`, which this PR does not
+  change), so there is no per-row profile surface to keep in sync.
 
 ### Fixed
 
@@ -117,6 +149,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `runs` that resolves to a `per_profile` limit (override replaces default, as in
   the budget engine). These rows are read-only: the edit modal only handles
   global scopes, so they render without an Edit button.
+
 
 ### Fixed — the `api_request_error` handler read the wrong payload shape
 
