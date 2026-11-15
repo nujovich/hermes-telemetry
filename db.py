@@ -791,15 +791,13 @@ def _migrate_v19(conn: sqlite3.Connection) -> None:
     one cost centre) `runs.profile` is the only per-profile label, and it is
     only present when ``ctx.profile_name`` reached the plugin. Rows below
     `runs` could not be attributed to a profile at all, so a per-profile query
-    over tool/llm traffic had nothing to filter on. ``runs.session_id`` is also
-    the PRIMARY KEY with no profile dimension, so two profiles whose sessions
-    happen to share an id merge into one row set and the `runs.profile` label
-    cannot be trusted to disambiguate them.
+    over tool/llm traffic had nothing to filter on.
 
     Storing the profile on each `tool_calls`/`llm_calls` row makes the
-    attribution self-describing. Existing rows are backfilled from their run
-    where that run carries a profile. Guarded on the version marker AND on the
-    columns, so a half-applied DB self-heals; idempotent.
+    attribution self-describing: every row carries the profile that produced
+    it, whatever the session id looks like. Existing rows are backfilled from
+    their run where that run carries a profile. Guarded on the version marker
+    AND on the columns, so a half-applied DB self-heals; idempotent.
     """
     cur = conn.execute("SELECT version FROM schema_version WHERE version = 19")
     first_run = cur.fetchone() is None

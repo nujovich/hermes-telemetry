@@ -156,6 +156,80 @@ def test_migrate_v19_adds_columns_and_backfills(tmp_path):
         conn.close()
 
 
+def test_v18_db_upgrades_to_v19_with_profile_columns(tmp_path, monkeypatch):
+    """The plain upgrade path: a v18 store opens and lands on v19.
+
+    ``_self_heals_marker_without_columns`` covers the *wedged* store (marker
+    written, columns missing). This covers the ordinary case a user hits: a
+    database created by the previous release — marker at 18, no ``profile``
+    column below ``runs`` — that the next connect must upgrade in place:
+    add the columns, backfill the rows from their run, mark v19.
+
+    The upgrade is driven through ``db._ensure_schema`` (the function every
+    connect runs), not by calling ``_migrate_v19`` directly, so the test
+    exercises the same entry point production takes.
+    """
+    import hermes_telemetry.db as db
+
+    monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(tmp_path / "shared"))
+    db.close_thread_conn()
+
+    conn = db._get_conn()
+    # Roll the fresh store back to the v18 shape: drop the profile columns
+    # and the v19 marker. The schema_version row for 18 stays, so this is
+    # exactly what a store written by the previous release looks like.
+    # The v19 indexes reference the columns, so they go first.
+    conn.execute("DROP INDEX IF EXISTS idx_tool_profile")
+    conn.execute("DROP INDEX IF EXISTS idx_llm_profile")
+    conn.execute("ALTER TABLE tool_calls DROP COLUMN profile")
+    conn.execute("ALTER TABLE llm_calls DROP COLUMN profile")
+    conn.execute("DELETE FROM schema_version WHERE version = 19")
+
+    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 19").fetchone()[0] == 0
+    assert "profile" not in {r[1] for r in conn.execute("PRAGMA table_info(tool_calls)")}
+
+    # A row that predates the upgrade, labelled only via its run.
+    conn.execute(
+        "INSERT INTO runs(session_id, profile, started_at) VALUES ('pre', 'coder', '2026-01-01T00:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO tool_calls(session_id, ts, tool_name) VALUES ('pre', '2026-01-01T00:00:01+00:00', 'terminal')"
+    )
+    conn.execute(
+        "INSERT INTO llm_calls(session_id, ts) VALUES ('pre', '2026-01-01T00:00:02+00:00')"
+    )
+
+    # The upgrade: the same call every new connection makes.
+    db._ensure_schema(conn)
+
+    tool_cols = {r[1] for r in conn.execute("PRAGMA table_info(tool_calls)")}
+    llm_cols = {r[1] for r in conn.execute("PRAGMA table_info(llm_calls)")}
+    assert "profile" in tool_cols
+    assert "profile" in llm_cols
+
+    # The pre-upgrade row is labelled from its run.
+    assert (
+        conn.execute("SELECT profile FROM tool_calls WHERE session_id='pre'").fetchone()[0]
+        == "coder"
+    )
+    assert (
+        conn.execute("SELECT profile FROM llm_calls WHERE session_id='pre'").fetchone()[0]
+        == "coder"
+    )
+
+    idx = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE '%_profile'"
+        )
+    }
+    assert {"idx_tool_profile", "idx_llm_profile"} <= idx
+
+    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 19").fetchone()[0] == 1
+
+    db.close_thread_conn()
+
+
 def test_migrate_v19_is_idempotent(tmp_path):
     import hermes_telemetry.db as db
 
