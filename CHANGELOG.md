@@ -49,6 +49,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pricing.yaml` / `budget.yaml` / telemetry-dir paths now resolve through
   `paths.py`, matching the rest of the plugin and the budget lock.
 
+### Fixed — dashboard reads visibility from state.db across all profile homes (#128)
+
+The dashboard now gathers the visibility set from `state.db.sessions.id`
+across the root telemetry home and every `profiles/*/` home, fixing both
+#128 topologies (dashboard run as default vs. named profile). The prior
+`sessions.json`-based filter was a legacy mirror that only held the current
+session per gateway key and missed CLI/TUI/subagent runs, sessions replaced
+by `/new` or `/reset`, and installs with `gateway.write_sessions_json: false`.
+
+The visibility set is bound as ONE parameter (a JSON array) and expanded
+inside SQLite via `json_each`, instead of one `?` per session id. The id set
+is a union of every profile's full session history under a shared home, and
+several dashboard queries bind TWO visibility clauses in one statement, so
+the per-id binding could exceed `SQLITE_MAX_VARIABLE_NUMBER` (999 on SQLite
+< 3.32) and raise "too many SQL variables" instead of returning rows.
+
 ## [0.10.0] - 2026-11-11
 
 ### Upgrade notes
@@ -279,21 +295,6 @@ than swallowed by the previous one's suppression.
   dry-run by default (`--apply` to write). Rows whose model no longer resolves
   to an explicit price are skipped and reported, never zeroed.
 
-### Fixed — dashboard reads visibility from state.db across all profile homes (#128)
-
-The dashboard now gathers the visibility set from `state.db.sessions.id`
-across the root telemetry home and every `profiles/*/` home, fixing both
-#128 topologies (dashboard run as default vs. named profile). The prior
-`sessions.json`-based filter was a legacy mirror that only held the current
-session per gateway key and missed CLI/TUI/subagent runs, sessions replaced
-by `/new` or `/reset`, and installs with `gateway.write_sessions_json: false`.
-
-The visibility set is bound as ONE parameter (a JSON array) and expanded
-inside SQLite via `json_each`, instead of one `?` per session id. The id set
-is a union of every profile's full session history under a shared home, and
-several dashboard queries bind TWO visibility clauses in one statement, so
-the per-id binding could exceed `SQLITE_MAX_VARIABLE_NUMBER` (999 on SQLite
-< 3.32) and raise "too many SQL variables" instead of returning rows.
 
 ## [0.9.1] - 2026-10-14
 
