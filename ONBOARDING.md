@@ -152,8 +152,11 @@ discovered by auditing the Hermes Agent source:
 | Mechanism | Effect |
 |-----------|--------|
 | `pre_tool_call` returning `{"action":"block","message":...}` | Aborts the tool call. Returns error to model instead. The current in-flight model response is already complete and will be billed. |
+| `pre_tool_call` returning `{"action":"approve","message","rule_key"?}` | Escalates the tool call to the human-approval gate (`rule_key` picks the always-allowlist grain). |
+| `pre_tool_call` returning `{"action":"modify","args":{...}}` | Transforms tool args before dispatch (keys shallow-merged over the original args). |
 | `cron.jobs.pause_job(job_id, reason)` | Prevents the cron job from running again. Does not stop the current run. |
 | `pre_llm_call` returning `{"context": "..."}` | Injects text into the conversation context before the API call. Used for soft budget alerts. |
+| `pre_llm_call` returning `{"action":"block","message":...}` | Vetoes the turn before any model call (message withheld, no API call at all). |
 | Any read from the DB | Fully available in any hook via `db.py`. |
 
 ### What a plugin CANNOT do
@@ -165,10 +168,11 @@ discovered by auditing the Hermes Agent source:
 | Get token data from `post_llm_call` | This hook fires after the tool loop. No token data. Wrong hook for cost capture. |
 
 **Source references** (verified against hermes-agent source):
-- `pre_llm_call` return: `agent/conversation_loop.py:687-722` (context injection only)
-- `pre_api_request` return: `agent/conversation_loop.py:1235-1255` (return discarded)
-- `pre_tool_call` block: `hermes_cli/plugins.py:1666-1707` ✅
+- `pre_llm_call` return: `agent/turn_context.py` (context injection + `{"action": "block", "message": ...}` veto)
+- `pre_api_request` return: `agent/turn_api_request.py` (return discarded)
+- `pre_tool_call` block/approve/modify: `hermes_cli/plugins.py::_get_pre_tool_call_directive_details` ✅
 - `cron.jobs.pause_job`: `cron/scheduler.py` ✅
+- dispatch: `hermes_cli/lifecycle.py::invoke_hook` (first-party observers, then plugin hooks)
 
 ---
 
@@ -265,7 +269,7 @@ Fired **once** at the start of a brand-new session (not on each turn of an
 interactive session, not on session continuation).
 
 ### `pre_llm_call`
-Source: `agent/conversation_loop.py:702-711`
+Source: `agent/turn_context.py::_collect_pre_llm_call_context`
 ```python
 session_id: str
 user_message: str
@@ -279,7 +283,7 @@ Fires once per turn (before the API call loop). Return value used for context
 injection only. **NO token data.**
 
 ### `pre_api_request`
-Source: `agent/conversation_loop.py:1235-1253`
+Source: `agent/turn_api_request.py::_fire_pre_api_request_hook`
 ```python
 task_id: str
 session_id: str
@@ -382,7 +386,7 @@ successful terminal call as failed. `error_type`/`error_message` are still not
 persisted on the tool row.
 
 ### `on_session_end`
-Source: `agent/conversation_loop.py:4692-4700`
+Source: `agent/turn_finalizer.py::finalize_turn`
 ```python
 session_id: str
 completed: bool
@@ -422,7 +426,7 @@ child's own first `post_api_request` can race it. Now consumed by the plugin:
 `child_session_id` (schema v11, issue #49).
 
 ### `subagent_stop`
-Source: `tools/delegate_tool.py` — the `_invoke_hook("subagent_stop", …)` call
+Source: `tools/delegate_tool_results.py::_fire_subagent_stop_hooks` — the `invoke_hook("subagent_stop", …)` call
 (exact line drifts across upstream commits; match by symbol, not line number).
 ```python
 parent_session_id: str
@@ -430,11 +434,11 @@ parent_turn_id: str
 child_session_id: str
 child_role: str
 child_summary: str
-child_status: str    # "completed" | "failed" | "error" | "interrupted" | "timeout"
+child_status: str    # "completed" | "failed" | "error" | "interrupted" | "timeout" | "unknown"
 duration_ms: int
 ```
-**Carries `child_session_id`** — verified in `tools/delegate_tool.py`'s
-`subagent_stop` invocation (`child_session_id=getattr(_child_agent, "session_id", None)`). An earlier
+**Carries `child_session_id`** — verified in `tools/delegate_tool_results.py`'s
+`subagent_stop` invocation (`child_session_id=getattr(child, "session_id", None)`). An earlier
 version of this doc claimed `subagent_stop` had no child session id; that was
 stale and is corrected here. It does **not** carry `child_subagent_id`, and
 still has **no token or cost data**. We record a synthetic `tool_calls` row
@@ -498,7 +502,7 @@ table before applying.
 | v11 | New table `subagent_edges` (parent→child delegation tree) + `idx_subagent_edges_parent`. Attributes async/nested subagent cost to `per_cron_job` via a recursive CTE at query time. (#49) |
 | v12 | Add `runs.profile` (per-profile cost attribution) + `idx_runs_profile`. Captured from `ctx.profile_name` at `on_session_start`, backfilled in `pre_llm_call` (first non-null wins). Adds the `per_profile` budget scope. |
 | v13 | Repair pass — re-creates `subagent_edges` (+ `idx_subagent_edges_parent`) via `CREATE TABLE IF NOT EXISTS`. Heals DBs upgraded from a build that numbered a *different* migration as v11: the per-profile branch shipped `runs.profile` as v11 before #56 settled `subagent_edges` on v11, so those DBs have `version=11` applied but no table, and v11's early-return skips creation forever. No-op on clean v11 DBs. |
-| v14 | New table: `pricing_snapshots` (append-per-change history of the tariffs Hermes core resolves per `(provider, model)`, with provenance: `source` / `source_url` / `pricing_version` / `fetched_at`). Captured from `agent.usage_pricing.get_pricing_entry` via `core_pricing.py` in the `post_api_request` hook; storage-only (no surface yet). + `idx_pricing_snapshots_model`. |
+| v14 | New table: `pricing_snapshots` (append-per-change history of the tariffs Hermes core resolves per `(provider, model)`, with provenance: `source` / `source_url` / `pricing_version` / `fetched_at`). Captured from `agent.usage_pricing.get_pricing_entry` via `core_pricing.py` in the `post_api_request` hook; originally storage-only (no read surface); `pricing_drift.py` / `pricing_backfill.py` now read it (`db.list_latest_pricing_snapshots()` / `db.models_needing_pricing_snapshot()`). + `idx_pricing_snapshots_model`. |
 | v15 | `pricing_snapshots.resolved_model` — Canonical model name captured when a dated id was normalized to resolve against the core `/models` catalog; NULL when the raw name resolved directly. |
 | v16 | New tables: `endpoint_payload_cache` and `model_efficiency_cache` for standalone-dashboard caches; cache writers share the plugin DB's WAL + 30s busy-timeout posture. |
 | v17 | Data-only repair (issue #89): deletes `known_free_models` rows with no evidence of being genuinely free (no wildcard `provider=''`, and no `llm_calls` row for the same model+provider with `cost_usd = 0` AND tokens > 0), plus their `free_paid_transitions` rows. No shape change. |
@@ -1104,7 +1108,7 @@ The audit classified every enforcement primitive:
 
 | Primitive | Blocks? | Mechanism |
 |-----------|---------|-----------|
-| `pre_llm_call` return | ❌ No | Context injection only |
+| `pre_llm_call` return `{"action":"block",…}` | ✅ Yes (veto) | Vetoes the turn before any model call; otherwise context injection |
 | `pre_api_request` return | ❌ No | Return discarded |
 | `pre_approval_request` / `post_approval_response` | ❌ No | "observers only" |
 | `pre_tool_call` return `{"action":"block",…}` | ✅ Yes | Aborts tool, sends error to model |
@@ -1482,7 +1486,7 @@ Hermes creates child `AIAgent` instances for `delegate_task`. Each child:
 total_duration_seconds}`) still carries no child `session_id`. But
 `subagent_start` fires with both `parent_session_id` and `child_session_id`
 before the child ever dispatches, and `subagent_stop` **does** carry
-`child_session_id` (verified in `tools/delegate_tool.py`'s `subagent_stop`
+`child_session_id` (verified in `tools/delegate_tool_results.py`'s `subagent_stop`
 invocation; an earlier version of this doc claimed otherwise — that was stale). That pair is enough
 to build the full delegation tree without touching the `delegate_task` result
 at all.
@@ -1537,16 +1541,18 @@ There are **two** execution paths, and they behave differently:
 | **Preset-as-model** | `/model <preset> --provider moa` | `MoAClient` facade: references + aggregator via auxiliary `call_llm`; the aggregator response is returned as the main model response | **Once**, with `provider="moa"`, `model="<preset>"`, `response_model`=aggregator id, `usage`=**aggregator only** |
 | **`/moa <prompt>` one-shot** | `decode_moa_turn` in `conversation_loop.py:827` | references + aggregator via auxiliary `call_llm`, output injected as context; then the **real main model** runs normally | fires for the **real main model**, not MoA |
 
-**The hard constraint (verified):** reference-model and one-shot-aggregator
-calls go through `agent/auxiliary_client.py::call_llm`, which contains **no hook
-dispatch** (no `invoke_hook`). So:
+**The constraint (re-verified 2026-11-15):** reference-model and one-shot-aggregator
+calls go through `agent/auxiliary_client.py`, which now dispatches the
+`pre_auxiliary_call` / `post_auxiliary_call` hooks — once per physical provider
+attempt, same payload shape as `pre/post_api_request` plus `aux_task` (#79733).
+Upstream `post_api_request` also now carries a `moa_references` kwarg. So:
 
-- **Reference-model tokens are never captured** — a hook-*dispatch* gap
-  (`call_llm` invokes no hook at all), not a missing-kwarg gap. Contrast with
-  the old subagent per-cron-job gap: that one was a missing-kwarg problem and
-  is now solved via `subagent_edges` (schema v11, issue #49) — see
-  `§ Subagent Architecture`. This one is structural: with no hook firing,
-  there's no kwarg to add.
+- **Reference-model tokens are now capturable** — the old "no hook fires" gap is
+  closed upstream; `post_auxiliary_call` and `post_api_request.moa_references`
+  carry the data. Recording them in this plugin is tracked by a companion
+  feature issue (not yet implemented). The old subagent per-cron-job gap, by
+  contrast, was a missing-kwarg problem solved via `subagent_edges` (schema v11,
+  issue #49) — see `§ Subagent Architecture`.
 - In the preset-as-model path, the **aggregator** *is* captured (it becomes the
   main response), but the hook reports `provider="moa"` and `model="<preset>"` —
   neither is a real, priceable identifier.
@@ -1925,9 +1931,10 @@ the real `~/.hermes/telemetry`. Enforced by
   aggregator's real provider/model (fixing the `provider_assumed` misfire) and
   tags the row with the preset name.
 - **Schema v10** (`_migrate_v10`): `llm_calls.moa_preset` + `runs.moa_calls`.
-- **Reference-model tokens remain uncaptured** (auxiliary `call_llm` fires no
-  hooks) — documented as a Known Limitation; MoA cost is a lower bound and is
-  flagged as such in `/stats` and both dashboards.
+- **Reference-model tokens became capturable upstream** (`pre/post_auxiliary_call`
+  and `post_api_request.moa_references` now exist) — capture in this plugin is
+  tracked by a companion feature issue; until then MoA cost is a lower bound and
+  is flagged as such in `/stats` and both dashboards.
 - Verified against `agent/moa_loop.py`, `agent/auxiliary_client.py`,
   `agent/agent_init.py`, `agent/conversation_loop.py`, `hermes_cli/moa_config.py`.
 
@@ -1974,7 +1981,7 @@ the real `~/.hermes/telemetry`. Enforced by
 | Subagent cost (global) | ✅ Real | Child runs fire own hooks → independent `runs` rows |
 | Subagent cost (per-cron-job) | ✅ Real (attributed) | `subagent_edges` (v11) + recursive CTE in `db.spend_by_scope("cron_job", ...)` |
 | MoA aggregator cost | ✅ Real (re-attributed) | Aggregator usage from `post_api_request`, priced under the aggregator's real provider/model resolved from the preset (`moa.py`) |
-| MoA reference-model cost | ❌ Not available | References run via auxiliary `call_llm`, which fires no hooks — tokens unrecoverable (recorded MoA cost is a lower bound) |
+| MoA reference-model cost | ⚠️ Not yet captured | References run via auxiliary `call_llm`; upstream now fires `pre/post_auxiliary_call` and `post_api_request.moa_references`, but the plugin does not record them yet (companion feature issue) — recorded MoA cost is a lower bound |
 
 **Cost is always an estimate** — computed from a local pricing table, not from
 a provider billing API. Users can override prices via `~/.hermes/telemetry/pricing.yaml`.
@@ -2046,27 +2053,30 @@ Enable with `git config core.hooksPath .githooks`.
 
 ### MoA reference-model tokens
 
-- A MoA turn runs N reference models plus the aggregator per iteration, but only
-  the **aggregator** fires a hook. Reference-model tokens are never captured
-  (auxiliary `call_llm` fires no hooks), so a MoA session's recorded cost is a
-  **lower bound**. `/stats` and the dashboard flag MoA calls (`moa_calls` /
-  `moa_preset`) so the gap is visible. See `§ Mixture of Agents (MoA)`.
+- A MoA turn runs N reference models plus the aggregator per iteration. The
+  **aggregator** fires `post_api_request`; the reference models now fire
+  `pre_auxiliary_call` / `post_auxiliary_call` (upstream added these), and
+  `post_api_request` also carries `moa_references`. Reference-model tokens are
+  therefore capturable, but this plugin does not record them yet (companion
+  feature issue), so a MoA session's recorded cost is still a **lower bound**.
+  `/stats` and the dashboard flag MoA calls (`moa_calls` / `moa_preset`) so the
+  gap is visible. See `§ Mixture of Agents (MoA)`.
 
-### MoA one-shot (`/moa <prompt>`) is entirely invisible — by Hermes' design
+### MoA one-shot (`/moa <prompt>`) is invisible to `post_api_request` — by Hermes' design
 
 - The `/moa` slash command (the one-shot path, `decode_moa_turn` →
   `conversation_loop.py:827`) runs **both** the reference models **and** the
-  aggregator through the auxiliary `call_llm` path, then injects their synthesis
-  as context into the **real** main model call. Only that final main-model call
-  fires `post_api_request`. So on this path telemetry records **zero** MoA
-  cost — not even the aggregator — and the `moa_calls` / `moa_preset` markers are
-  never set. This is not a plugin gap we can close: no hook fires for either MoA
-  call type here (verified against `agent/moa_loop.py::aggregate_moa_context`
-  and `agent/auxiliary_client.py`, which has no hook dispatch).
+  aggregator through the auxiliary path, then injects their synthesis as context
+  into the **real** main model call. Only that final main-model call fires
+  `post_api_request` — so the `moa_calls` / `moa_preset` markers are never set on
+  this path. The reference/aggregator calls now fire `pre_auxiliary_call` /
+  `post_auxiliary_call`, so they are capturable via that route (companion feature
+  issue) even though `post_api_request` never sees them.
 - The re-attribution in v10 (`moa.py`) therefore applies **only** to the
   preset-as-model path (`/model <preset> --provider moa`), where the aggregator
-  *is* the returned main response and does fire the hook. Selecting a preset as
-  your model is the only way MoA usage reaches telemetry at all.
+  *is* the returned main response and does fire `post_api_request`. Selecting a
+  preset as your model is the only way MoA usage reaches `post_api_request` at
+  all (auxiliary hooks notwithstanding).
 
 ### Pricing
 
@@ -2469,7 +2479,7 @@ line numbers, which move).
 **Page-scoped** — `:top` and `:bottom` on each built-in page:
 
 `sessions:*` · `analytics:*` · `logs:*` · `cron:*` · `skills:*` · `config:*` ·
-`env:*` · `docs:*` · `chat:*`
+`env:*` · `docs:*` · `chat:*` · `models:*` · `plugins:*`
 
 `logs:top` sits above the filter toolbar and `logs:bottom` below the log viewer;
 `docs:top` sits above the iframe; `chat:*` is only active when embedded chat is
@@ -2477,9 +2487,12 @@ enabled. Everything else is the plain top/bottom of the page content area.
 
 > **This list grew.** Until 2026-08-24 this section recorded four slots and
 > called them "the entire verified catalogue". That was true when written and
-> silently stopped being true. Treat any slot list in this repo as a snapshot,
-> re-verify against the upstream section before designing around it, and update
-> the date above when you do.
+> silently stopped being true. `models:*` and `plugins:*` were added on
+> 2026-11-15 after verifying they render in the web source
+> (`web/src/pages/ModelsPage.tsx`, `web/src/pages/PluginsPage.tsx`) — they are
+> NOT yet listed in the upstream docs page. Treat any slot list in this repo as
+> a snapshot, re-verify against the upstream source before designing around it,
+> and update the date above when you do.
 
 ### Slot widgets we register
 
@@ -2490,7 +2503,7 @@ enabled. Everything else is the plain top/bottom of the page content area.
 | `header-right` | 24h spend + budget level (variant=destructive on hard breach). |
 | `analytics:bottom` | Daily cost line chart (vendored Chart.js served locally; CDN fallback only). |
 
-Four of the twenty-eight available slots. `manifest.json` lists the same four,
+Four of the thirty-two available slots. `manifest.json` lists the same four,
 but that field is documentation only — the binding happens in `dist/index.js`
 via `registerSlot()`.
 
