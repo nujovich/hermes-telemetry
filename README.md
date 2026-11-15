@@ -190,7 +190,7 @@ pytest tests/ -v
 |`test_stats_profile_filter_eff_smells.py`|9 |`--profile` on the efficiency and smells slash views, incl. the `-` bucket|
 |`test_stats_profile_filter_cron_raw.py`|16 |`--profile` on cron and raw views (slash + CLI), `cost_by_job` / `recent_runs` / `unattributed_child_cost` filtering, empty-result labels, unfiltered default unchanged|
 
-Counts above are per-file collected totals, measured on this branch with `pytest tests/ -q` and the optional `fastapi` test dependency installed (903 collected; this py3.8 shell shows 903 passed). CI installs only `pytest` + `pyyaml`, so `test_dashboard_plugin_api.py` skips there and the same command reports **868 passed, 35 skipped** (computed: 903 - 35).
+Counts above are per-file collected totals, measured on this branch with `pytest tests/ -q` and the optional `fastapi` test dependency installed (903 collected; measured 903 passed, 0 skipped on this shell's Python 3.14.4 — a py3.8 shell shows 897 passed + 6 zoneinfo skips). CI installs only `pytest` + `pyyaml`, so `test_dashboard_plugin_api.py` skips there and the same command reports **868 passed, 35 skipped** (measured on this branch with `fastapi` stubbed out; 903 - 35).
 
 No live Hermes is required — all tests are self-contained with in-memory SQLite.
 
