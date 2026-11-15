@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover - db.py loaded standalone (no package co
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 19
+_SCHEMA_VERSION = 20
 _local = threading.local()
 
 # Serializes first-time schema setup across threads. Each thread opens its own
@@ -185,6 +185,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_v17(conn)
     _migrate_v18(conn)
     _migrate_v19(conn)
+    _migrate_v20(conn)
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -784,7 +785,7 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _migrate_v19(conn: sqlite3.Connection) -> None:
+def _migrate_v20(conn: sqlite3.Connection) -> None:
     """Carry the owning profile on every tool/llm row, not just on `runs`.
 
     In a SHARED home (``HERMES_TELEMETRY_HOME`` — several profiles pointing at
@@ -798,8 +799,11 @@ def _migrate_v19(conn: sqlite3.Connection) -> None:
     it, whatever the session id looks like. Existing rows are backfilled from
     their run where that run carries a profile. Guarded on the version marker
     AND on the columns, so a half-applied DB self-heals; idempotent.
+
+    Schema version 20, not 19: v19 is the error-ledger ``ts`` index that
+    landed on main first.
     """
-    cur = conn.execute("SELECT version FROM schema_version WHERE version = 19")
+    cur = conn.execute("SELECT version FROM schema_version WHERE version = 20")
     first_run = cur.fetchone() is None
 
     for table in ("tool_calls", "llm_calls"):
@@ -822,7 +826,7 @@ def _migrate_v19(conn: sqlite3.Connection) -> None:
         )
 
         conn.execute(
-            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (19, ?)",
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (20, ?)",
             (_utcnow(),),
         )
 

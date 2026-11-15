@@ -171,7 +171,7 @@ post_api_request        PRIMARY TOKEN SOURCE. One call per individual API call
                         within a turn. Carries the usage dict with real token
                         counts. Calculates cost, records llm_calls row (incl.
                         turn_id / task_id / api_request_id, schema v18, and the
-                        owning profile, schema v19), updates runs totals.
+                        owning profile, schema v20), updates runs totals.
 
 api_request_error       (1) Records EVERY API failure per attempt in the
                         llm_call_errors ledger — any status, retryable or not
@@ -706,21 +706,21 @@ already uses `INSERT OR IGNORE`).
 | `profile` | Set from `ctx.profile_name` (the only profile-identity surface Hermes exposes to plugins — NOT encoded in `session_id`, no `HERMES_PROFILE` env var). Captured at `on_session_start`, backfilled in `pre_llm_call` via `db.set_profile` (`COALESCE(profile, ?)`, first non-null wins). Powers the `per_profile` budget scope. NULL for pre-v12 rows and sessions whose profile could not be resolved. |
 | `model` / `provider` | Set from first `record_llm_call`. `COALESCE(model, ?)` so they're never overwritten. |
 
-### `profile=` on the observation rows (schema v19)
+### `profile=` on the observation rows (schema v20)
 
 `runs.profile` (v12) labels the *session*, and only when `ctx.profile_name` reached
 the plugin. Every row below `runs` carried no profile at all, so a per-profile
 query over tool/llm traffic had nothing to filter on — and under a shared cost
 centre (`HERMES_TELEMETRY_HOME`) that is exactly the query a cost centre runs.
-v19 puts the label on the rows themselves:
+v20 puts the label on the rows themselves:
 
 - `db.record_llm_call(..., profile=...)` and `db.record_tool_call(...,
   profile=...)` take a new keyword argument. It defaults to `None`, which is
-  the pre-v19 behaviour, so existing callers are unaffected.
+  the pre-v20 behaviour, so existing callers are unaffected.
 - The hooks pass `getattr(ctx, "profile_name", None)` — on `post_api_request`
   (`llm_calls`), `post_tool_call` (`tool_calls`) and the `subagent_stop` proxy
   row. A profile that cannot be resolved stores NULL, same as `runs`.
-- `_migrate_v19` adds the two columns, creates `idx_tool_profile` /
+- `_migrate_v20` adds the two columns, creates `idx_tool_profile` /
   `idx_llm_profile`, and backfills existing rows from their run's
   `runs.profile`. Guarded on the version marker *and* on the columns, so a
   half-applied DB self-heals; idempotent.
@@ -2170,7 +2170,7 @@ subcommands). The helpers live in `db.py`:
   profile, `-` included.
 - Block headers carry `_profile_label_suffix` (`(profile faro)` / `(unattributed)`).
 
-Forward note: once per-row `llm_calls.profile` lands (PR #145, schema v19), `_profile_subquery`
+Forward note: once per-row `llm_calls.profile` lands (PR #145, schema v20), `_profile_subquery`
 should move to the `COALESCE(llm_calls.profile, runs.profile)` form that
 `dashboard/plugin_api.py::_calls_profile_clause` adopts in that PR (on main today both still use the `runs` subquery), so orphan rows and mid-session profile changes
 are attributed consistently across the CLI/slash and dashboard surfaces. Keep the change in

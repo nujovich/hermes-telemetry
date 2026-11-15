@@ -2405,8 +2405,9 @@ def test_schema_v19_ts_index():
 
 def test_schema_v19_recorded():
     conn = db._get_conn()
-    assert _SCHEMA_VERSION == 19
+    assert _SCHEMA_VERSION == 20
     assert conn.execute("SELECT 1 FROM schema_version WHERE version = 19").fetchone() is not None
+    assert conn.execute("SELECT 1 FROM schema_version WHERE version = 20").fetchone() is not None
 
 
 def test_migrate_v19_adds_ts_index_from_v18():

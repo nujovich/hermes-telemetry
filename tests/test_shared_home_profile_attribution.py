@@ -4,7 +4,7 @@ Topology this covers: several profiles point ``HERMES_TELEMETRY_HOME`` at ONE
 directory, so their rows land in a single ``telemetry.db``. Every row below
 ``runs`` carried no profile at all, so a per-profile query over tool/llm
 traffic had nothing to filter on — and under a shared cost centre that is
-exactly the query a cost centre runs. v19 puts the owning profile on every
+exactly the query a cost centre runs. v20 puts the owning profile on every
 ``tool_calls`` / ``llm_calls`` row so the attribution is self-describing.
 
 ``runs.session_id`` is still the PRIMARY KEY with no profile dimension, so two
@@ -82,12 +82,17 @@ def test_db_path_info_falls_back_to_hermes_home(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 2. the v19 migration
+# 2. the v20 migration
 # ---------------------------------------------------------------------------
 
 
-def _pre_v19_db(path: Path) -> sqlite3.Connection:
-    """A store as v18 left it: no profile column below `runs`, marker at 18."""
+def _pre_v20_db(path: Path) -> sqlite3.Connection:
+    """A store as v19 left it: no profile column below `runs`, marker at 19.
+
+    v19 is the error-ledger `ts` index that landed on main first; the profile
+    columns land in v20, so a store written by the previous release carries
+    marker 19 and no `profile` column below `runs`.
+    """
     conn = sqlite3.connect(str(path))
     conn.executescript(
         """
@@ -112,7 +117,7 @@ def _pre_v19_db(path: Path) -> sqlite3.Connection:
             session_id  TEXT NOT NULL,
             ts          TEXT NOT NULL
         );
-        INSERT INTO schema_version(version, applied_at) VALUES (18, '2026-01-01T00:00:00+00:00');
+        INSERT INTO schema_version(version, applied_at) VALUES (19, '2026-01-01T00:00:00+00:00');
         INSERT INTO runs(session_id, profile, started_at)
             VALUES ('s1', 'coder', '2026-01-01T00:00:00+00:00');
         INSERT INTO tool_calls(session_id, ts, tool_name)
@@ -124,12 +129,12 @@ def _pre_v19_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def test_migrate_v19_adds_columns_and_backfills(tmp_path):
+def test_migrate_v20_adds_columns_and_backfills(tmp_path):
     import hermes_telemetry.db as db
 
-    conn = _pre_v19_db(tmp_path / "pre19.db")
+    conn = _pre_v20_db(tmp_path / "pre20.db")
     try:
-        db._migrate_v19(conn)
+        db._migrate_v20(conn)
 
         tool_cols = {r[1] for r in conn.execute("PRAGMA table_info(tool_calls)")}
         llm_cols = {r[1] for r in conn.execute("PRAGMA table_info(llm_calls)")}
@@ -149,24 +154,24 @@ def test_migrate_v19_adds_columns_and_backfills(tmp_path):
         assert {"idx_tool_profile", "idx_llm_profile"} <= idx
 
         assert (
-            conn.execute("SELECT version FROM schema_version WHERE version = 19").fetchone()
+            conn.execute("SELECT version FROM schema_version WHERE version = 20").fetchone()
             is not None
         )
     finally:
         conn.close()
 
 
-def test_v18_db_upgrades_to_v19_with_profile_columns(tmp_path, monkeypatch):
-    """The plain upgrade path: a v18 store opens and lands on v19.
+def test_v19_db_upgrades_to_v20_with_profile_columns(tmp_path, monkeypatch):
+    """The plain upgrade path: a v19 store opens and lands on v20.
 
     ``_self_heals_marker_without_columns`` covers the *wedged* store (marker
     written, columns missing). This covers the ordinary case a user hits: a
-    database created by the previous release — marker at 18, no ``profile``
+    database created by the previous release — marker at 19, no ``profile``
     column below ``runs`` — that the next connect must upgrade in place:
-    add the columns, backfill the rows from their run, mark v19.
+    add the columns, backfill the rows from their run, mark v20.
 
     The upgrade is driven through ``db._ensure_schema`` (the function every
-    connect runs), not by calling ``_migrate_v19`` directly, so the test
+    connect runs), not by calling ``_migrate_v20`` directly, so the test
     exercises the same entry point production takes.
     """
     import hermes_telemetry.db as db
@@ -175,17 +180,17 @@ def test_v18_db_upgrades_to_v19_with_profile_columns(tmp_path, monkeypatch):
     db.close_thread_conn()
 
     conn = db._get_conn()
-    # Roll the fresh store back to the v18 shape: drop the profile columns
-    # and the v19 marker. The schema_version row for 18 stays, so this is
+    # Roll the fresh store back to the v19 shape: drop the profile columns
+    # and the v20 marker. The schema_version row for 19 stays, so this is
     # exactly what a store written by the previous release looks like.
-    # The v19 indexes reference the columns, so they go first.
+    # The v20 indexes reference the columns, so they go first.
     conn.execute("DROP INDEX IF EXISTS idx_tool_profile")
     conn.execute("DROP INDEX IF EXISTS idx_llm_profile")
     conn.execute("ALTER TABLE tool_calls DROP COLUMN profile")
     conn.execute("ALTER TABLE llm_calls DROP COLUMN profile")
-    conn.execute("DELETE FROM schema_version WHERE version = 19")
+    conn.execute("DELETE FROM schema_version WHERE version = 20")
 
-    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 19").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 20").fetchone()[0] == 0
     assert "profile" not in {r[1] for r in conn.execute("PRAGMA table_info(tool_calls)")}
 
     # A row that predates the upgrade, labelled only via its run.
@@ -225,43 +230,43 @@ def test_v18_db_upgrades_to_v19_with_profile_columns(tmp_path, monkeypatch):
     }
     assert {"idx_tool_profile", "idx_llm_profile"} <= idx
 
-    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 19").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 20").fetchone()[0] == 1
 
     db.close_thread_conn()
 
 
-def test_migrate_v19_is_idempotent(tmp_path):
+def test_migrate_v20_is_idempotent(tmp_path):
     import hermes_telemetry.db as db
 
-    conn = _pre_v19_db(tmp_path / "idem.db")
+    conn = _pre_v20_db(tmp_path / "idem.db")
     try:
-        db._migrate_v19(conn)
+        db._migrate_v20(conn)
         before = conn.execute(
             "SELECT id, session_id, profile FROM tool_calls ORDER BY id"
         ).fetchall()
-        db._migrate_v19(conn)  # second run must not raise, duplicate, or relabel
+        db._migrate_v20(conn)  # second run must not raise, duplicate, or relabel
         after = conn.execute(
             "SELECT id, session_id, profile FROM tool_calls ORDER BY id"
         ).fetchall()
         assert [tuple(r) for r in before] == [tuple(r) for r in after]
         assert (
-            conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 19").fetchone()[0]
+            conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 20").fetchone()[0]
             == 1
         )
     finally:
         conn.close()
 
 
-def test_migrate_v19_self_heals_marker_without_columns(tmp_path):
+def test_migrate_v20_self_heals_marker_without_columns(tmp_path):
     """A half-applied migration (marker written, columns missing) must self-heal."""
     import hermes_telemetry.db as db
 
-    conn = _pre_v19_db(tmp_path / "half.db")
+    conn = _pre_v20_db(tmp_path / "half.db")
     try:
         conn.execute(
-            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (19, '2026-01-02T00:00:00+00:00')"
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (20, '2026-01-02T00:00:00+00:00')"
         )
-        db._migrate_v19(conn)
+        db._migrate_v20(conn)
         assert "profile" in {r[1] for r in conn.execute("PRAGMA table_info(tool_calls)")}
         assert "profile" in {r[1] for r in conn.execute("PRAGMA table_info(llm_calls)")}
     finally:
@@ -332,7 +337,7 @@ def test_post_tool_call_hook_passes_profile():
 def test_rows_carry_their_own_profile(tmp_path, monkeypatch):
     """Two profiles, ONE shared store, DISTINCT session ids.
 
-    The honest value of v19: every tool/llm row carries the profile that produced
+    The honest value of v20: every tool/llm row carries the profile that produced
     it, so a per-profile query has a column to filter on regardless of how the
     session ids line up.
     """
