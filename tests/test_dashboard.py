@@ -1647,8 +1647,15 @@ def _seed_sessions_db(path: Path, sessions: list[tuple[str, int]]) -> None:
 
 
 def _serve_clause_params(module, col="session_id", include_deleted=False):
+    """The session ids bound by the visibility clause.
+
+    The set is bound as ONE JSON parameter (see the json_each note in
+    ``_visible_sessions_clause``), so it is decoded back into the id set here.
+    """
     _, params = module._visible_sessions_clause(col, include_deleted)
-    return set(params)
+    if not params:
+        return set()
+    return set(json.loads(params[0]))
 
 
 def _reload_serve_with_env(monkeypatch, hermes_home, telemetry_home):
@@ -1744,11 +1751,15 @@ def test_visibility_degrades_open_when_no_state_db(serve_module, tmp_path):
     assert params == []
 
 
-def test_visibility_chunks_large_session_set(serve_module, tmp_path):
+def test_visibility_binds_one_parameter_for_large_session_set(serve_module, tmp_path):
     """A shared home can union every profile's full history, exceeding SQLite's
-    999-variable limit (#128). The IN clause is chunked so no single group
-    passes more than _SQLITE_MAX_PARAMS bound parameters, and every id still
-    appears across the clause params."""
+    999-variable limit (#128). The id set is bound as ONE JSON parameter and
+    expanded inside SQLite via ``json_each``, so the statement binds a single
+    variable no matter how many ids the set holds.
+
+    The previous chunked IN-list bound one variable PER ID, so a set of 1300 ids
+    raised "too many SQL variables" on a build with the pre-3.32 limit of 999.
+    """
     many = [(f"sess-{i:04d}", 0) for i in range(1300)]
     _seed_sessions_db(tmp_path / "state.db", many)
 
@@ -1757,12 +1768,76 @@ def test_visibility_chunks_large_session_set(serve_module, tmp_path):
     assert ids == {sid for sid, _ in many}
 
     clause, params = serve_module._visible_sessions_clause("session_id", False)
-    assert len(params) == 1300
-    assert {sid for sid, _ in many} <= set(params)
-    # No IN (...) group may exceed the bound-parameter limit.
-    for group in clause.split(" OR "):
-        if " IN (" in group:
-            assert group.count("?") <= serve_module._SQLITE_MAX_PARAMS, group
+    # ONE bound parameter for the whole set — this is the regression guard and
+    # it holds on every SQLite build.
+    assert len(params) == 1
+    assert set(json.loads(params[0])) == {sid for sid, _ in many}
+
+    # And the clause executes against the real id set.
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE t(session_id TEXT)")
+        conn.executemany("INSERT INTO t(session_id) VALUES (?)", [(sid,) for sid, _ in many])
+        count = conn.execute(f"SELECT COUNT(*) FROM t WHERE {clause}", params).fetchone()[0]
+        assert count == 1300
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(
+    not hasattr(sqlite3, "SQLITE_LIMIT_VARIABLE_NUMBER"),
+    reason="Connection.setlimit / SQLITE_LIMIT_VARIABLE_NUMBER need Python 3.11+",
+)
+def test_visibility_executes_under_the_old_999_variable_limit(serve_module, tmp_path):
+    """The clause must execute when the connection enforces the pre-3.32
+    999-variable limit — the limit that the chunked IN-list hit."""
+    many = [(f"sess-{i:04d}", 0) for i in range(1300)]
+    _seed_sessions_db(tmp_path / "state.db", many)
+
+    clause, params = serve_module._visible_sessions_clause("session_id", False)
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        conn.execute("CREATE TABLE t(session_id TEXT)")
+        conn.executemany("INSERT INTO t(session_id) VALUES (?)", [(sid,) for sid, _ in many])
+        count = conn.execute(f"SELECT COUNT(*) FROM t WHERE {clause}", params).fetchone()[0]
+        assert count == 1300
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(
+    not hasattr(sqlite3, "SQLITE_LIMIT_VARIABLE_NUMBER"),
+    reason="Connection.setlimit / SQLITE_LIMIT_VARIABLE_NUMBER need Python 3.11+",
+)
+def test_visibility_two_clauses_in_one_statement_stay_under_limit(serve_module, tmp_path):
+    """Several dashboard queries bind TWO visibility clauses in one statement
+    (e.g. the runs and the tool_calls halves of one summary). Two clauses must
+    still fit under the 999-variable limit."""
+    many = [(f"sess-{i:04d}", 0) for i in range(1300)]
+    _seed_sessions_db(tmp_path / "state.db", many)
+
+    clause_a, params_a = serve_module._visible_sessions_clause("r.session_id", False)
+    clause_b, params_b = serve_module._visible_sessions_clause("tc.session_id", False)
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        conn.execute("CREATE TABLE runs (session_id TEXT)")
+        conn.execute("CREATE TABLE tool_calls (session_id TEXT)")
+        conn.executemany("INSERT INTO runs(session_id) VALUES (?)", [(sid,) for sid, _ in many])
+        conn.executemany(
+            "INSERT INTO tool_calls(session_id) VALUES (?)", [(sid,) for sid, _ in many]
+        )
+        count = conn.execute(
+            "SELECT COUNT(*) FROM runs r JOIN tool_calls tc "
+            f"ON tc.session_id = r.session_id WHERE {clause_a} AND {clause_b}",
+            [*params_a, *params_b],
+        ).fetchone()[0]
+        assert count == 1300
+    finally:
+        conn.close()
 
 
 def test_visibility_missing_state_db_is_skipped_not_fatal(tmp_path, monkeypatch):

@@ -453,7 +453,9 @@ def _active_hermes_session_ids():
         conn = None
         try:
             # mode=ro: never mutate a profile state.db from a read-only dashboard.
-            conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
+            # as_uri() escapes '?', '#' and '%' in the path, which a hand-built
+            # "file:<path>?mode=ro" URI would misparse.
+            conn = sqlite3.connect(state_db.as_uri() + "?mode=ro", uri=True)
             rows = conn.execute("SELECT id FROM sessions").fetchall()
             ids.update(str(row[0]) for row in rows)
             metadata_available = True
@@ -469,7 +471,14 @@ def _active_hermes_session_ids():
 
 def _visible_sessions_clause(col="session_id", include_deleted=False):
     """WHERE fragment + params keeping only rows whose session still exists in
-    Hermes (#128), plus cron rows which are always retained."""
+    Hermes (#128), plus cron rows which are always retained.
+
+    The id set is bound as ONE parameter (a JSON array) and expanded inside
+    SQLite via ``json_each``. Binding one parameter per id would hit
+    ``SQLITE_MAX_VARIABLE_NUMBER`` (999 on SQLite < 3.32): a shared home unions
+    every profile's full history, and several queries bind TWO visibility
+    clauses in one statement, so the limit is reachable in practice.
+    """
     if include_deleted:
         return "1=1", []
     active_ids, metadata_available = _active_hermes_session_ids()
@@ -478,17 +487,8 @@ def _visible_sessions_clause(col="session_id", include_deleted=False):
         # instead of hiding almost every non-cron telemetry row.
         return "1=1", []
     active_ids = sorted({str(s) for s in active_ids})
-    clauses = [f"{col} LIKE 'cron_%'"]
-    params = []
-    # Bound-parameter limit guard (#128): a shared home unions every profile's
-    # full history, which can exceed SQLite's 999-variable limit on older builds.
-    # Chunk the IN list so each group stays under the limit.
-    for i in range(0, len(active_ids), _SQLITE_MAX_PARAMS):
-        chunk = active_ids[i : i + _SQLITE_MAX_PARAMS]
-        placeholders = ",".join("?" for _ in chunk)
-        clauses.append(f"{col} IN ({placeholders})")
-        params.extend(chunk)
-    return "(" + " OR ".join(clauses) + ")", params
+    clause = f"({col} LIKE 'cron_%' OR {col} IN (SELECT value FROM json_each(?)))"
+    return clause, [json.dumps(active_ids)]
 
 
 # ---------------------------------------------------------------------------
