@@ -226,10 +226,8 @@ hermes-telemetry/
 ├── budget.py            # Budget enforcement logic
 ├── stats.py             # /stats command implementation
 ├── setup_wizard.py      # /setup command, PoC flow
-├── setup_cmd.py         # Setup command helpers
 ├── plugin.yaml          # Plugin metadata (name, version, hooks)
 ├── config.example.yaml  # Example configuration
-├── pricing.example.yaml # Example pricing table
 ├── budget.example.yaml  # Example budget limits
 ├── dashboard/           # Standalone HTML/JS dashboard
 │   ├── serve.py         # stdlib HTTP server
@@ -244,26 +242,31 @@ The plugin hooks into Hermes Agent lifecycle events:
 
 ```
 on_session_start     → create session record, check budget
-pre_api_request      → estimate tokens, check budget (pre-call)
+pre_api_request      → capture pre-call token estimate
 post_api_request     → record real usage + cost, update budget
+api_request_error    → record failed API requests (error type, retry classification)
 post_tool_call       → record tool latency + success/failure
-on_session_end       → finalize session, compute wall time
+subagent_start       → record subagent delegation (parent/child linkage)
 subagent_stop        → attribute subagent cost to parent session
+post_llm_call        → mark run still running after each LLM call
+on_session_end       → finalize session, compute wall time
+on_session_finalize  → finalize session at teardown (atexit / gateway expiry)
+pre_llm_call         → capture sender/profile, inject soft budget alerts
+pre_tool_call        → hard budget gate (blocks tool calls over limit)
 ```
 
 ### Database
 
-SQLite with WAL mode. Schema is managed via incremental migrations in `db.py`. The database lives at `~/.hermes/hermes-telemetry/telemetry.db` by default.
+SQLite with WAL mode. Schema is managed via incremental migrations in `db.py`. The database lives at `~/.hermes/telemetry/telemetry.db` by default (overridable via `HERMES_TELEMETRY_HOME`, resolved in `paths.py`).
 
 ### Configuration
 
-Three YAML files control behavior:
+Two YAML files control runtime behavior. Committed examples live in the repo root: `config.example.yaml` (pricing) and `budget.example.yaml` (budget).
 
 | File | Purpose | Auto-generated? |
 |------|---------|-----------------|
 | `pricing.yaml` | Model pricing (input/output per-token cost) | Yes, on first run |
 | `budget.yaml` | Daily/monthly limits, enforcement level | Yes, on first run |
-| `config.yaml` | Plugin settings (DB path, dashboard port, etc.) | No, manual |
 
 ## Making Changes
 
@@ -282,7 +285,7 @@ Three YAML files control behavior:
 | Change type | Files to modify |
 |-------------|-----------------|
 | New hook | `__init__.py` + `db.py` (schema) + `stats.py` (display) + tests |
-| New pricing field | `pricing.py` + `pricing.example.yaml` + tests |
+| New pricing field | `pricing.py` + `config.example.yaml` + tests |
 | New budget rule | `budget.py` + `budget.example.yaml` + tests |
 | New slash command | `__init__.py` + new `*_cmd.py` + tests |
 | Dashboard changes | `dashboard/serve.py` + `dashboard/index.html` |
