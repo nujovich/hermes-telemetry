@@ -3,8 +3,8 @@ version: "0.10.0"
 manifest_version: 2
 description: >-
   Observability + budget guardrails for Hermes Agent — tokens, cost, latency,
-  tool calls per session and cron job. Persists to local SQLite. Exposes /stats
-  and /budget slash commands.
+  tool calls per session and cron job. Persists to local SQLite. Exposes /stats,
+  /budget, and /setup slash commands.
 author: nujovich
 kind: standalone
 config_schema:
