@@ -1076,7 +1076,7 @@ def register(ctx) -> None:  # noqa: ANN001
         "budget",
         budget.handle,
         description="Show/set spend budgets (global, per cron job, per sender, per profile)",
-        args_hint="[cron | set <scope> [<id>] <window> <usd>]",
+        args_hint="[cron | forecast [daily|monthly] [<scope>] [<id>] | set <scope> [<id>] <window> <usd>]",
     )
 
     # ------------------------------------------------------------------
