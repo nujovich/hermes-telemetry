@@ -26,6 +26,14 @@ Documentation and comments in this repo can be stale. The source is the only aut
 - Any status or enum string used in comparisons (`child_status`, `platform`, `finish_reason`)
 - Any claim about hook firing order or frequency ("fires once per turn", etc.)
 - Any PluginContext method not already listed in `ONBOARDING.md § PluginContext API`
+- **Dashboard slot names** — the shell only renders slots from its catalogue
+  (`website/docs/user-guide/features/extending-the-dashboard.md`
+  § *Slot catalogue*). `registerSlot()` with an unknown name is a silent no-op
+  (widget loads, never mounts). NEVER propose a slot name without verifying it
+  against that section — the catalogue grows, and any list in this repo is a
+  dated snapshot. `ONBOARDING.md § Dashboard Plugin Surface` carries the last
+  verified copy plus the four slots we actually register. If no slot fits,
+  render inside `TelemetryPage` instead.
 
 ### How to verify
 
@@ -42,6 +50,7 @@ https://raw.githubusercontent.com/NousResearch/hermes-agent/main/<path>
 | `tools/delegate_tool.py` | subagent_stop kwargs, child_status canonical values |
 | `model_tools.py` | post_tool_call kwargs |
 | `cron/scheduler.py` | cron session_id format |
+| `website/docs/user-guide/features/extending-the-dashboard.md` | Plugin SDK surface + dashboard slot catalogue (valid `registerSlot` names) |
 
 ---
 
@@ -84,3 +93,9 @@ hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 Tests redirect `HERMES_HOME` to an isolated tmp dir. A direct `Path.home()` call
 escapes the isolation and touches the developer's real `~/.hermes`.
 See `tests/test_isolation.py` and `ONBOARDING.md § Test Isolation Contract`.
+
+Telemetry files (`telemetry.db`, `budget.yaml`, `pricing.yaml`) additionally honor an
+opt-in `HERMES_TELEMETRY_HOME` that **outranks** `HERMES_HOME`, resolved once in
+`paths.py::get_telemetry_home()`. Route telemetry paths through `paths.py` (the dashboard
+surfaces replicate it inline — they must stay self-contained). Tests neutralize
+`HERMES_TELEMETRY_HOME` in `conftest.py` so it cannot break isolation.
