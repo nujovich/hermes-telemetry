@@ -1853,3 +1853,20 @@ def test_visibility_missing_state_db_is_skipped_not_fatal(tmp_path, monkeypatch)
     ids, available = module._active_hermes_session_ids()
     assert available is True
     assert ids == {"sess-present", "sess-beta"}
+
+
+def test_visibility_relative_telemetry_home_reads_state_db(tmp_path, monkeypatch):
+    """A relative HERMES_TELEMETRY_HOME must still be scanned. ``Path.as_uri()``
+    raises ValueError on a relative path, which the per-home ``sqlite3.Error``
+    guard does not catch, so the visibility filter must resolve the path before
+    building the read-only URI."""
+    _seed_sessions_db(tmp_path / "shared" / "state.db", [("sess-root", 0)])
+    _seed_sessions_db(tmp_path / "shared" / "profiles/alpha/state.db", [("sess-alpha", 0)])
+    monkeypatch.chdir(tmp_path)
+    module = _reload_serve_with_env(
+        monkeypatch, hermes_home=Path("shared"), telemetry_home=Path("shared")
+    )
+
+    ids, available = module._active_hermes_session_ids()
+    assert available is True
+    assert ids == {"sess-root", "sess-alpha"}

@@ -454,8 +454,9 @@ def _active_hermes_session_ids():
         try:
             # mode=ro: never mutate a profile state.db from a read-only dashboard.
             # as_uri() escapes '?', '#' and '%' in the path, which a hand-built
-            # "file:<path>?mode=ro" URI would misparse.
-            conn = sqlite3.connect(state_db.as_uri() + "?mode=ro", uri=True)
+            # "file:<path>?mode=ro" URI would misparse. resolve() first: as_uri()
+            # raises ValueError on a relative path (relative HERMES_TELEMETRY_HOME).
+            conn = sqlite3.connect(state_db.resolve().as_uri() + "?mode=ro", uri=True)
             rows = conn.execute("SELECT id FROM sessions").fetchall()
             ids.update(str(row[0]) for row in rows)
             metadata_available = True
