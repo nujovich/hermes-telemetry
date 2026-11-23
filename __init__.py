@@ -124,8 +124,11 @@ CRON_SESSION_RE = re.compile(r"^cron_(?P<job_id>.+)_\d{8}_\d{6}$")
 
 
 def _setup_log_file() -> None:
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    log_dir = hermes_home / "telemetry"
+    from . import paths
+
+    # Log lives beside the DB, under the telemetry home (HERMES_TELEMETRY_HOME >
+    # HERMES_HOME > ~/.hermes) — see paths.py.
+    log_dir = paths.get_telemetry_home()
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "telemetry.log"
 
@@ -145,16 +148,14 @@ def _utcnow() -> str:
 def _try_pricing_refresh(log: logging.Logger) -> None:
     """Refresh pricing from remote sources once per 24h.
 
-    Uses a sentinel file (~/.hermes/telemetry/.pricing_refresh) to track
+    Uses a sentinel file (<telemetry home>/.pricing_refresh) to track
     last refresh time. Safe to call on every plugin load.
     """
     import time as _time
 
-    sentinel = (
-        Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-        / "telemetry"
-        / ".pricing_refresh"
-    )
+    from . import paths
+
+    sentinel = paths.get_telemetry_home() / ".pricing_refresh"
     ttl = 86400  # 24h
     try:
         if sentinel.exists():
@@ -508,7 +509,18 @@ def register(ctx) -> None:  # noqa: ANN001
             cost = pricing.estimate_cost(
                 full_usage, effective_model, provider, core_price=core_price
             )
-            latency_ms = int(api_duration * 1000)
+            # api_duration arrives from the wire (untrusted, like the
+            # api_request_error path): a non-finite / non-numeric / missing
+            # value costs the latency field (NULL), never the row (#160). A
+            # finite but absurd value (negative, or beyond 24h) is also NULL:
+            # a huge int overflows SQLite INTEGER and would drop the row, and
+            # a negative one would skew AVG(latency_ms).
+            try:
+                latency_ms: int | None = int(float(api_duration) * 1000)
+            except (TypeError, ValueError, OverflowError):
+                latency_ms = None
+            if latency_ms is not None and not 0 <= latency_ms <= 86_400_000:
+                latency_ms = None
 
             # Provider-assumed pricing (issue #42): the cost is real spend, but it
             # used a source-ineligible (OpenRouter) rate because no source-eligible
