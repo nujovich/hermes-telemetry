@@ -226,6 +226,7 @@ hermes-telemetry/
 ├── budget.py            # Budget enforcement logic
 ├── stats.py             # /stats command implementation
 ├── setup_wizard.py      # /setup command, PoC flow
+├── poc_setup_cmd.py     # PoC script: simulates /setup interactions in a temp HERMES_HOME
 ├── plugin.yaml          # Plugin metadata (name, version, hooks)
 ├── config.example.yaml  # Example configuration
 ├── budget.example.yaml  # Example budget limits

@@ -81,7 +81,7 @@ hermes-telemetry/
 │                          and the fallback estimation logic for usage=None.
 ├── paths.py             ← Single source of truth for state-file locations.
 │                          Resolves HERMES_TELEMETRY_HOME vs HERMES_HOME.
-├── db.py                ← SQLite persistence layer. Schema v1→v19 migrations,
+├── db.py                ← SQLite persistence layer. Schema v1→v20 migrations,
 │                          per-thread connections, WAL mode, write API and
 │                          read/budget query API.
 ├── pricing.py           ← Cost estimation engine. Priority-chain lookup
@@ -135,7 +135,7 @@ hermes-telemetry/
 │   └── serve.py         ← stdlib HTTP server, port 8765, --host flag.
 ├── tests/
 │   ├── conftest.py      ← Autouse HERMES_HOME isolation (see Test Isolation).
-│   └── test_*.py        ← 890 tests. All in-memory SQLite, no live gateway.
+│   └── test_*.py        ← 914 tests. All in-memory SQLite, no live gateway.
 ├── config.example.yaml  ← Annotated pricing.yaml example.
 └── budget.example.yaml  ← Annotated budget.yaml example.
 ```
@@ -435,9 +435,14 @@ parent_turn_id: str
 child_session_id: str
 child_role: str
 child_summary: str
-child_status: str    # "completed" | "failed" | "error" | "interrupted" | "timeout" | "unknown"
+child_status: str    # "completed" | "failed" | "error" | "interrupted" (upstream hooks.md); we also treat "timeout" as failure
+tool_call_history: list[dict]  # metadata-only per child tool call: tool_name, bounded tool_input,
+                               # input_bytes, output_bytes, status ("ok" | "error" | "unknown")
 duration_ms: int
 ```
+`tool_call_history` is new upstream and **not consumed** by the plugin (the
+handler swallows it via `**_kw`). Its per-entry `status` is the only place
+upstream normalizes to `"unknown"`; `child_status` itself has no `"unknown"` value.
 **Carries `child_session_id`** — verified in `tools/delegate_tool_results.py`'s
 `subagent_stop` invocation (`child_session_id=getattr(child, "session_id", None)`). An earlier
 version of this doc claimed `subagent_stop` had no child session id; that was
