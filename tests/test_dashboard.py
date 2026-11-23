@@ -1618,3 +1618,255 @@ def test_atomic_write_text_parity_with_plugin(serve_module, tmp_path):
 
         leftovers = [p.name for p in target.parent.iterdir() if p.name.endswith(".tmp")]
         assert leftovers == []
+
+
+# Shared telemetry home visibility (issue #128)
+# ---------------------------------------------------------------------------
+
+
+def _seed_sessions_db(path: Path, sessions: list[tuple[str, int]]) -> None:
+    """Create a real Hermes ``state.db`` at *path* with a ``sessions`` table
+    holding ``(id, archived)`` rows. The shape mirrors
+    ``hermes_state_common.SCHEMA_SQL`` (``id TEXT PRIMARY KEY``,
+    ``archived INTEGER``) — the only columns this module reads for visibility.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE sessions ("
+        "id TEXT PRIMARY KEY, archived INTEGER NOT NULL DEFAULT 0, "
+        "auto_archived INTEGER NOT NULL DEFAULT 0, profile_name TEXT, "
+        "started_at REAL)"
+    )
+    conn.executemany(
+        "INSERT INTO sessions (id, archived) VALUES (?, ?)",
+        [(sid, archived) for sid, archived in sessions],
+    )
+    conn.commit()
+    conn.close()
+
+
+def _serve_clause_params(module, col="session_id", include_deleted=False):
+    """The session ids bound by the visibility clause.
+
+    The set is bound as ONE JSON parameter (see the json_each note in
+    ``_visible_sessions_clause``), so it is decoded back into the id set here.
+    """
+    _, params = module._visible_sessions_clause(col, include_deleted)
+    if not params:
+        return set()
+    return set(json.loads(params[0]))
+
+
+def _reload_serve_with_env(monkeypatch, hermes_home, telemetry_home):
+    """Re-execute dashboard/serve.py with a custom HERMES_HOME /
+    HERMES_TELEMETRY_HOME pair (both are read at import time)."""
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    if telemetry_home is None:
+        monkeypatch.delenv("HERMES_TELEMETRY_HOME", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_TELEMETRY_HOME", str(telemetry_home))
+    spec = importlib.util.spec_from_file_location("dashboard_serve_reloaded", _SERVE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Shared telemetry home visibility (issue #128)
+# ---------------------------------------------------------------------------
+
+
+def test_visibility_single_profile_default_home(serve_module, tmp_path):
+    """Default topology (no HERMES_TELEMETRY_HOME): the dashboard runs as the
+    default profile, so the telemetry root == HERMES_HOME and only its state.db
+    is scanned. #128 must not loosen single-profile behavior."""
+    _seed_sessions_db(tmp_path / "state.db", [("sess-visible", 0), ("sess-archived", 1)])
+    ids, available = serve_module._active_hermes_session_ids()
+    assert available is True
+    assert ids == {"sess-visible", "sess-archived"}
+
+
+def test_visibility_default_profile_hidden_when_absent_from_state_db(serve_module, tmp_path):
+    """A telemetry session whose id is in no profile state.db is soft-hidden
+    (deleted in Hermes), not falsely shown."""
+    _seed_sessions_db(tmp_path / "state.db", [("sess-present", 0)])
+    params = _serve_clause_params(serve_module, "session_id", include_deleted=False)
+    assert "sess-present" in params
+    assert "sess-deleted" not in params
+
+
+def test_visibility_shared_home_default_profile_running(tmp_path, monkeypatch):
+    """#128 shared topology, dashboard run as the default profile:
+    HERMES_TELEMETRY_HOME == HERMES_HOME. The telemetry root is ~/.hermes and
+    every ``profiles/*/`` state.db must be scanned, not just the root."""
+    root = tmp_path / "shared"
+    _seed_sessions_db(root / "state.db", [("sess-primary", 0)])
+    _seed_sessions_db(root / "profiles/alpha/state.db", [("sess-alpha", 0)])
+    _seed_sessions_db(root / "profiles/beta/state.db", [("sess-beta", 0)])
+
+    module = _reload_serve_with_env(monkeypatch, hermes_home=root, telemetry_home=root)
+
+    ids, available = module._active_hermes_session_ids()
+    assert available is True
+    assert ids == {"sess-primary", "sess-alpha", "sess-beta"}
+    assert {"sess-primary", "sess-alpha", "sess-beta"} <= _serve_clause_params(module)
+
+
+def test_visibility_shared_home_named_profile_running(tmp_path, monkeypatch):
+    """#128 shared topology, dashboard run as a NAMED profile: HERMES_HOME is
+    <root>/profiles/<named>, but the telemetry root is <root>. The scan must
+    reach the root home and every sibling profile — the case the old
+    ``HERMES_HOME / "profiles"`` branch silently missed."""
+    root = tmp_path / "shared"
+    _seed_sessions_db(root / "state.db", [("sess-default", 0)])  # root, not under HERMES_HOME
+    _seed_sessions_db(root / "profiles/alpha/state.db", [("sess-alpha", 0)])
+    _seed_sessions_db(root / "profiles/named/state.db", [("sess-named", 0)])
+
+    module = _reload_serve_with_env(
+        monkeypatch,
+        hermes_home=root / "profiles" / "named",
+        telemetry_home=root,
+    )
+
+    ids, available = module._active_hermes_session_ids()
+    assert available is True
+    # Root + siblings + the running named profile — all three.
+    assert ids == {"sess-default", "sess-alpha", "sess-named"}
+
+
+def test_visibility_keeps_archived_sessions(serve_module, tmp_path):
+    """Per the #128 triage, archived sessions (archived=1) are a soft UI flag,
+    not a deletion — they stay visible."""
+    _seed_sessions_db(tmp_path / "state.db", [("sess-active", 0), ("sess-archived", 1)])
+    ids, available = serve_module._active_hermes_session_ids()
+    assert available is True
+    assert {"sess-active", "sess-archived"} <= ids
+
+
+def test_visibility_degrades_open_when_no_state_db(serve_module, tmp_path):
+    """No readable state.db anywhere: must not hide rows (1=1), matching the
+    existing 'no metadata' degrade path."""
+    clause, params = serve_module._visible_sessions_clause("session_id", False)
+    assert clause == "1=1"
+    assert params == []
+
+
+def test_visibility_binds_one_parameter_for_large_session_set(serve_module, tmp_path):
+    """A shared home can union every profile's full history, exceeding SQLite's
+    999-variable limit (#128). The id set is bound as ONE JSON parameter and
+    expanded inside SQLite via ``json_each``, so the statement binds a single
+    variable no matter how many ids the set holds.
+
+    The previous chunked IN-list bound one variable PER ID, so a set of 1300 ids
+    raised "too many SQL variables" on a build with the pre-3.32 limit of 999.
+    """
+    many = [(f"sess-{i:04d}", 0) for i in range(1300)]
+    _seed_sessions_db(tmp_path / "state.db", many)
+
+    ids, available = serve_module._active_hermes_session_ids()
+    assert available is True
+    assert ids == {sid for sid, _ in many}
+
+    clause, params = serve_module._visible_sessions_clause("session_id", False)
+    # ONE bound parameter for the whole set — this is the regression guard and
+    # it holds on every SQLite build.
+    assert len(params) == 1
+    assert set(json.loads(params[0])) == {sid for sid, _ in many}
+
+    # And the clause executes against the real id set.
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE t(session_id TEXT)")
+        conn.executemany("INSERT INTO t(session_id) VALUES (?)", [(sid,) for sid, _ in many])
+        count = conn.execute(f"SELECT COUNT(*) FROM t WHERE {clause}", params).fetchone()[0]
+        assert count == 1300
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(
+    not hasattr(sqlite3, "SQLITE_LIMIT_VARIABLE_NUMBER"),
+    reason="Connection.setlimit / SQLITE_LIMIT_VARIABLE_NUMBER need Python 3.11+",
+)
+def test_visibility_executes_under_the_old_999_variable_limit(serve_module, tmp_path):
+    """The clause must execute when the connection enforces the pre-3.32
+    999-variable limit — the limit that the chunked IN-list hit."""
+    many = [(f"sess-{i:04d}", 0) for i in range(1300)]
+    _seed_sessions_db(tmp_path / "state.db", many)
+
+    clause, params = serve_module._visible_sessions_clause("session_id", False)
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        conn.execute("CREATE TABLE t(session_id TEXT)")
+        conn.executemany("INSERT INTO t(session_id) VALUES (?)", [(sid,) for sid, _ in many])
+        count = conn.execute(f"SELECT COUNT(*) FROM t WHERE {clause}", params).fetchone()[0]
+        assert count == 1300
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(
+    not hasattr(sqlite3, "SQLITE_LIMIT_VARIABLE_NUMBER"),
+    reason="Connection.setlimit / SQLITE_LIMIT_VARIABLE_NUMBER need Python 3.11+",
+)
+def test_visibility_two_clauses_in_one_statement_stay_under_limit(serve_module, tmp_path):
+    """Several dashboard queries bind TWO visibility clauses in one statement
+    (e.g. the runs and the tool_calls halves of one summary). Two clauses must
+    still fit under the 999-variable limit."""
+    many = [(f"sess-{i:04d}", 0) for i in range(1300)]
+    _seed_sessions_db(tmp_path / "state.db", many)
+
+    clause_a, params_a = serve_module._visible_sessions_clause("r.session_id", False)
+    clause_b, params_b = serve_module._visible_sessions_clause("tc.session_id", False)
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        conn.execute("CREATE TABLE runs (session_id TEXT)")
+        conn.execute("CREATE TABLE tool_calls (session_id TEXT)")
+        conn.executemany("INSERT INTO runs(session_id) VALUES (?)", [(sid,) for sid, _ in many])
+        conn.executemany(
+            "INSERT INTO tool_calls(session_id) VALUES (?)", [(sid,) for sid, _ in many]
+        )
+        count = conn.execute(
+            "SELECT COUNT(*) FROM runs r JOIN tool_calls tc "
+            f"ON tc.session_id = r.session_id WHERE {clause_a} AND {clause_b}",
+            [*params_a, *params_b],
+        ).fetchone()[0]
+        assert count == 1300
+    finally:
+        conn.close()
+
+
+def test_visibility_missing_state_db_is_skipped_not_fatal(tmp_path, monkeypatch):
+    """A profile dir whose state.db is missing must not abort the scan
+    (fail-open per home); readable homes still contribute their ids."""
+    root = tmp_path / "shared"
+    _seed_sessions_db(root / "state.db", [("sess-present", 0)])  # readable root
+    _seed_sessions_db(root / "profiles/beta/state.db", [("sess-beta", 0)])
+    # alpha exists as a dir but has no state.db -> skipped, not an error
+    (root / "profiles" / "alpha").mkdir(parents=True, exist_ok=True)
+    module = _reload_serve_with_env(monkeypatch, hermes_home=root, telemetry_home=root)
+
+    ids, available = module._active_hermes_session_ids()
+    assert available is True
+    assert ids == {"sess-present", "sess-beta"}
+
+
+def test_visibility_relative_telemetry_home_reads_state_db(tmp_path, monkeypatch):
+    """A relative HERMES_TELEMETRY_HOME must still be scanned. ``Path.as_uri()``
+    raises ValueError on a relative path, which the per-home ``sqlite3.Error``
+    guard does not catch, so the visibility filter must resolve the path before
+    building the read-only URI."""
+    _seed_sessions_db(tmp_path / "shared" / "state.db", [("sess-root", 0)])
+    _seed_sessions_db(tmp_path / "shared" / "profiles/alpha/state.db", [("sess-alpha", 0)])
+    monkeypatch.chdir(tmp_path)
+    module = _reload_serve_with_env(
+        monkeypatch, hermes_home=Path("shared"), telemetry_home=Path("shared")
+    )
+
+    ids, available = module._active_hermes_session_ids()
+    assert available is True
+    assert ids == {"sess-root", "sess-alpha"}
