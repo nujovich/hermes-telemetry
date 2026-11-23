@@ -16,7 +16,7 @@ A comprehensive telemetry plugin that captures real usage data, enforces budget 
 
 [![Hermes Agent](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)](https://raw.githubusercontent.com/NousResearch/hermes-agent/HEAD/assets/banner.png)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 914 passing](https://img.shields.io/badge/Tests-914%20passing-green.svg)](https://img.shields.io/badge/Tests-914%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e744d4368616c6c656e6765253230456e7472792d707572706c652e737667)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://camo.githubusercontent.com/08cef40a9105b6526ca22088bc514fbfdbc9aac1ddbf8d4e6c750e3a88a44dca/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d4d49542d626c75652e737667) [![Tests: 935 passing](https://img.shields.io/badge/Tests-935%20passing-green.svg)](https://img.shields.io/badge/Tests-935%20passing-green.svg) [![Provider Support](https://img.shields.io/badge/Providers-OpenRouter-orange.svg)](https://img.shields.io/badge/Providers-OpenRouter-orange.svg) [![Challenge Entry](https://img.shields.io/badge/Hermes%20Agent-Challenge%20Entry-purple.svg)](https://camo.githubusercontent.com/d0c993fdf35127e435629279025d4b1892e351f5e04ce1547329686aa4223366/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4865726d65732532304167656e744d4368616c6c656e6765253230456e7472792d707572706c652e737667)
 
 -----
 
@@ -146,7 +146,7 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (914 tests, 914 passing):**
+**Test suite (935 tests, 935 passing):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
@@ -192,7 +192,7 @@ pytest tests/ -v
 |`test_stats_profile_filter_eff_smells.py`|9 |`--profile` on the efficiency and smells slash views, incl. the `-` bucket|
 |`test_stats_profile_filter_cron_raw.py`|16 |`--profile` on cron and raw views (slash + CLI), `cost_by_job` / `recent_runs` / `unattributed_child_cost` filtering, empty-result labels, unfiltered default unchanged|
 
-Counts above are per-file collected totals, measured on this branch with `pytest tests/ -q` and the optional `fastapi` test dependency installed (914 collected: 903 on `main` plus 11 visibility tests; a py3.8 shell shows 906 passed + 8 skipped — the six zoneinfo-guarded tests and the two `Connection.setlimit` tests, which need Python 3.11+). CI installs only `pytest` + `pyyaml`, so `test_dashboard_plugin_api.py` skips there and the same command reports **879 passed, 35 skipped** on Python 3.11+ (computed: 914 - 35).
+Counts above are per-file collected totals, measured on this branch with `pytest tests/ -q` and the optional `fastapi` test dependency installed (935 collected; a py3.8 shell shows 927 passed + 8 skipped — the six zoneinfo-guarded tests and the two `Connection.setlimit` tests, which need Python 3.11+). CI installs only `pytest` + `pyyaml`, so `test_dashboard_plugin_api.py` skips there and the same command reports **900 passed, 35 skipped** on Python 3.11+ (computed: 935 - 35).
 
 No live Hermes is required — all tests are self-contained with in-memory SQLite.
 
